@@ -189,8 +189,11 @@ satisfies your p99 target.
 ## Live Demonstrator
 
 `pat demo` spins up real Docker containers and measures throughput, latency,
-and CPU across three replication variants, then outputs a results table and
-a PNG comparison chart.
+and CPU across three replication variants, then outputs:
+
+1. A results table and PNG comparison chart
+2. An **HPA Lag Projection** — what happens if load spikes 3× (v0.3.0)
+3. A **Cost Analysis** panel — cost/req per variant and best-ROI layer (v0.4.0)
 
 **Requirements:** Docker daemon running locally.
 
@@ -201,8 +204,9 @@ pip install "presidio-hardened-arch-translucency[demo]"
 # Run the demo (defaults: 4 replicas, 40 requests, 8 concurrent threads)
 pat demo
 
-# Custom run
-pat demo --replicas 6 --requests 80 --concurrency 12 --output results.png
+# Custom run with cost override
+pat demo --replicas 6 --requests 80 --concurrency 12 \
+    --cost-per-container-hour 0.05 --output results.png
 ```
 
 **Variants compared:**
@@ -225,7 +229,29 @@ pat demo --replicas 6 --requests 80 --concurrency 12 --output results.png
 
 Architectural Translucency Insight:
   Manual container replication minimises coordination overhead…
+
+╭──────────── HPA Lag Projection (if load spikes 3×) ─────────────╮
+│ TROUGH  (0 s – 45 s)                                             │
+│   Throughput    8.2 req/s  (9 % of spike demand)                 │
+│   p99 latency   4,896 ms                                         │
+│   Missed reqs   ~3,321                                           │
+│ STEADY STATE  (after 45 s — 3 replicas)                          │
+│   Throughput    24.6 req/s                                        │
+│   p99 latency   1,102 ms                                         │
+│ → Set HPA minReplicas = 3 to eliminate the trough.               │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭────────────────── v0.4.0 Cost Analysis ──────────────────────────╮
+│ Best measured variant:  2 — 4 containers (round-robin)           │
+│   Cost/req  $0.000077  ·  Cost/hr  $0.0800                       │
+│ Analytical best-ROI layer:  container                            │
+│   Replicas  4  ·  Throughput gain  +45.2%                        │
+│   Cost/req  $0.000044  ·  Cost/hr  $0.0800  ·  ROI score  1027   │
+╰──────────────────────────────────────────────────────────────────╯
 ```
+
+Two PNG files are saved: `demo-results.png` (bar chart) and `demo-results-hpa.png`
+(3-panel HPA time-series).
 
 ---
 
