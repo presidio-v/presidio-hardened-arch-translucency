@@ -1,7 +1,7 @@
 """
 presidio-hardened-arch-translucency
 ====================================
-MVP 0.2.0 — Architectural Translucency analyzer for Docker/Kubernetes.
+MVP 0.3.0 — Architectural Translucency analyzer for Docker/Kubernetes.
 
 Architectural translucency (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties (especially performance) architecture-wide
@@ -11,5 +11,5 @@ layers.  This tool recommends the optimal replication layer for a given
 workload.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Vladimir Stantchev"

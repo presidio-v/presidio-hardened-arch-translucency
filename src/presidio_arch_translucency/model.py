@@ -185,6 +185,11 @@ class AnalysisResult:
     layers: list[LayerResult]
 
 
+def base_capacity_rps(requests_per_second: float, avg_latency_ms: float) -> float:
+    """Public alias — single-replica capacity estimate via Little's Law."""
+    return _base_capacity(requests_per_second, avg_latency_ms)
+
+
 def _base_capacity(requests_per_second: float, avg_latency_ms: float) -> float:
     """
     Estimate single-replica capacity from observed latency.

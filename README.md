@@ -83,6 +83,51 @@ pat analyze --requests-per-second 500 --avg-latency-ms 80 \
 
 ---
 
+## Dynamic Scaling Analysis (v0.3.0)
+
+### `pat what-if` — HPA Lag Model
+
+Projects the performance **trough** that occurs between a load spike and the
+moment new Kubernetes pods become Ready. Shows throughput, latency, p99, and
+missed requests during the HPA scale-out window.
+
+```bash
+pat what-if \
+  --current-rps 50 --spike-rps 200 \
+  --avg-latency-ms 80 --current-layer container \
+  --output hpa-event.png
+```
+
+Three stacked panels are saved to `hpa-event.png`:
+- **Throughput (req/s)** — actual served vs demand, with trough annotation
+- **Avg latency (ms)** — how response time degrades during the trough
+- **p99 latency (ms)** — tail behaviour before and after pods are Ready
+
+Optional overrides: `--hpa-poll-s` (default 15 s), `--pod-startup-s`
+(default 30 s), `--cold-start-s` (default 0 s), `--replicas-before`,
+`--replicas-after`.
+
+---
+
+### `pat slo` — SLO Compliance Check
+
+Checks whether a p99 latency SLO is met in **steady-state** and during an
+**HPA trough** across all four replication layers.
+
+```bash
+pat slo \
+  --requests-per-second 50 \
+  --avg-latency-ms 80 \
+  --p99-target-ms 500 \
+  --spike-multiplier 3.0
+```
+
+Output table shows steady p99, trough p99, and SLO verdict per layer.
+The recommendation panel advises the minimum `HPA minReplicas` needed to
+eliminate the trough breach.
+
+---
+
 ## Live Demonstrator
 
 `pat demo` spins up real Docker containers and measures throughput, latency,
