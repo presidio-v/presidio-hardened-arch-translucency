@@ -171,7 +171,11 @@ MIT — see [LICENSE](LICENSE).
 
 ## References
 
-- V. Stantchev, "Performance Issues of Web Services" — introduces architectural
-  translucency and cross-layer performance monitoring.
+- V. Stantchev, "Effects of Replication on Web Service Performance in WebSphere,"
+  Technical Report, ICSI — International Computer Science Institute, Berkeley, CA, USA.
 - V. Stantchev, C. Schröpfer, "Negotiating and Enforcing QoS and SLAs in Grid and
-  Cloud Services" — replication model and ω(δ) equations.
+  Cloud Computing," in *Advances in Grid and Pervasive Computing* (GPC 2009),
+  Lecture Notes in Computer Science, vol. 5529, Springer, 2009.
+- V. Stantchev, M. Malek, "Architectural translucency in service-oriented
+  architectures," *IEE Proceedings — Software*, vol. 153, no. 1, pp. 31–37, 2006.
+  DOI: 10.1049/ip-sen:20050017
