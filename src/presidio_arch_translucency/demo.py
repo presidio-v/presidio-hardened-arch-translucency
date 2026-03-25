@@ -200,17 +200,19 @@ def translucency_insight(results: list[VariantResult]) -> str:
 
 def save_plot(results: list[VariantResult], output: Path) -> None:
     """Save a 3-panel comparison bar chart to *output*."""
+    import textwrap  # noqa: PLC0415
+
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    names = [r.name for r in results]
+    names = [textwrap.fill(r.name, width=16) for r in results]
     colours = ["#4C72B0", "#DD8452", "#55A868"]
     best_tp_idx = max(range(len(results)), key=lambda i: results[i].throughput_rps)
     best_lat_idx = min(range(len(results)), key=lambda i: results[i].avg_latency_ms)
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.suptitle(
         "Architectural Translucency — Live Demo Results",
         fontsize=13,
