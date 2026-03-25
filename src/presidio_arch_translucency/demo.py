@@ -500,6 +500,107 @@ def _render_table(results: list[VariantResult], console: Console) -> None:
     console.print(table)
 
 
+# ── Cost analysis ────────────────────────────────────────────────────────────
+
+
+def _render_cost_section(
+    results: list[VariantResult],
+    cost_per_container_hour: float,
+    console: Console,
+) -> None:
+    """
+    Show cost/req for each measured variant and the analytical cost recommendation.
+    Uses measured throughput — so actual Docker numbers feed the cost model.
+    """
+    from presidio_arch_translucency.cost import (  # noqa: PLC0415
+        CostParams,
+        build_cost_results,
+    )
+    from presidio_arch_translucency.model import (  # noqa: PLC0415
+        ReplicationLayer,
+        analyze,
+    )
+
+    best = max(results, key=lambda r: r.throughput_rps)
+    if best.throughput_rps <= 0 or best.avg_latency_ms <= 0:
+        return
+
+    # ── Measured cost per variant ──────────────────────────────────────────────
+    table = Table(
+        title="Cost Efficiency — Measured Variants",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Variant", style="cyan", no_wrap=True)
+    table.add_column("Containers", justify="right")
+    table.add_column("Throughput\n(req/s)", justify="right")
+    table.add_column("Cost/hr\n(USD)", justify="right")
+    table.add_column("Cost/req\n(USD)", justify="right")
+    table.add_column("Best ROI?", justify="center")
+
+    cost_rows = []
+    for r in results:
+        total_containers = r.n_workers + r.n_lb
+        hc = round(total_containers * cost_per_container_hour, 4)
+        cpr = hc / (r.throughput_rps * 3600.0) if r.throughput_rps > 0 else float("inf")
+        cost_rows.append((r, hc, cpr))
+
+    best_roi_idx = min(range(len(cost_rows)), key=lambda i: cost_rows[i][2])
+
+    for i, (r, hc, cpr) in enumerate(cost_rows):
+        is_best = i == best_roi_idx
+        cpr_str = f"${cpr:.6f}" if cpr != float("inf") else "—"
+        table.add_row(
+            r.name,
+            str(r.n_workers + r.n_lb),
+            f"{r.throughput_rps:.1f}",
+            f"${hc:.4f}",
+            cpr_str,
+            "[bold green]✓[/]" if is_best else "",
+        )
+
+    console.print()
+    console.print(table)
+
+    # ── Analytical layer recommendation ────────────────────────────────────────
+    analysis = analyze(
+        best.throughput_rps, best.avg_latency_ms, ReplicationLayer.CONTAINER
+    )
+    cp = CostParams(
+        cost_per_container_hour=cost_per_container_hour,
+        cost_per_pod_hour=cost_per_container_hour * 2.5,
+        cost_per_deployment_hour=cost_per_container_hour * 5.0,
+        cost_per_node_hour=cost_per_container_hour * 25.0,
+    )
+    cost_results = build_cost_results(analysis.layers, cp)
+    best_analytical = next(r for r in cost_results if r.is_recommended)
+
+    hc_measured = cost_rows[best_roi_idx][1]
+    cpr_measured = cost_rows[best_roi_idx][2]
+
+    body = (
+        f"[dim]Cost assumption:[/]  ${cost_per_container_hour:.4f}"
+        f" / container / hour\n\n"
+        f"[bold]Best measured variant:[/]  [cyan]{cost_rows[best_roi_idx][0].name}[/]\n"
+        f"  Cost/req  ${cpr_measured:.6f}  ·  Cost/hr  ${hc_measured:.4f}\n\n"
+        f"[bold]Analytical best-ROI layer:[/]  [cyan]{best_analytical.layer.value}[/]\n"
+        f"  Replicas  {best_analytical.replicas}  ·  "
+        f"Throughput gain  {best_analytical.throughput_gain_pct:+.1f}%\n"
+        f"  Cost/req  ${best_analytical.cost_per_request_usd:.6f}  ·  "
+        f"Cost/hr  ${best_analytical.hourly_cost_usd:.4f}\n"
+        f"  ROI score  {best_analytical.roi_score:.1f}\n\n"
+        "[dim]Run [bold]pat cost[/] with your actual cluster costs"
+        " for a full breakdown.[/]"
+    )
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]v0.4.0 Cost Analysis[/]",
+            border_style="blue",
+        )
+    )
+
+
 # ── HPA lag projection ────────────────────────────────────────────────────────
 
 
@@ -601,6 +702,11 @@ def demo_command(
         3.0,
         "--spike-multiplier",
         help="Hypothetical load spike factor for the HPA lag projection.",
+    ),
+    cost_per_container_hour: float = typer.Option(
+        0.02,
+        "--cost-per-container-hour",
+        help="USD per container per hour for cost analysis (default: $0.02).",
     ),
 ) -> None:
     """
@@ -810,5 +916,8 @@ def demo_command(
 
     # ── HPA lag projection using measured results ──────────────────────────────
     _render_hpa_section(results, output, spike_multiplier, console)
+
+    # ── Cost analysis using measured results (v0.4.0) ─────────────────────────
+    _render_cost_section(results, cost_per_container_hour, console)
 
     log_security_event("DEMO_COMPLETE", {"variants": len(results)})

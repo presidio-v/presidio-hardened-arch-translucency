@@ -10,6 +10,7 @@ from rich.console import Console
 from presidio_arch_translucency.demo import (
     CONTAINER_PREFIX,
     VariantResult,
+    _render_cost_section,
     _render_hpa_section,
     nginx_conf,
     save_plot,
@@ -176,6 +177,30 @@ def test_render_hpa_section_skips_zero_throughput(tmp_path: Path) -> None:
     bad = [_vr("1 — Single container", 0.0, 0.0)]
     _render_hpa_section(bad, out, 3.0, console)
     assert not (tmp_path / "demo-results-hpa.png").exists()
+
+
+# ── _render_cost_section ───────────────────────────────────────────────────────
+
+
+def test_render_cost_section_basic(tmp_path: Path) -> None:
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    _render_cost_section(_demo_results(), 0.02, console)
+    out = (tmp_path / "out.txt").read_text()
+    assert "Cost" in out or "cost" in out.lower() or "$" in out
+
+
+def test_render_cost_section_skips_zero_throughput(tmp_path: Path) -> None:
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    bad = [_vr("1 — Single container", 0.0, 0.0)]
+    # Should not crash
+    _render_cost_section(bad, 0.02, console)
+
+
+def test_render_cost_section_custom_cost(tmp_path: Path) -> None:
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    _render_cost_section(_demo_results(), 0.10, console)
+    out = (tmp_path / "out.txt").read_text()
+    assert "0.10" in out or "0.1000" in out
 
 
 def test_render_hpa_section_custom_multiplier(tmp_path: Path) -> None:
