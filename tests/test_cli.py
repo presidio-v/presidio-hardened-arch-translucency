@@ -30,9 +30,14 @@ class TestVersionAndHelp:
         assert "analyze" in result.output.lower()
 
     def test_analyze_help(self):
-        result = invoke("analyze", "--help")
+        # Force a wide terminal so Rich doesn't truncate option names on Linux.
+        result = runner.invoke(
+            app,
+            ["--skip-audit", "analyze", "--help"],
+            env={"COLUMNS": "200"},
+        )
         assert result.exit_code == 0
-        assert "requests-per-sec" in result.output
+        assert "--requests-per-second" in result.output
 
 
 # ---------------------------------------------------------------------------
