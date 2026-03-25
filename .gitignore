@@ -33,3 +33,9 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Tooling directories (never commit)
+.claude/
+.specify/
+*.log
+*.tmp
