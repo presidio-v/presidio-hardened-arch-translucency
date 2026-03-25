@@ -500,6 +500,77 @@ def _render_table(results: list[VariantResult], console: Console) -> None:
     console.print(table)
 
 
+# ── HPA lag projection ────────────────────────────────────────────────────────
+
+
+def _render_hpa_section(
+    results: list[VariantResult],
+    output: Path,
+    spike_multiplier: float,
+    console: Console,
+) -> None:
+    """
+    Feed the best measured variant into the HPA lag model and render
+    a trough-projection panel + time-series plot.
+    """
+    from presidio_arch_translucency.hpa import (  # noqa: PLC0415
+        save_hpa_plot,
+        simulate_scale_event,
+    )
+    from presidio_arch_translucency.model import ReplicationLayer  # noqa: PLC0415
+
+    best = max(results, key=lambda r: r.throughput_rps)
+
+    if best.throughput_rps <= 0 or best.avg_latency_ms <= 0:
+        return  # measurement too noisy to project
+
+    spike_rps = best.throughput_rps * spike_multiplier
+    hpa_result = simulate_scale_event(
+        rps_baseline=best.throughput_rps,
+        rps_spike=spike_rps,
+        avg_latency_ms=best.avg_latency_ms,
+        layer=ReplicationLayer.CONTAINER,
+        replicas_before=max(1, best.n_workers),
+    )
+
+    trough_color = "red" if hpa_result.trough_throughput_pct < 50 else "yellow"
+    body = (
+        f"[dim]Measured baseline:[/]  {best.name}\n"
+        f"  {best.throughput_rps:.1f} req/s  ·  "
+        f"{best.avg_latency_ms:.0f} ms avg latency\n\n"
+        f"[dim]Hypothetical spike:[/]  {spike_multiplier:.0f}× "
+        f"→ {spike_rps:.1f} req/s\n\n"
+        f"[bold red]TROUGH[/]  (0 s – {hpa_result.trough_duration_s:.0f} s"
+        f"  =  HPA poll 15 s  +  pod startup 30 s)\n"
+        f"  Throughput    [{trough_color}]"
+        f"{hpa_result.trough_throughput_rps:.1f} req/s"
+        f"  ({hpa_result.trough_throughput_pct:.0f} % of spike demand)[/]\n"
+        f"  p99 latency   {hpa_result.trough_p99_latency_ms:,.0f} ms\n"
+        f"  Missed reqs   ~{hpa_result.missed_requests:,}\n\n"
+        f"[bold green]STEADY STATE[/]  (after {hpa_result.trough_duration_s:.0f} s"
+        f"  —  {hpa_result.replicas_after} replicas)\n"
+        f"  Throughput    {hpa_result.steady_throughput_rps:.1f} req/s\n"
+        f"  p99 latency   {hpa_result.steady_p99_latency_ms:,.0f} ms\n\n"
+        f"[dim]→ Set [bold]HPA minReplicas = {hpa_result.replicas_after}[/]"
+        f"[dim] to pre-provision and eliminate the trough.[/]"
+    )
+
+    console.print(
+        Panel(
+            body,
+            title=(
+                f"[bold magenta]HPA Lag Projection"
+                f" (if load spikes {spike_multiplier:.0f}×)[/]"
+            ),
+            border_style="magenta",
+        )
+    )
+
+    hpa_output = output.parent / (output.stem + "-hpa" + output.suffix)
+    save_hpa_plot(hpa_result, hpa_output)
+    console.print(f"[green]HPA plot saved →[/] {hpa_output}\n")
+
+
 # ── Typer command ─────────────────────────────────────────────────────────────
 
 
@@ -525,6 +596,11 @@ def demo_command(
     ),
     force_rebuild: bool = typer.Option(
         False, "--force-rebuild", help="Rebuild the workload Docker image."
+    ),
+    spike_multiplier: float = typer.Option(
+        3.0,
+        "--spike-multiplier",
+        help="Hypothetical load spike factor for the HPA lag projection.",
     ),
 ) -> None:
     """
@@ -731,4 +807,8 @@ def demo_command(
 
     save_plot(results, output)
     console.print(f"\n[green]Plot saved →[/] {output}\n")
+
+    # ── HPA lag projection using measured results ──────────────────────────────
+    _render_hpa_section(results, output, spike_multiplier, console)
+
     log_security_event("DEMO_COMPLETE", {"variants": len(results)})

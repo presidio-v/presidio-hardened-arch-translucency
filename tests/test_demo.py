@@ -5,9 +5,12 @@ These tests do not require a running Docker daemon.
 
 from pathlib import Path
 
+from rich.console import Console
+
 from presidio_arch_translucency.demo import (
     CONTAINER_PREFIX,
     VariantResult,
+    _render_hpa_section,
     nginx_conf,
     save_plot,
     translucency_insight,
@@ -142,3 +145,41 @@ def test_save_plot_two_variants(tmp_path: Path) -> None:
     out = tmp_path / "two.png"
     save_plot(results, out)
     assert out.exists()
+
+
+# ── _render_hpa_section ────────────────────────────────────────────────────────
+
+
+def _demo_results() -> list[VariantResult]:
+    return [
+        _vr("1 — Single container", 10.0, 500.0, 30.0),
+        VariantResult(
+            "2 — 4 containers (round-robin)", "", 4, 0, 35.0, 120.0, 180.0, 80.0, 0
+        ),
+        _vr("3 — nginx LB (4 workers)", 28.0, 160.0, 70.0),
+    ]
+
+
+def test_render_hpa_section_creates_plot(tmp_path: Path) -> None:
+    out = tmp_path / "demo-results.png"
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    _render_hpa_section(_demo_results(), out, 3.0, console)
+    hpa_out = tmp_path / "demo-results-hpa.png"
+    assert hpa_out.exists()
+    assert hpa_out.stat().st_size > 0
+
+
+def test_render_hpa_section_skips_zero_throughput(tmp_path: Path) -> None:
+    out = tmp_path / "demo-results.png"
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    # All zero throughput — should not crash
+    bad = [_vr("1 — Single container", 0.0, 0.0)]
+    _render_hpa_section(bad, out, 3.0, console)
+    assert not (tmp_path / "demo-results-hpa.png").exists()
+
+
+def test_render_hpa_section_custom_multiplier(tmp_path: Path) -> None:
+    out = tmp_path / "demo-results.png"
+    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
+    _render_hpa_section(_demo_results(), out, 5.0, console)
+    assert (tmp_path / "demo-results-hpa.png").exists()
