@@ -83,6 +83,49 @@ pat analyze --requests-per-second 500 --avg-latency-ms 80 \
 
 ---
 
+## Live Demonstrator
+
+`pat demo` spins up real Docker containers and measures throughput, latency,
+and CPU across three replication variants, then outputs a results table and
+a PNG comparison chart.
+
+**Requirements:** Docker daemon running locally.
+
+```bash
+# Install with demo extras
+pip install "presidio-hardened-arch-translucency[demo]"
+
+# Run the demo (defaults: 4 replicas, 40 requests, 8 concurrent threads)
+pat demo
+
+# Custom run
+pat demo --replicas 6 --requests 80 --concurrency 12 --output results.png
+```
+
+**Variants compared:**
+
+| Variant | Description |
+|---|---|
+| 1 — Single container | Baseline: one container handles all traffic |
+| 2 — N containers (round-robin) | Manual container-level replication, client-side LB |
+| 3 — N workers + nginx | Simulated Kubernetes Deployment with nginx reverse proxy |
+
+**Example output:**
+
+```
+╭───── Architectural Translucency — Measured Results ──────╮
+│ Variant                    Workers  Throughput  Avg Lat   │
+│ 1 — Single container            1        8.2    612 ms    │
+│ 2 — 4 containers (round-robin)  4       28.7    167 ms ✓  │
+│ 3 — nginx LB (4 workers)        5       22.4    213 ms    │
+╰──────────────────────────────────────────────────────────╯
+
+Architectural Translucency Insight:
+  Manual container replication minimises coordination overhead…
+```
+
+---
+
 ## Security — Presidio Hardening
 
 This toolkit ships with mandatory Presidio security extensions:

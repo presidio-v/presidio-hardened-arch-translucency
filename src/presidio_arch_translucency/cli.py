@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from presidio_arch_translucency import __version__
+from presidio_arch_translucency.demo import demo_command
 from presidio_arch_translucency.model import (
     VALID_LAYERS,
     ReplicationLayer,
@@ -41,6 +42,7 @@ app = typer.Typer(
     ),
     add_completion=False,
 )
+app.command("demo")(demo_command)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
