@@ -7,6 +7,8 @@ Usage:
 
 from __future__ import annotations
 
+from typing import Optional
+
 import typer
 from rich import box
 from rich.console import Console
@@ -52,7 +54,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: bool | None = typer.Option(
+    version: Optional[bool] = typer.Option(  # noqa: UP045
         None,
         "--version",
         "-V",
