@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.3.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.4.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -125,6 +125,64 @@ pat slo \
 Output table shows steady p99, trough p99, and SLO verdict per layer.
 The recommendation panel advises the minimum `HPA minReplicas` needed to
 eliminate the trough breach.
+
+---
+
+## Cost-Aware Analysis (v0.4.0)
+
+### `pat cost` — Performance-Per-Dollar Ranking
+
+Cross-layer cost analysis showing hourly cost, cost-per-request, and ROI score
+for every replication layer.
+
+```bash
+pat cost \
+  --requests-per-second 500 \
+  --avg-latency-ms 80 \
+  --current-layer container \
+  --cost-per-container-hour 0.02 \
+  --cost-per-pod-hour 0.05 \
+  --cost-per-deployment-hour 0.10 \
+  --cost-per-node-hour 0.50
+```
+
+| Layer | Replicas | Δ Throughput | Δ RT | Cost/hr | Cost/req | ROI score | Best ROI |
+|---|---|---|---|---|---|---|---|
+| container | 4 | +45.2% | -38.1% | $0.0800 | $0.000044 | 1 027 | ✓ |
+| pod | 3 | +42.0% | -31.0% | $0.1500 | $0.000083 | 504 | |
+| deployment | 2 | +38.1% | -15% | $0.2000 | $0.000111 | 343 | |
+| node | 1 | 0.0% | 0.0% | $0.5000 | $0.000278 | 0 | |
+
+ROI score = throughput-gain-% / cost-per-request (higher = better performance-per-dollar).
+
+### `pat analyze` — Cost columns
+
+Add `--cost-per-replica-hour` to include cost columns in `--show-all` output:
+
+```bash
+pat analyze --requests-per-second 500 --avg-latency-ms 80 \
+    --current-layer container --show-all --cost-per-replica-hour 0.02
+```
+
+### `pat what-if` — Trough revenue impact
+
+Add `--cost-per-request` to see the estimated revenue cost of the HPA trough:
+
+```bash
+pat what-if --current-rps 50 --spike-rps 200 --avg-latency-ms 80 \
+    --current-layer container --cost-per-request 0.001
+```
+
+Output includes:
+```
+  Missed reqs   ~1 350
+  Trough cost   ~$1.35 revenue impact
+```
+
+### `pat slo` — Min-cost layer that meets SLO
+
+`pat slo` now shows a **Cost/hr** column and identifies the cheapest layer that
+satisfies your p99 target.
 
 ---
 

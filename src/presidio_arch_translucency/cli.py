@@ -17,6 +17,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from presidio_arch_translucency import __version__
+from presidio_arch_translucency.cost import (
+    CostParams,
+    build_cost_results,
+    cost_per_request,
+    hourly_cost,
+    trough_cost_usd,
+)
 from presidio_arch_translucency.demo import demo_command
 from presidio_arch_translucency.hpa import (
     ScaleEventParams,
@@ -114,6 +121,12 @@ def analyze_cmd(
         "--show-all",
         help="Show analysis results for all layers, not just the recommendation.",
     ),
+    cost_per_replica_hour: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--cost-per-replica-hour",
+        help="Uniform cost (USD/replica/hour). Adds cost columns to --show-all table.",
+        min=0.0,
+    ),
 ) -> None:
     """
     Analyze workload and recommend the optimal replication layer.
@@ -149,10 +162,14 @@ def analyze_cmd(
     )
 
     # --- Render output ---
-    _render_results(result, show_all=show_all)
+    _render_results(result, show_all=show_all, uniform_cost=cost_per_replica_hour)
 
 
-def _render_results(result: AnalysisResult, show_all: bool) -> None:  # type: ignore[name-defined]  # noqa: F821
+def _render_results(
+    result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
+    show_all: bool,
+    uniform_cost: Optional[float] = None,  # noqa: UP045
+) -> None:
     from presidio_arch_translucency.model import AnalysisResult  # local import for type
 
     assert isinstance(result, AnalysisResult)  # noqa: S101
@@ -185,6 +202,16 @@ def _render_results(result: AnalysisResult, show_all: bool) -> None:  # type: ig
     )
 
     if show_all:
+        # Build uniform-cost params if requested
+        cost_params = None
+        if uniform_cost is not None:
+            cost_params = CostParams(
+                cost_per_container_hour=uniform_cost,
+                cost_per_pod_hour=uniform_cost,
+                cost_per_deployment_hour=uniform_cost,
+                cost_per_node_hour=uniform_cost,
+            )
+
         table = Table(
             title="All Layers Analysis",
             box=box.ROUNDED,
@@ -196,6 +223,9 @@ def _render_results(result: AnalysisResult, show_all: bool) -> None:  # type: ig
         table.add_column("Δ Throughput", justify="right")
         table.add_column("Response Time (ms)", justify="right")
         table.add_column("Δ RT", justify="right")
+        if cost_params is not None:
+            table.add_column("Cost/hr (USD)", justify="right")
+            table.add_column("Cost/req (USD)", justify="right")
         table.add_column("Recommended", justify="center")
 
         for lr in result.layers:
@@ -210,15 +240,26 @@ def _render_results(result: AnalysisResult, show_all: bool) -> None:  # type: ig
             tp_color = "green" if lr.throughput_gain_pct >= 0 else "red"
             rt_style = "red" if lr.response_time_change_pct > 10 else "green"
 
-            table.add_row(
+            row: list[str] = [
                 lr.layer.value,
                 str(lr.optimal_replicas),
                 f"{lr.estimated_throughput_rps:.0f}",
                 f"[{tp_color}]{lr.throughput_gain_pct:+.1f}%[/]",
                 f"{lr.estimated_response_time_ms:.1f}",
                 f"[{rt_style}]{lr.response_time_change_pct:+.1f}%[/]",
-                "[bold green]✓[/]" if is_rec else "",
-            )
+            ]
+            if cost_params is not None:
+                hc = hourly_cost(lr.layer, lr.optimal_replicas, cost_params)
+                cpr = cost_per_request(
+                    lr.layer,
+                    lr.optimal_replicas,
+                    lr.estimated_throughput_rps,
+                    cost_params,
+                )
+                row.append(f"${hc:.4f}")
+                row.append(f"${cpr:.6f}")
+            row.append("[bold green]✓[/]" if is_rec else "")
+            table.add_row(*row)
 
         console.print()
         console.print(table)
@@ -284,6 +325,12 @@ def what_if_cmd(
         "-o",
         help="Save time-series plot to this path (e.g. hpa-event.png).",
     ),
+    cost_per_req: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--cost-per-request",
+        help="USD value per request. Shows estimated trough revenue cost.",
+        min=0.0,
+    ),
 ) -> None:
     """
     Model an HPA scale event and show the performance trough.
@@ -320,7 +367,7 @@ def what_if_cmd(
         replicas_after=replicas_after,
     )
     log_security_event("WHAT_IF_INVOCATION", {"layer": layer_str, "spike_rps": srps})
-    _render_what_if(result)
+    _render_what_if(result, cost_per_req=cost_per_req)
 
     if output is not None:
         save_hpa_plot(result, output)
@@ -396,16 +443,160 @@ def slo_cmd(
         for layer in ReplicationLayer
     }
     log_security_event("SLO_INVOCATION", {"rps": rps, "p99_target_ms": p99_target_ms})
-    _render_slo(results, p99_target_ms, rps, spike_rps, params)
+    _render_slo(results, p99_target_ms, rps, spike_rps, params, CostParams())
+
+
+@app.command("cost")
+def cost_cmd(
+    requests_per_second: float = typer.Option(
+        ...,
+        "--requests-per-second",
+        "-r",
+        help="Observed workload in requests per second.",
+        min=0.01,
+    ),
+    avg_latency_ms: float = typer.Option(
+        ...,
+        "--avg-latency-ms",
+        "-l",
+        help="Current average response latency in milliseconds.",
+        min=0.1,
+    ),
+    current_layer: str = typer.Option(
+        ...,
+        "--current-layer",
+        "-c",
+        help=f"Current replication layer. One of: {', '.join(VALID_LAYERS)}",
+    ),
+    cost_per_container_hour: float = typer.Option(
+        0.02, "--cost-per-container-hour", help="USD per container replica per hour."
+    ),
+    cost_per_pod_hour: float = typer.Option(
+        0.05, "--cost-per-pod-hour", help="USD per pod replica per hour."
+    ),
+    cost_per_deployment_hour: float = typer.Option(
+        0.10, "--cost-per-deployment-hour", help="USD per deployment replica per hour."
+    ),
+    cost_per_node_hour: float = typer.Option(
+        0.50, "--cost-per-node-hour", help="USD per cluster node per hour."
+    ),
+) -> None:
+    """
+    Cross-layer cost analysis: throughput gain vs hourly cost.
+
+    Shows cost/hour, cost/request, and ROI score for every replication layer,
+    helping you pick the layer with the best performance-per-dollar.
+    """
+    try:
+        rps = sanitize_requests_per_second(requests_per_second)
+        lat = sanitize_latency_ms(avg_latency_ms)
+        layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    current = ReplicationLayer(layer_str)
+    result = analyze(requests_per_second=rps, avg_latency_ms=lat, current_layer=current)
+    cp = CostParams(
+        cost_per_container_hour=cost_per_container_hour,
+        cost_per_pod_hour=cost_per_pod_hour,
+        cost_per_deployment_hour=cost_per_deployment_hour,
+        cost_per_node_hour=cost_per_node_hour,
+    )
+    cost_results = build_cost_results(result.layers, cp)
+    log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
+    _render_cost(cost_results, result)
 
 
 # ── rendering helpers ─────────────────────────────────────────────────────────
 
 
-def _render_what_if(r: ScaleEventResult) -> None:
+def _render_cost(cost_results: list, result: object) -> None:  # type: ignore[type-arg]
+    from presidio_arch_translucency.model import AnalysisResult  # local import
+
+    assert isinstance(result, AnalysisResult)  # noqa: S101
+
+    best = next(r for r in cost_results if r.is_recommended)
+
+    # Summary panel
+    body = (
+        f"[bold]Best ROI layer:[/]  [cyan]{best.layer.value}[/]\n"
+        f"[bold]Replicas:[/]        [cyan]{best.replicas}[/]\n"
+        f"[bold]Throughput gain:[/] [green]{best.throughput_gain_pct:+.1f}%[/]\n"
+        f"[bold]Cost/hour:[/]       ${best.hourly_cost_usd:.4f}\n"
+        f"[bold]Cost/request:[/]    ${best.cost_per_request_usd:.6f}\n"
+        f"[bold]ROI score:[/]       {best.roi_score:.1f}\n\n"
+        f"[dim]{best.description}[/]"
+    )
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]Presidio Architectural Translucency — Cost Analysis[/]",
+            border_style="blue",
+        )
+    )
+
+    table = Table(
+        title="All Layers — Cost vs Performance",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Layer", style="cyan", no_wrap=True)
+    table.add_column("Replicas", justify="right")
+    table.add_column("Throughput (req/s)", justify="right")
+    table.add_column("Δ Throughput", justify="right")
+    table.add_column("Δ RT", justify="right")
+    table.add_column("Cost/hr (USD)", justify="right")
+    table.add_column("Cost/req (USD)", justify="right")
+    table.add_column("ROI score", justify="right")
+    table.add_column("Best ROI", justify="center")
+
+    for cr in cost_results:
+        tp_color = "green" if cr.throughput_gain_pct >= 0 else "red"
+        rt_color = "red" if cr.response_time_change_pct > 10 else "green"
+        is_rec = cr.is_recommended
+        is_cur = cr.layer == result.current_layer
+
+        layer_label = cr.layer.value
+        if is_cur:
+            layer_label += " (current)"
+
+        table.add_row(
+            layer_label,
+            str(cr.replicas),
+            f"{cr.throughput_rps:.0f}",
+            f"[{tp_color}]{cr.throughput_gain_pct:+.1f}%[/]",
+            f"[{rt_color}]{cr.response_time_change_pct:+.1f}%[/]",
+            f"${cr.hourly_cost_usd:.4f}",
+            f"${cr.cost_per_request_usd:.6f}",
+            f"{cr.roi_score:.1f}",
+            "[bold green]✓[/]" if is_rec else "",
+        )
+
+    console.print()
+    console.print(table)
+    console.print(
+        f"\n[dim]Baseline: {result.baseline_throughput_rps:.0f} req/s "
+        f"@ {result.baseline_response_time_ms:.1f} ms  "
+        f"(current layer: {result.current_layer.value})[/]\n"
+        f"[dim]ROI score = throughput-gain-% / cost-per-request  "
+        f"(higher = better performance-per-dollar)[/]\n"
+    )
+
+
+def _render_what_if(
+    r: ScaleEventResult,
+    cost_per_req: Optional[float] = None,  # noqa: UP045
+) -> None:
     spike_x = r.rps_spike / max(r.rps_baseline, 0.01)
     trough_color = "red" if r.trough_throughput_pct < 80 else "yellow"
     steady_ok = r.steady_throughput_rps >= r.rps_spike * 0.98
+
+    trough_cost_line = ""
+    if cost_per_req is not None:
+        tc = trough_cost_usd(r.missed_requests, cost_per_req)
+        trough_cost_line = f"\n  Trough cost   ~${tc:,.2f} revenue impact"
 
     body = (
         f"[bold]Load:[/]  {r.rps_baseline:.1f} → {r.rps_spike:.1f} req/s"
@@ -424,7 +615,7 @@ def _render_what_if(r: ScaleEventResult) -> None:
         f"  ({r.trough_throughput_pct:.0f} % of demand)[/]\n"
         f"  Avg latency   {r.trough_avg_latency_ms:,.0f} ms\n"
         f"  p99 latency   {r.trough_p99_latency_ms:,.0f} ms\n"
-        f"  Missed reqs   ~{r.missed_requests:,}\n\n"
+        f"  Missed reqs   ~{r.missed_requests:,}" + trough_cost_line + f"\n\n"
         f"[bold green]STEADY STATE[/]  (after {r.trough_duration_s:.0f} s"
         f"  —  {r.replicas_after} replicas)\n"
         f"  Throughput    {'[green]' if steady_ok else '[yellow]'}"
@@ -480,6 +671,7 @@ def _render_slo(
     rps: float,
     spike_rps: float,
     params: ScaleEventParams,
+    cost_params: Optional[CostParams] = None,  # noqa: UP045
 ) -> None:
     console.print()
     console.print(
@@ -497,9 +689,11 @@ def _render_slo(
     table.add_column("After", justify="right")
     table.add_column("Steady p99", justify="right")
     table.add_column("Trough p99", justify="right")
+    table.add_column("Cost/hr (USD)", justify="right")
     table.add_column("SLO verdict", justify="left")
 
     best_layer = min(results.values(), key=lambda r: r.steady_p99_latency_ms)
+    cp = cost_params if cost_params is not None else CostParams()
 
     for r in results.values():
         steady_ok = r.steady_p99_latency_ms <= p99_target
@@ -525,12 +719,18 @@ def _render_slo(
         else:
             verdict = "[bold red]Fails SLO ✗[/]"
 
+        hc = hourly_cost(r.layer, r.replicas_after, cp)
+        cost_str = f"${hc:.4f}"
+        if steady_ok:
+            cost_str = f"[green]{cost_str}[/]"
+
         table.add_row(
             r.layer.value,
             str(r.replicas_before),
             str(r.replicas_after),
             steady_str,
             trough_str,
+            cost_str,
             verdict,
         )
 
@@ -541,11 +741,21 @@ def _render_slo(
     passing = [r for r in results.values() if r.steady_p99_latency_ms <= p99_target]
     if passing:
         best = min(passing, key=lambda r: r.steady_p99_latency_ms)
+        cheapest = min(
+            passing, key=lambda r: hourly_cost(r.layer, r.replicas_after, cp)
+        )
         trough_breach = best.trough_p99_latency_ms > p99_target
         rec_lines = (
             f"[bold]{best.layer.value}[/] meets the steady-state SLO "
             f"(p99 {best.steady_p99_latency_ms:,.0f} ms)."
         )
+        if cheapest.layer != best.layer:
+            cheapest_hc = hourly_cost(cheapest.layer, cheapest.replicas_after, cp)
+            rec_lines += (
+                f"\n[cyan]Min-cost option:[/] [bold]{cheapest.layer.value}[/]"
+                f" also meets the SLO at ${cheapest_hc:.4f}/hr"
+                f" ({cheapest.replicas_after} replicas)."
+            )
         if trough_breach:
             rec_lines += (
                 f"\n[yellow]Warning:[/] trough p99 = "
