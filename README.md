@@ -2,10 +2,10 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/presidio-hardened-arch-translucency.svg)](https://pypi.org/project/presidio-hardened-arch-translucency/)
 [![Python](https://img.shields.io/pypi/pyversions/presidio-hardened-arch-translucency.svg)](https://pypi.org/project/presidio-hardened-arch-translucency/)
-[![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.1.0)
+[![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> V 0.2.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.3.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide

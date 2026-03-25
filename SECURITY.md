@@ -4,7 +4,9 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.3.x   | :white_check_mark: |
+| 0.2.x   | :white_check_mark: |
+| < 0.2   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -46,7 +48,7 @@ Dependencies are pinned in `pyproject.toml` and monitored via:
 - `pip-audit` on every CLI run
 - CodeQL static analysis on every push and weekly schedule
 
-## Known Limitations (MVP 0.1.0)
+## Known Limitations (v0.3.0)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
