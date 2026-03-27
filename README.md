@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.4.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.5.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -128,7 +128,7 @@ eliminate the trough breach.
 
 ---
 
-## Cost-Aware Analysis (v0.4.0)
+## Cost-Aware Analysis (v0.4.0 / v0.5.0)
 
 ### `pat cost` — Performance-Per-Dollar Ranking
 
@@ -186,6 +186,61 @@ satisfies your p99 target.
 
 ---
 
+## Cloud Billing Integration (v0.5.0)
+
+Replaces manual `--cost-per-*-hour` flags with **live AWS on-demand prices**
+fetched from the public AWS Pricing API (no credentials required). Results are
+cached locally for 24 hours at `~/.pat/pricing-cache.json`.
+
+### `pat cost --cloud aws` — EC2 instance pricing
+
+```bash
+pat cost \
+  --requests-per-second 500 \
+  --avg-latency-ms 80 \
+  --current-layer container \
+  --cloud aws \
+  --region us-east-1 \
+  --instance-type m5.large
+```
+
+Per-layer costs are derived from the full node price using packing ratios
+(16 containers/node, 8 pods/node).
+
+### `pat cost --cloud aws --fargate` — Fargate task pricing
+
+```bash
+pat cost \
+  --requests-per-second 500 \
+  --avg-latency-ms 80 \
+  --current-layer container \
+  --cloud aws \
+  --region us-east-1 \
+  --fargate \
+  --vcpu 0.5 \
+  --memory-gb 1.0
+```
+
+Container cost = 25 % of task price; pod = full task; deployment = 4×; node = 8×.
+
+### `pat demo --cloud aws` — Demo with live pricing
+
+Pass the same `--cloud aws` flags to `pat demo` to replace the default
+`--cost-per-container-hour` with live AWS prices:
+
+```bash
+pat demo --cloud aws --region us-east-1 --instance-type m5.large
+```
+
+### Cache control
+
+| Flag | Effect |
+|---|---|
+| *(default)* | Use cache if < 24 h old |
+| `--no-cache` | Force a fresh API fetch |
+
+---
+
 ## Live Demonstrator
 
 `pat demo` spins up real Docker containers and measures throughput, latency,
@@ -193,7 +248,7 @@ and CPU across three replication variants, then outputs:
 
 1. A results table and PNG comparison chart
 2. An **HPA Lag Projection** — what happens if load spikes 3× (v0.3.0)
-3. A **Cost Analysis** panel — cost/req per variant and best-ROI layer (v0.4.0)
+3. A **Cost Analysis** panel — cost/req per variant and best-ROI layer (v0.5.0)
 
 **Requirements:** Docker daemon running locally.
 
@@ -241,7 +296,7 @@ Architectural Translucency Insight:
 │ → Set HPA minReplicas = 3 to eliminate the trough.               │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭────────────────── v0.4.0 Cost Analysis ──────────────────────────╮
+╭────────────────── v0.5.0 Cost Analysis ──────────────────────────╮
 │ Best measured variant:  2 — 4 containers (round-robin)           │
 │   Cost/req  $0.000077  ·  Cost/hr  $0.0800                       │
 │ Analytical best-ROI layer:  container                            │
