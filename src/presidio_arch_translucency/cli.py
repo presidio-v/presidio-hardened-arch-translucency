@@ -480,12 +480,54 @@ def cost_cmd(
     cost_per_node_hour: float = typer.Option(
         0.50, "--cost-per-node-hour", help="USD per cluster node per hour."
     ),
+    # --- v0.5.0: AWS live pricing ---
+    cloud: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--cloud",
+        help="Cloud provider for live on-demand pricing. Supported: aws",
+    ),
+    region: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--region",
+        help="Cloud region (e.g. us-east-1). Required with --cloud.",
+    ),
+    instance_type: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--instance-type",
+        help="EC2 instance type (e.g. m5.large). Use with --cloud aws.",
+    ),
+    fargate: bool = typer.Option(
+        False,
+        "--fargate",
+        help="Use AWS Fargate task pricing instead of EC2. Needs --vcpu/--memory-gb.",
+    ),
+    vcpu: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--vcpu",
+        help="vCPU allocation per Fargate task (e.g. 0.5). Required with --fargate.",
+        min=0.25,
+    ),
+    memory_gb: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--memory-gb",
+        help="Memory in GB per Fargate task (e.g. 1.0). Required with --fargate.",
+        min=0.5,
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass the local pricing cache and fetch fresh prices from AWS.",
+    ),
 ) -> None:
     """
     Cross-layer cost analysis: throughput gain vs hourly cost.
 
     Shows cost/hour, cost/request, and ROI score for every replication layer,
     helping you pick the layer with the best performance-per-dollar.
+
+    Pass --cloud aws with --instance-type or --fargate to fetch live on-demand
+    prices from the AWS Pricing API (no credentials required).  Prices are
+    cached locally for 24 hours (~/.pat/pricing-cache.json).
     """
     try:
         rps = sanitize_requests_per_second(requests_per_second)
@@ -497,21 +539,76 @@ def cost_cmd(
 
     current = ReplicationLayer(layer_str)
     result = analyze(requests_per_second=rps, avg_latency_ms=lat, current_layer=current)
-    cp = CostParams(
-        cost_per_container_hour=cost_per_container_hour,
-        cost_per_pod_hour=cost_per_pod_hour,
-        cost_per_deployment_hour=cost_per_deployment_hour,
-        cost_per_node_hour=cost_per_node_hour,
-    )
+
+    pricing_note: Optional[str] = None  # noqa: UP045
+
+    if cloud is not None:
+        if cloud.lower() != "aws":
+            err_console.print(
+                f"[bold red]Unsupported cloud provider: {cloud!r}. "
+                "Only 'aws' is supported in v0.5.0.[/]"
+            )
+            raise typer.Exit(code=2)
+        if region is None:
+            err_console.print(
+                "[bold red]--region is required when using --cloud aws[/]\n"
+                "[dim]Example: --cloud aws --region us-east-1 --instance-type m5.large[/]"  # noqa: E501
+            )
+            raise typer.Exit(code=2)
+        if not fargate and instance_type is None:
+            err_console.print(
+                "[bold red]Specify --instance-type <type> or --fargate with --cloud aws[/]\n"  # noqa: E501
+                "[dim]Examples:\n"
+                "  --cloud aws --region us-east-1 --instance-type m5.large\n"
+                "  --cloud aws --region us-east-1 --fargate --vcpu 0.5 --memory-gb 1[/]"
+            )
+            raise typer.Exit(code=2)
+
+        from presidio_arch_translucency.cloud import (
+            PricingError,
+            build_cost_params_from_aws,
+        )
+
+        try:
+            with console.status(
+                "[dim]Fetching AWS on-demand pricing "
+                "(first run may take 30–60 s, cached for 24 h)…[/dim]"
+            ):
+                pricing = build_cost_params_from_aws(
+                    region=region,
+                    instance_type=instance_type,
+                    fargate=fargate,
+                    vcpu=vcpu,
+                    memory_gb=memory_gb,
+                    no_cache=no_cache,
+                )
+            cp = pricing.params
+            cache_tag = " [dim](cached)[/dim]" if pricing.from_cache else ""
+            pricing_note = pricing.source_description + cache_tag
+        except PricingError as exc:
+            err_console.print(f"[bold red]Cloud pricing error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+    else:
+        cp = CostParams(
+            cost_per_container_hour=cost_per_container_hour,
+            cost_per_pod_hour=cost_per_pod_hour,
+            cost_per_deployment_hour=cost_per_deployment_hour,
+            cost_per_node_hour=cost_per_node_hour,
+        )
+
     cost_results = build_cost_results(result.layers, cp)
     log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
-    _render_cost(cost_results, result)
+    _render_cost(cost_results, result, pricing_note=pricing_note)
 
 
 # ── rendering helpers ─────────────────────────────────────────────────────────
 
 
-def _render_cost(cost_results: list, result: object) -> None:  # type: ignore[type-arg]
+def _render_cost(
+    cost_results: list,  # type: ignore[type-arg]
+    result: object,
+    pricing_note: Optional[str] = None,  # noqa: UP045
+) -> None:
     from presidio_arch_translucency.model import AnalysisResult  # local import
 
     assert isinstance(result, AnalysisResult)  # noqa: S101
@@ -576,12 +673,14 @@ def _render_cost(cost_results: list, result: object) -> None:  # type: ignore[ty
 
     console.print()
     console.print(table)
+    pricing_line = f"\n[dim]Pricing source: {pricing_note}[/]" if pricing_note else ""
     console.print(
         f"\n[dim]Baseline: {result.baseline_throughput_rps:.0f} req/s "
         f"@ {result.baseline_response_time_ms:.1f} ms  "
-        f"(current layer: {result.current_layer.value})[/]\n"
-        f"[dim]ROI score = throughput-gain-% / cost-per-request  "
-        f"(higher = better performance-per-dollar)[/]\n"
+        f"(current layer: {result.current_layer.value})[/]"
+        + pricing_line
+        + "\n[dim]ROI score = throughput-gain-% / cost-per-request  "
+        "(higher = better performance-per-dollar)[/]\n"
     )
 
 

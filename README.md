@@ -338,6 +338,23 @@ pytest
 
 ---
 
+## Roadmap
+
+| Version | Theme |
+|---|---|
+| v0.1.0 | MVP — layer analysis & recommendation |
+| v0.2.0 | Multi-Python CI hardening |
+| v0.3.0 | HPA lag model (`pat what-if`, `pat slo`) |
+| v0.4.0 | Cost-aware replication analysis (`pat cost`) |
+| **v0.5.0** | **Cloud billing integration — AWS on-demand pricing** |
+| v0.6.0 | Cloud billing — reserved/spot + GCP + Azure |
+| v0.7.0 | Autoresearch — `pat demo` observation + simple moving average predictions |
+| v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model |
+
+Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

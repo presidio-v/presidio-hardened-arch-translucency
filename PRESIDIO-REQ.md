@@ -38,3 +38,248 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 5. When complete, reply exactly: "BUILD COMPLETE – ready for publish"
 
 <!-- Deliver the complete working project ready for GitHub publish. -->
+
+---
+
+# Version Registry & Deliberation Log
+
+Every deliberation about future versions and roadmap is persisted here.
+
+---
+
+## Roadmap Summary
+
+| Version | Theme | Status |
+|---|---|---|
+| v0.1.0 | MVP — Layer analysis & recommendation | Released |
+| v0.2.0 | Refactor & multi-Python CI hardening | Released |
+| v0.3.0 | HPA lag model (`pat what-if`, `pat slo`) | Released |
+| v0.4.0 | Cost-aware replication analysis (`pat cost`) | Released |
+| v0.5.0 | Cloud billing integration — AWS on-demand | Planned |
+| v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Planned |
+| v0.7.0 | Autoresearch — `pat demo` observation + simple moving average | Planned |
+| v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model | Planned |
+
+---
+
+## v0.5.0 — Cloud Billing Integration (AWS, On-Demand)
+
+**Deliberated:** 2026-03-27
+
+### Scope decision
+On-demand pricing only. AWS only. Reserved/Spot and other providers deferred to v0.6.0.
+
+### Goal
+Replace manual `--cost-per-X-hour` inputs with live on-demand pricing fetched from the
+AWS public Pricing API (no auth required for on-demand rates).
+
+### New CLI surface
+```bash
+# Auto-fetch AWS on-demand pricing by instance type
+pat cost --cloud aws --region us-east-1 --instance-type m5.large \
+    --requests-per-second 500 --avg-latency-ms 80
+
+# Fargate/serverless-pod pricing
+pat cost --cloud aws --region us-east-1 --fargate \
+    --vcpu 0.5 --memory-gb 1 \
+    --requests-per-second 500 --avg-latency-ms 80
+```
+
+### Layer-to-AWS pricing mapping
+| Layer | AWS pricing source |
+|---|---|
+| `container` | Fargate task (fractional vCPU/memory) or EC2 fraction |
+| `pod` | Fargate task (full task unit) |
+| `deployment` | EC2 instance (EKS worker node) |
+| `node` | EC2 instance (dedicated/standalone) |
+
+### Pricing data source
+- AWS Pricing API — public JSON endpoint, no auth needed for on-demand
+- EC2: `https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/<region>/index.json`
+- Fargate: `https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonECS/current/index.json`
+
+### Local price cache
+- Path: `~/.pat/pricing-cache.json`
+- TTL: 24 hours
+- Offline fallback: use last cached prices + emit timestamped warning
+- Cache keyed by `(provider, region, instance_type)`
+
+### New flags
+| Flag | Description |
+|---|---|
+| `--cloud aws` | Activate cloud pricing mode |
+| `--region` | AWS region (e.g. `us-east-1`) |
+| `--instance-type` | EC2 instance type (e.g. `m5.large`) |
+| `--fargate` | Use Fargate pricing instead of EC2 |
+| `--vcpu` | vCPU allocation (Fargate mode) |
+| `--memory-gb` | Memory allocation in GB (Fargate mode) |
+| `--no-cache` | Bypass local pricing cache |
+
+### Security
+- No AWS credentials required (public pricing API)
+- Never accept API keys via CLI flags — env vars only if needed in future versions
+- Cache file must not store any auth tokens
+
+---
+
+## v0.6.0 — Cloud Billing: Reserved/Spot + GCP + Azure
+
+**Deliberated:** 2026-03-27
+
+### Scope decision
+Extends v0.5.0 with: (1) reserved and spot/preemptible pricing tiers for AWS,
+(2) full GCP support, (3) full Azure support. On-demand remains the default.
+
+### Reserved & Spot pricing (AWS)
+- 1-year and 3-year reserved instance pricing columns (shown with `--show-reserved`)
+- Spot pricing from EC2 Spot Price History API (requires env: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`)
+- Spot shown with risk annotation: `⚠ spot — interruption risk`
+
+### GCP integration
+| Layer | GCP pricing source |
+|---|---|
+| `container` | Cloud Run per-request / Autopilot pod |
+| `pod` | GKE Autopilot pod pricing |
+| `deployment` | GKE Standard node |
+| `node` | GKE Standard node (dedicated) |
+
+- Public API: GCP Cloud Billing Catalog REST — no auth required
+- Preemptible VM pricing shown with `--spot` flag
+
+### Azure integration
+| Layer | Azure pricing source |
+|---|---|
+| `container` | Azure Container Instances per container |
+| `pod` | ACI per container group |
+| `deployment` | AKS node |
+| `node` | AKS node (dedicated) |
+
+- Public API: Azure Retail Prices API (`https://prices.azure.com/api/retail/prices`) — no auth
+- Spot: Azure Spot VMs shown with `--spot` flag
+
+### New flags
+| Flag | Description |
+|---|---|
+| `--cloud gcp` / `--cloud azure` | Activate GCP or Azure pricing |
+| `--show-reserved` | Add 1yr/3yr reserved columns to output |
+| `--spot` | Include spot/preemptible pricing column |
+
+### Cache extension
+Spot prices TTL 5 minutes (volatile). Reserved and on-demand TTL 24h.
+
+---
+
+## v0.7.0 — Autoresearch: `pat demo` Observation + Simple Moving Average
+
+**Deliberated:** 2026-03-27
+
+### Scope decision
+Observation source: `pat demo` measurements only (Docker-based). No Prometheus in this version.
+Prediction model: simple moving average (SMA). ARIMA and Prometheus deferred to v0.8.0.
+
+### `pat calibrate` — Model self-calibration
+Fits layer-specific α (fixed overhead) and β (coordination cost) in the intensity formula
+`ι(δ) = rps/δ + α·rps + β·rps·ln(δ)` using `scipy.optimize.curve_fit`.
+
+Two modes — both supported from v0.7.0:
+
+**Analytical mode** (no Docker required): user supplies measured throughput/latency at two
+or more replica counts from any source (APM, load tests, prior `pat demo` output).
+```bash
+pat calibrate \
+  --layer container \
+  --measurements "1:500rps:80ms,2:920rps:45ms,4:1600rps:28ms"
+```
+
+**Benchmark mode** (Docker required): runs controlled sweeps across replica counts, then fits.
+```bash
+pat calibrate --layer container --replicas 1 2 4 8 --duration-s 30 --benchmark
+```
+
+Output: fitted α, β, confidence interval, residual error. Persisted to `.pat-model.json`.
+
+### `pat observe` — Rolling measurement collection
+Runs `pat demo` at configurable intervals and stores results in a local SQLite database.
+```bash
+pat observe --interval-minutes 5 --duration 1h
+```
+Storage: `~/.pat/observations.db`. Schema: timestamp, rps, avg_latency_ms, p99_latency_ms,
+throughput, layer, replicas.
+
+### `pat optimize` — SMA-based proactive recommendation
+Reads observation history, applies SMA over last N samples (default 10) to smooth noise,
+outputs a proactive scaling recommendation.
+```bash
+pat optimize --window 10
+```
+Example output:
+```
+Based on 10 observed samples (SMA):
+  Trend:      +12% throughput demand over last 50 min
+  Predicted:  ~680 req/s in ~10 min
+  Recommend:  Scale container → 5 replicas in ~8 min
+```
+
+### Persistence layout
+```
+.pat-model.json          # project-local fitted α/β params
+~/.pat/observations.db   # global rolling measurement store (SQLite)
+~/.pat/pricing-cache.json  # from v0.5.0
+```
+
+---
+
+## v0.8.0 — Autoresearch: Prometheus Integration + ARIMA
+
+**Deliberated:** 2026-03-27
+
+### Scope decision
+Extends v0.7.0 with: (1) Prometheus/metrics-server as live observation source,
+(2) ARIMA time-series model replacing SMA in `pat optimize`.
+
+### Prometheus integration
+```bash
+pat observe --prometheus http://prometheus.monitoring.svc:9090 \
+    --duration 1h --interval-minutes 1
+```
+- Queries: `rate(http_requests_total[1m])`, `histogram_quantile(0.99, ...)`, pod count
+- Auth: bearer token from env `PAT_PROMETHEUS_TOKEN` or kubeconfig — never a CLI arg
+- `pat demo` observation remains available as fallback
+
+### ARIMA model
+```bash
+pat optimize --model arima --horizon-minutes 15
+```
+- `statsmodels` ARIMA(p,d,q), order auto-selected by AIC minimisation
+- Output includes 95% confidence interval bands
+- Automatic fallback to SMA if fewer than 30 samples available
+
+### HPA patch YAML output
+```bash
+pat optimize --model arima --emit-hpa-patch > hpa-patch.yaml
+kubectl apply -f hpa-patch.yaml
+```
+Emitted YAML sanitized — no secrets, no raw user input echoed.
+
+### New dependencies
+- `statsmodels` — ARIMA
+- Direct HTTP to Prometheus API (no heavy client library)
+- `kubernetes` Python client (optional, for kubeconfig auth)
+
+### Security
+- Prometheus token from env `PAT_PROMETHEUS_TOKEN` only
+- kubeconfig path validated and never logged
+- HPA YAML output sanitized before emission
+
+---
+
+## Cross-cutting decisions
+
+| Decision | Rationale |
+|---|---|
+| `~/.pat/` as global store | Consistent home for cache, observations, and fitted models |
+| `.pat-model.json` as project-local | Fitted params are environment-specific |
+| Analytical calibrate mode from v0.7.0 | CI compatibility — no Docker daemon required |
+| SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
+| On-demand before reserved/spot | Universally available without credentials |
+| AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
