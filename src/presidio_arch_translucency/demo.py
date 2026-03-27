@@ -597,8 +597,7 @@ def _render_cost_section(
         else f"[dim]Cost assumption:[/]  ${container_cost:.4f} / container / hour\n\n"
     )
     body = (
-        source_line
-        + "[bold]Best measured variant:[/]  "
+        source_line + "[bold]Best measured variant:[/]  "
         f"[cyan]{cost_rows[best_roi_idx][0].name}[/]\n"
         f"  Cost/req  ${cpr_measured:.6f}  ·  Cost/hr  ${hc_measured:.4f}\n\n"
         f"[bold]Analytical best-ROI layer:[/]  [cyan]{best_analytical.layer.value}[/]\n"
