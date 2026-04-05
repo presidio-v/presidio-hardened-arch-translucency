@@ -39,3 +39,6 @@ htmlcov/
 .specify/
 *.log
 *.tmp
+
+# Knowledge base — local only, not tracked in git
+knowledge-base/
