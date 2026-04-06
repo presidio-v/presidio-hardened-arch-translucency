@@ -176,5 +176,7 @@ def run_dependency_audit(skip_on_error: bool = True) -> bool:
     except Exception as exc:  # noqa: BLE001
         if not skip_on_error:
             raise
-        _SECURITY_LOGGER.debug("Dependency CVE audit error (skipped): %s", exc)
+        _SECURITY_LOGGER.warning(
+            "Dependency CVE audit failed unexpectedly (skipped): %s", exc
+        )
         return True
