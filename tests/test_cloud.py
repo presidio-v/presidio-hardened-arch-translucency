@@ -1,10 +1,10 @@
-"""Tests for cloud pricing integration (v0.5.0)."""
+"""Tests for cloud pricing integration (v0.6.0)."""
 
 from __future__ import annotations
 
 import io
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -12,18 +12,23 @@ from typer.testing import CliRunner
 from presidio_arch_translucency.cli import app
 from presidio_arch_translucency.cloud import (
     CACHE_TTL_SECONDS,
+    SPOT_CACHE_TTL_SECONDS,
     CloudPricingResult,
     PricingError,
+    TieredPricingResult,
     _cache_get,
     _cache_get_stale,
     _cache_set,
     _load_cache,
+    _parse_ec2_all_prices_from_stream,
     _parse_ec2_price_from_stream,
     _parse_fargate_rates,
     _region_location,
     _save_cache,
     build_cost_params_from_aws,
     get_ec2_price,
+    get_ec2_reserved_prices,
+    get_ec2_spot_price,
     get_fargate_rates,
 )
 
@@ -72,6 +77,44 @@ def _make_ec2_csv(
 
 
 _EC2_HEADER_LINE = _EC2_CSV_HEADER
+
+
+def _make_ec2_reserved_row(
+    instance_type: str,
+    price: str,
+    lease: str,
+    purchase_option: str = "No Upfront",
+) -> str:
+    """Build a single Reserved-term CSV row."""
+    return (
+        f"SKU_R_{lease},4NA7Y494T4,SKU_R_{lease}.TERM.RATE,Reserved,"
+        f"${price} per Reserved Linux {instance_type} Instance Hour,"
+        f"2024-01-01T00:00:00Z,0,Inf,Hrs,{price},USD,,{lease},{purchase_option},,"
+        f"Compute Instance,AmazonEC2,US East (N. Virginia),AWS Region,"
+        f"{instance_type},Yes,2,8 GiB,EBS only,Up to 10 Gigabit,x86_64,"
+        f"Linux,Shared,NA,Used\n"
+    )
+
+
+def _make_ec2_csv_with_reserved(
+    instance_type: str,
+    od_price: str,
+    r1_price: str,
+    r3_price: str,
+) -> str:
+    """Build a CSV containing on-demand + 1yr + 3yr No Upfront reserved rows."""
+    od_row = (
+        f"SKU001,JRTCKXETXF,SKU001.JRTCKXETXF.6YS6EN2CT7,OnDemand,"
+        f"${od_price} per On Demand Linux {instance_type} Instance Hour,"
+        f"2024-01-01T00:00:00Z,0,Inf,Hrs,{od_price},USD,,,,,"
+        f"Compute Instance,AmazonEC2,US East (N. Virginia),AWS Region,"
+        f"{instance_type},Yes,2,8 GiB,EBS only,Up to 10 Gigabit,x86_64,"
+        f"Linux,Shared,NA,Used\n"
+    )
+    r1_row = _make_ec2_reserved_row(instance_type, r1_price, "1yr")
+    r3_row = _make_ec2_reserved_row(instance_type, r3_price, "3yr")
+    return _EC2_METADATA + _EC2_HEADER_LINE + od_row + r1_row + r3_row
+
 
 _FARGATE_JSON = {
     "products": {
@@ -238,6 +281,217 @@ class TestParseEC2CSV:
         stream = self._stream("FormatVersion,v1.0\nDisclaimer,foo\n")
         with pytest.raises(PricingError, match="column headers"):
             _parse_ec2_price_from_stream(stream, "m5.large")
+
+
+# ---------------------------------------------------------------------------
+# EC2 all-prices CSV parsing (v0.6.0)
+# ---------------------------------------------------------------------------
+
+
+class TestParseEC2AllPrices:
+    def _stream(self, csv_text: str) -> io.TextIOWrapper:
+        return io.TextIOWrapper(io.BytesIO(csv_text.encode()), encoding="utf-8")
+
+    def test_parses_on_demand_and_reserved(self):
+        csv_text = _make_ec2_csv_with_reserved("m5.large", "0.096", "0.060", "0.048")
+        stream = self._stream(csv_text)
+        od, r1, r3 = _parse_ec2_all_prices_from_stream(stream, "m5.large")
+        assert od == pytest.approx(0.096)
+        assert r1 == pytest.approx(0.060)
+        assert r3 == pytest.approx(0.048)
+
+    def test_reserved_none_when_only_all_upfront(self):
+        od_row = (
+            "SKU001,JRTCKXETXF,SKU001.JRTCKXETXF.6YS6EN2CT7,OnDemand,"
+            "$0.096 per On Demand Linux m5.large Instance Hour,"
+            "2024-01-01T00:00:00Z,0,Inf,Hrs,0.096,USD,,,,,"
+            "Compute Instance,AmazonEC2,US East (N. Virginia),AWS Region,"
+            "m5.large,Yes,2,8 GiB,EBS only,Up to 10 Gigabit,x86_64,"
+            "Linux,Shared,NA,Used\n"
+        )
+        r1_row = _make_ec2_reserved_row("m5.large", "0.060", "1yr", "All Upfront")
+        csv_text = _EC2_METADATA + _EC2_HEADER_LINE + od_row + r1_row
+        stream = self._stream(csv_text)
+        od, r1, r3 = _parse_ec2_all_prices_from_stream(stream, "m5.large")
+        assert od == pytest.approx(0.096)
+        assert r1 is None  # All Upfront is not No Upfront
+        assert r3 is None
+
+    def test_parse_ec2_price_from_stream_delegates(self):
+        # _parse_ec2_price_from_stream is a thin wrapper — ensure it still works
+        csv_text = _make_ec2_csv_with_reserved("m5.large", "0.096", "0.060", "0.048")
+        stream = self._stream(csv_text)
+        price = _parse_ec2_price_from_stream(stream, "m5.large")
+        assert price == pytest.approx(0.096)
+
+    def test_raises_when_on_demand_missing(self):
+        r1_row = _make_ec2_reserved_row("m5.large", "0.060", "1yr")
+        csv_text = _EC2_METADATA + _EC2_HEADER_LINE + r1_row
+        stream = self._stream(csv_text)
+        with pytest.raises(PricingError, match="No on-demand Linux price"):
+            _parse_ec2_all_prices_from_stream(stream, "m5.large")
+
+
+# ---------------------------------------------------------------------------
+# get_ec2_reserved_prices (v0.6.0)
+# ---------------------------------------------------------------------------
+
+
+class TestEC2ReservedPrices:
+    def test_returns_prices_when_cache_seeded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        _cache_set("ec2:reserved1yr:us-east-1:m5.large", 0.060)
+        _cache_set("ec2:reserved3yr:us-east-1:m5.large", 0.048)
+
+        (r1, r3), from_cache = get_ec2_reserved_prices("us-east-1", "m5.large")
+        assert r1 == pytest.approx(0.060)
+        assert r3 == pytest.approx(0.048)
+        assert from_cache is True
+
+    def test_fetches_via_api_on_cache_miss(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+
+        def fake_fetch(region, instance_type):
+            # Simulate _fetch_ec2_price_from_api seeding reserved cache as side-effect
+            _cache_set(f"ec2:reserved1yr:{region}:{instance_type}", 0.060)
+            _cache_set(f"ec2:reserved3yr:{region}:{instance_type}", 0.048)
+            return 0.096
+
+        with patch(
+            "presidio_arch_translucency.cloud._fetch_ec2_price_from_api",
+            side_effect=fake_fetch,
+        ):
+            (r1, r3), from_cache = get_ec2_reserved_prices("us-east-1", "m5.large")
+
+        assert r1 == pytest.approx(0.060)
+        assert r3 == pytest.approx(0.048)
+        assert from_cache is False
+
+    def test_raises_when_reserved_not_in_csv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+
+        # _fetch_ec2_price_from_api does NOT seed reserved cache (no reserved rows)
+        with patch(
+            "presidio_arch_translucency.cloud._fetch_ec2_price_from_api",
+            return_value=0.096,
+        ):
+            with pytest.raises(PricingError, match="No reserved"):
+                get_ec2_reserved_prices("us-east-1", "m5.large", no_cache=True)
+
+    def test_falls_back_to_stale_cache_on_network_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        old_ts = time.time() - CACHE_TTL_SECONDS - 1
+        from presidio_arch_translucency.cloud import _save_cache
+
+        _save_cache(
+            {
+                "ec2:reserved1yr:us-east-1:m5.large": {"price": 0.060, "ts": old_ts},
+                "ec2:reserved3yr:us-east-1:m5.large": {"price": 0.048, "ts": old_ts},
+            }
+        )
+        with patch(
+            "presidio_arch_translucency.cloud._fetch_ec2_price_from_api",
+            side_effect=OSError("network down"),
+        ):
+            (r1, r3), from_cache = get_ec2_reserved_prices("us-east-1", "m5.large")
+        assert r1 == pytest.approx(0.060)
+        assert r3 == pytest.approx(0.048)
+        assert from_cache is True
+
+
+# ---------------------------------------------------------------------------
+# get_ec2_spot_price (v0.6.0)
+# ---------------------------------------------------------------------------
+
+
+class TestEC2SpotPrice:
+    def test_raises_without_credentials(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+        with pytest.raises(PricingError, match="credentials"):
+            get_ec2_spot_price("us-east-1", "m5.large", no_cache=True)
+
+    def test_raises_without_boto3(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testsecret")
+
+        import sys
+
+        # Simulate boto3 not installed
+        with patch.dict(sys.modules, {"boto3": None}):
+            with pytest.raises(PricingError, match="boto3"):
+                get_ec2_spot_price("us-east-1", "m5.large", no_cache=True)
+
+    def test_returns_spot_price_from_boto3(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testsecret")
+
+        mock_boto3 = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_boto3.client.return_value = mock_ec2
+        mock_ec2.describe_spot_price_history.return_value = {
+            "SpotPriceHistory": [{"SpotPrice": "0.032"}]
+        }
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            price, from_cache = get_ec2_spot_price(
+                "us-east-1", "m5.large", no_cache=True
+            )  # noqa: E501
+
+        assert price == pytest.approx(0.032)
+        assert from_cache is False
+
+    def test_uses_5_min_ttl_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        _cache_set("ec2:spot:us-east-1:m5.large", 0.032)
+
+        price, from_cache = get_ec2_spot_price("us-east-1", "m5.large")
+        assert price == pytest.approx(0.032)
+        assert from_cache is True
+
+    def test_spot_cache_expires_after_5_min(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+        old_ts = time.time() - SPOT_CACHE_TTL_SECONDS - 1
+        from presidio_arch_translucency.cloud import _save_cache as sc
+
+        sc({"ec2:spot:us-east-1:m5.large": {"price": 0.032, "ts": old_ts}})
+
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        # No credentials → would raise, but the cache is expired so it tries to fetch
+        with pytest.raises(PricingError, match="credentials"):
+            get_ec2_spot_price("us-east-1", "m5.large")
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +681,18 @@ class TestBuildCostParams:
                 region="us-east-1", instance_type="m5.large"
             )
 
-        assert isinstance(result, CloudPricingResult)
-        assert result.params.cost_per_node_hour == pytest.approx(0.096)
-        assert result.params.cost_per_deployment_hour == pytest.approx(0.096)
-        assert result.params.cost_per_pod_hour == pytest.approx(0.096 / 8)
-        assert result.params.cost_per_container_hour == pytest.approx(0.096 / 16)
-        assert result.from_cache is False
-        assert "m5.large" in result.source_description
+        assert isinstance(result, TieredPricingResult)
+        assert result.on_demand.params.cost_per_node_hour == pytest.approx(0.096)
+        assert result.on_demand.params.cost_per_deployment_hour == pytest.approx(0.096)
+        assert result.on_demand.params.cost_per_pod_hour == pytest.approx(0.096 / 8)
+        assert result.on_demand.params.cost_per_container_hour == pytest.approx(
+            0.096 / 16
+        )  # noqa: E501
+        assert result.on_demand.from_cache is False
+        assert "m5.large" in result.on_demand.source_description
+        assert result.reserved_1yr is None
+        assert result.reserved_3yr is None
+        assert result.spot is None
 
     def test_fargate_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -450,14 +709,19 @@ class TestBuildCostParams:
             )
 
         task_cost = 0.04048 * 0.5 + 0.004445 * 1.0
-        assert result.params.cost_per_pod_hour == pytest.approx(task_cost)
-        assert result.params.cost_per_container_hour == pytest.approx(
+        assert isinstance(result, TieredPricingResult)
+        assert result.on_demand.params.cost_per_pod_hour == pytest.approx(task_cost)
+        assert result.on_demand.params.cost_per_container_hour == pytest.approx(
             0.04048 * 0.125 + 0.004445 * 0.25
         )
-        assert result.params.cost_per_deployment_hour == pytest.approx(task_cost * 4)
-        assert result.params.cost_per_node_hour == pytest.approx(task_cost * 8)
-        assert result.from_cache is True
-        assert "Fargate" in result.source_description
+        assert result.on_demand.params.cost_per_deployment_hour == pytest.approx(
+            task_cost * 4
+        )  # noqa: E501
+        assert result.on_demand.params.cost_per_node_hour == pytest.approx(
+            task_cost * 8
+        )  # noqa: E501
+        assert result.on_demand.from_cache is True
+        assert "Fargate" in result.on_demand.source_description
 
     def test_fargate_requires_vcpu_and_memory(self):
         with pytest.raises(PricingError, match="--vcpu"):
@@ -467,6 +731,34 @@ class TestBuildCostParams:
         with pytest.raises(PricingError, match="--instance-type"):
             build_cost_params_from_aws(region="us-east-1")
 
+    def test_show_reserved_populates_tiers(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cloud.CACHE_FILE", tmp_path / "cache.json"
+        )
+        monkeypatch.setattr("presidio_arch_translucency.cloud.CACHE_DIR", tmp_path)
+
+        with (
+            patch(
+                "presidio_arch_translucency.cloud.get_ec2_price",
+                return_value=(0.096, False),
+            ),
+            patch(
+                "presidio_arch_translucency.cloud.get_ec2_reserved_prices",
+                return_value=((0.060, 0.048), False),
+            ),
+        ):
+            result = build_cost_params_from_aws(
+                region="us-east-1", instance_type="m5.large", show_reserved=True
+            )
+
+        assert isinstance(result, TieredPricingResult)
+        assert result.reserved_1yr is not None
+        assert result.reserved_3yr is not None
+        assert result.reserved_1yr.params.cost_per_node_hour == pytest.approx(0.060)
+        assert result.reserved_3yr.params.cost_per_node_hour == pytest.approx(0.048)
+        assert "1yr Reserved" in result.reserved_1yr.source_description
+        assert "3yr Reserved" in result.reserved_3yr.source_description
+
 
 # ---------------------------------------------------------------------------
 # CLI integration — pat cost --cloud aws
@@ -475,10 +767,10 @@ class TestBuildCostParams:
 
 class TestCLICloudCost:
     def _mock_pricing(self, node_price: float = 0.096):
-        from presidio_arch_translucency.cloud import CloudPricingResult
+        from presidio_arch_translucency.cloud import TieredPricingResult
         from presidio_arch_translucency.cost import CostParams
 
-        result = CloudPricingResult(
+        od = CloudPricingResult(
             params=CostParams(
                 cost_per_container_hour=node_price / 16,
                 cost_per_pod_hour=node_price / 8,
@@ -490,7 +782,7 @@ class TestCLICloudCost:
                 f"AWS EC2 on-demand · us-east-1 · m5.large (${node_price:.4f}/hr)"
             ),
         )
-        return result
+        return TieredPricingResult(on_demand=od)
 
     def test_cloud_aws_ec2_mode(self):
         with patch(
@@ -601,15 +893,16 @@ class TestCLICloudCost:
                 "--current-layer",
                 "container",
                 "--cloud",
-                "gcp",
+                "oracle",
                 "--region",
-                "us-central1",
-                "--instance-type",
-                "n2-standard-2",
+                "us-phoenix-1",
             ],
         )
         assert result.exit_code == 2
-        assert "gcp" in result.output.lower() or "gcp" in (result.stderr or "").lower()
+        assert (
+            "oracle" in result.output.lower()
+            or "oracle" in (result.stderr or "").lower()
+        )  # noqa: E501
 
     def test_pricing_error_shown_to_user(self):
         with patch(
@@ -662,3 +955,117 @@ class TestCLICloudCost:
         )
         assert result.exit_code == 0
         assert "Pricing source" not in result.output
+
+    def test_cloud_gcp_success(self):
+        from presidio_arch_translucency.cloud import TieredPricingResult
+        from presidio_arch_translucency.cost import CostParams
+
+        mock_tiered = TieredPricingResult(
+            on_demand=CloudPricingResult(
+                params=CostParams(0.012, 0.024, 0.194, 0.194),
+                from_cache=False,
+                source_description="GCP on-demand · us-central1 · n2-standard-4 ($0.1942/hr)",  # noqa: E501
+            )
+        )
+        with patch(
+            "presidio_arch_translucency.cloud_gcp.build_cost_params_from_gcp",
+            return_value=mock_tiered,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--skip-audit",
+                    "cost",
+                    "--requests-per-second",
+                    "200",
+                    "--avg-latency-ms",
+                    "60",
+                    "--current-layer",
+                    "container",
+                    "--cloud",
+                    "gcp",
+                    "--region",
+                    "us-central1",
+                    "--machine-type",
+                    "n2-standard-4",
+                ],
+            )
+        assert result.exit_code == 0
+        assert "GCP on-demand" in result.output
+
+    def test_cloud_gcp_missing_machine_type(self):
+        result = runner.invoke(
+            app,
+            [
+                "--skip-audit",
+                "cost",
+                "--requests-per-second",
+                "100",
+                "--avg-latency-ms",
+                "50",
+                "--current-layer",
+                "container",
+                "--cloud",
+                "gcp",
+                "--region",
+                "us-central1",
+            ],
+        )
+        assert result.exit_code == 2
+
+    def test_cloud_azure_success(self):
+        from presidio_arch_translucency.cloud import TieredPricingResult
+        from presidio_arch_translucency.cost import CostParams
+
+        mock_tiered = TieredPricingResult(
+            on_demand=CloudPricingResult(
+                params=CostParams(0.006, 0.012, 0.096, 0.096),
+                from_cache=False,
+                source_description="Azure pay-as-you-go · eastus · D2s v3 ($0.0960/hr)",
+            )
+        )
+        with patch(
+            "presidio_arch_translucency.cloud_azure.build_cost_params_from_azure",
+            return_value=mock_tiered,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--skip-audit",
+                    "cost",
+                    "--requests-per-second",
+                    "200",
+                    "--avg-latency-ms",
+                    "60",
+                    "--current-layer",
+                    "container",
+                    "--cloud",
+                    "azure",
+                    "--region",
+                    "eastus",
+                    "--sku-name",
+                    "D2s v3",
+                ],
+            )
+        assert result.exit_code == 0
+        assert "Azure pay-as-you-go" in result.output
+
+    def test_cloud_azure_missing_sku_name(self):
+        result = runner.invoke(
+            app,
+            [
+                "--skip-audit",
+                "cost",
+                "--requests-per-second",
+                "100",
+                "--avg-latency-ms",
+                "50",
+                "--current-layer",
+                "container",
+                "--cloud",
+                "azure",
+                "--region",
+                "eastus",
+            ],
+        )
+        assert result.exit_code == 2

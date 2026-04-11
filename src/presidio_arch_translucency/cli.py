@@ -480,16 +480,16 @@ def cost_cmd(
     cost_per_node_hour: float = typer.Option(
         0.50, "--cost-per-node-hour", help="USD per cluster node per hour."
     ),
-    # --- v0.5.0: AWS live pricing ---
+    # --- v0.5.0+: live cloud pricing ---
     cloud: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--cloud",
-        help="Cloud provider for live on-demand pricing. Supported: aws",
+        help="Cloud provider for live pricing. Supported: aws, gcp, azure.",
     ),
     region: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--region",
-        help="Cloud region (e.g. us-east-1). Required with --cloud.",
+        help="Cloud region (e.g. us-east-1 / us-central1 / eastus). Required with --cloud.",  # noqa: E501
     ),
     instance_type: Optional[str] = typer.Option(  # noqa: UP045
         None,
@@ -513,10 +513,31 @@ def cost_cmd(
         help="Memory in GB per Fargate task (e.g. 1.0). Required with --fargate.",
         min=0.5,
     ),
+    machine_type: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--machine-type",
+        help="GCP machine type (e.g. n2-standard-4). Required with --cloud gcp.",
+    ),
+    sku_name: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--sku-name",
+        help="Azure VM SKU name (e.g. 'D2s v3'). Required with --cloud azure.",
+    ),
+    # --- v0.6.0: pricing tiers ---
+    show_reserved: bool = typer.Option(
+        False,
+        "--show-reserved",
+        help="Show 1yr/3yr reserved pricing tiers (AWS EC2 only).",
+    ),
+    show_spot: bool = typer.Option(
+        False,
+        "--spot",
+        help="Show spot/preemptible pricing tier (AWS, GCP, Azure).",
+    ),
     no_cache: bool = typer.Option(
         False,
         "--no-cache",
-        help="Bypass the local pricing cache and fetch fresh prices from AWS.",
+        help="Bypass the local pricing cache and fetch fresh prices from the cloud provider.",  # noqa: E501
     ),
 ) -> None:
     """
@@ -525,9 +546,17 @@ def cost_cmd(
     Shows cost/hour, cost/request, and ROI score for every replication layer,
     helping you pick the layer with the best performance-per-dollar.
 
-    Pass --cloud aws with --instance-type or --fargate to fetch live on-demand
-    prices from the AWS Pricing API (no credentials required).  Prices are
-    cached locally for 24 hours (~/.pat/pricing-cache.json).
+    Use --cloud with --region to fetch live pricing (no credentials required
+    for on-demand rates):
+
+    \b
+      AWS EC2:     --cloud aws --region us-east-1 --instance-type m5.large
+      AWS Fargate: --cloud aws --region us-east-1 --fargate --vcpu 0.5 --memory-gb 1
+      GCP:         --cloud gcp --region us-central1 --machine-type n2-standard-4
+      Azure:       --cloud azure --region eastus --sku-name 'D2s v3'
+
+    Add --show-reserved (AWS EC2 only) and/or --spot to see additional pricing tiers.
+    Prices are cached locally (~/.pat/pricing-cache.json) for 24 h (5 min for spot).
     """
     try:
         rps = sanitize_requests_per_second(requests_per_second)
@@ -540,54 +569,113 @@ def cost_cmd(
     current = ReplicationLayer(layer_str)
     result = analyze(requests_per_second=rps, avg_latency_ms=lat, current_layer=current)
 
-    pricing_note: Optional[str] = None  # noqa: UP045
-
     if cloud is not None:
-        if cloud.lower() != "aws":
+        cloud_lower = cloud.lower()
+
+        # ── Input validation per provider ──────────────────────────────────
+        if cloud_lower == "aws":
+            if region is None:
+                err_console.print(
+                    "[bold red]--region is required when using --cloud aws[/]\n"
+                    "[dim]Example: --cloud aws --region us-east-1 --instance-type m5.large[/]"  # noqa: E501
+                )
+                raise typer.Exit(code=2)
+            if not fargate and instance_type is None:
+                err_console.print(
+                    "[bold red]Specify --instance-type or --fargate with --cloud aws[/]\n"  # noqa: E501
+                    "[dim]Examples:\n"
+                    "  --cloud aws --region us-east-1 --instance-type m5.large\n"
+                    "  --cloud aws --region us-east-1 --fargate --vcpu 0.5 --memory-gb 1[/]"  # noqa: E501
+                )
+                raise typer.Exit(code=2)
+            if fargate and show_reserved:
+                console.print(
+                    "[yellow]Note: --show-reserved is not applicable for Fargate pricing "  # noqa: E501
+                    "and will be ignored.[/]"
+                )
+        elif cloud_lower == "gcp":
+            if region is None:
+                err_console.print(
+                    "[bold red]--region is required when using --cloud gcp[/]\n"
+                    "[dim]Example: --cloud gcp --region us-central1 --machine-type n2-standard-4[/]"  # noqa: E501
+                )
+                raise typer.Exit(code=2)
+            if machine_type is None:
+                err_console.print(
+                    "[bold red]--machine-type is required when using --cloud gcp[/]\n"
+                    "[dim]Example: --cloud gcp --region us-central1 --machine-type n2-standard-4[/]"  # noqa: E501
+                )
+                raise typer.Exit(code=2)
+        elif cloud_lower == "azure":
+            if region is None:
+                err_console.print(
+                    "[bold red]--region is required when using --cloud azure[/]\n"
+                    "[dim]Example: --cloud azure --region eastus --sku-name 'D2s v3'[/]"
+                )
+                raise typer.Exit(code=2)
+            if sku_name is None:
+                err_console.print(
+                    "[bold red]--sku-name is required when using --cloud azure[/]\n"
+                    "[dim]Example: --cloud azure --region eastus --sku-name 'D2s v3'[/]"
+                )
+                raise typer.Exit(code=2)
+        else:
             err_console.print(
                 f"[bold red]Unsupported cloud provider: {cloud!r}. "
-                "Only 'aws' is supported in v0.5.0.[/]"
-            )
-            raise typer.Exit(code=2)
-        if region is None:
-            err_console.print(
-                "[bold red]--region is required when using --cloud aws[/]\n"
-                "[dim]Example: --cloud aws --region us-east-1 --instance-type m5.large[/]"  # noqa: E501
-            )
-            raise typer.Exit(code=2)
-        if not fargate and instance_type is None:
-            err_console.print(
-                "[bold red]Specify --instance-type <type> or --fargate with --cloud aws[/]\n"  # noqa: E501
-                "[dim]Examples:\n"
-                "  --cloud aws --region us-east-1 --instance-type m5.large\n"
-                "  --cloud aws --region us-east-1 --fargate --vcpu 0.5 --memory-gb 1[/]"
+                "Supported: aws, gcp, azure[/]"
             )
             raise typer.Exit(code=2)
 
-        from presidio_arch_translucency.cloud import (
-            PricingError,
-            build_cost_params_from_aws,
-        )
+        from presidio_arch_translucency.cloud import PricingError
 
         try:
             with console.status(
-                "[dim]Fetching AWS on-demand pricing "
-                "(first run may take 30–60 s, cached for 24 h)…[/dim]"
+                "[dim]Fetching cloud pricing "
+                "(first run may take 30–60 s, cached afterwards)…[/dim]"
             ):
-                pricing = build_cost_params_from_aws(
-                    region=region,
-                    instance_type=instance_type,
-                    fargate=fargate,
-                    vcpu=vcpu,
-                    memory_gb=memory_gb,
-                    no_cache=no_cache,
-                )
-            cp = pricing.params
-            cache_tag = " [dim](cached)[/dim]" if pricing.from_cache else ""
-            pricing_note = pricing.source_description + cache_tag
+                if cloud_lower == "aws":
+                    from presidio_arch_translucency.cloud import (
+                        build_cost_params_from_aws,
+                    )
+
+                    tiered = build_cost_params_from_aws(
+                        region=region,
+                        instance_type=instance_type,
+                        fargate=fargate,
+                        vcpu=vcpu,
+                        memory_gb=memory_gb,
+                        no_cache=no_cache,
+                        show_reserved=show_reserved,
+                        show_spot=show_spot,
+                    )
+                elif cloud_lower == "gcp":
+                    from presidio_arch_translucency.cloud_gcp import (
+                        build_cost_params_from_gcp,
+                    )
+
+                    tiered = build_cost_params_from_gcp(
+                        region=region,
+                        machine_type=machine_type,
+                        preemptible=show_spot,
+                        no_cache=no_cache,
+                    )
+                else:  # azure
+                    from presidio_arch_translucency.cloud_azure import (
+                        build_cost_params_from_azure,
+                    )
+
+                    tiered = build_cost_params_from_azure(
+                        region=region,
+                        sku_name=sku_name,
+                        spot=show_spot,
+                        no_cache=no_cache,
+                    )
         except PricingError as exc:
             err_console.print(f"[bold red]Cloud pricing error:[/] {exc}")
             raise typer.Exit(code=2) from exc
+
+        log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
+        _render_tiered_cost(tiered, result)
     else:
         cp = CostParams(
             cost_per_container_hour=cost_per_container_hour,
@@ -595,13 +683,59 @@ def cost_cmd(
             cost_per_deployment_hour=cost_per_deployment_hour,
             cost_per_node_hour=cost_per_node_hour,
         )
-
-    cost_results = build_cost_results(result.layers, cp)
-    log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
-    _render_cost(cost_results, result, pricing_note=pricing_note)
+        cost_results = build_cost_results(result.layers, cp)
+        log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
+        _render_cost(cost_results, result, pricing_note=None)
 
 
 # ── rendering helpers ─────────────────────────────────────────────────────────
+
+
+def _render_tiered_cost(tiered: object, result: object) -> None:
+    """Render on-demand + optional reserved/spot pricing tiers."""
+    from presidio_arch_translucency.cloud import TieredPricingResult  # local import
+
+    assert isinstance(tiered, TieredPricingResult)  # noqa: S101
+
+    od = tiered.on_demand
+    cache_tag = " [dim](cached)[/dim]" if od.from_cache else ""
+    _render_cost(
+        build_cost_results(result.layers, od.params),  # type: ignore[union-attr]
+        result,
+        pricing_note=od.source_description + cache_tag,
+    )
+
+    if tiered.reserved_1yr is not None:
+        r1 = tiered.reserved_1yr
+        cache_tag = " [dim](cached)[/dim]" if r1.from_cache else ""
+        console.print("\n[bold blue]1-Year Reserved Pricing[/]")
+        _render_cost(
+            build_cost_results(result.layers, r1.params),  # type: ignore[union-attr]
+            result,
+            pricing_note=r1.source_description + cache_tag,
+        )
+
+    if tiered.reserved_3yr is not None:
+        r3 = tiered.reserved_3yr
+        cache_tag = " [dim](cached)[/dim]" if r3.from_cache else ""
+        console.print("\n[bold blue]3-Year Reserved Pricing[/]")
+        _render_cost(
+            build_cost_results(result.layers, r3.params),  # type: ignore[union-attr]
+            result,
+            pricing_note=r3.source_description + cache_tag,
+        )
+
+    if tiered.spot is not None:
+        sp = tiered.spot
+        cache_tag = " [dim](cached)[/dim]" if sp.from_cache else ""
+        console.print(
+            "\n[bold yellow]⚠ Spot / Preemptible Pricing — interruption risk[/]"
+        )  # noqa: E501
+        _render_cost(
+            build_cost_results(result.layers, sp.params),  # type: ignore[union-attr]
+            result,
+            pricing_note=sp.source_description + cache_tag,
+        )
 
 
 def _render_cost(

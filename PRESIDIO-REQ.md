@@ -55,8 +55,8 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.2.0 | Refactor & multi-Python CI hardening | Released |
 | v0.3.0 | HPA lag model (`pat what-if`, `pat slo`) | Released |
 | v0.4.0 | Cost-aware replication analysis (`pat cost`) | Released |
-| v0.5.0 | Cloud billing integration — AWS on-demand | Planned |
-| v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Planned |
+| v0.5.0 | Cloud billing integration — AWS on-demand | Released |
+| v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat demo` observation + simple moving average | Planned |
 | v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model | Planned |
 

@@ -1,10 +1,11 @@
-"""AWS on-demand cloud pricing integration (v0.5.0).
+"""Cloud pricing integration (v0.6.0).
 
-Fetches live EC2 and Fargate on-demand prices from the public AWS Pricing API
-(no credentials required).  Results are cached locally for 24 hours to avoid
-repeated network round-trips.
+Fetches live EC2 and Fargate on-demand, reserved, and spot prices from
+the AWS Pricing API.  Results are cached locally to avoid repeated
+network round-trips.
 
 Cache location: ~/.pat/pricing-cache.json
+TTL: 24 hours (on-demand / reserved), 5 minutes (spot)
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import io
 import json
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +27,8 @@ from presidio_arch_translucency.cost import CostParams
 
 CACHE_DIR = Path.home() / ".pat"
 CACHE_FILE = CACHE_DIR / "pricing-cache.json"
-CACHE_TTL_SECONDS = 86_400  # 24 hours
+CACHE_TTL_SECONDS = 86_400  # 24 hours (on-demand and reserved)
+SPOT_CACHE_TTL_SECONDS = 300  # 5 minutes (spot prices are volatile)
 
 # ---------------------------------------------------------------------------
 # AWS Pricing API endpoints — public, no auth required
@@ -98,10 +100,10 @@ def _save_cache(cache: dict) -> None:
     CACHE_FILE.write_text(json.dumps(cache, indent=2))
 
 
-def _cache_get(key: str) -> Optional[float]:  # noqa: UP045
+def _cache_get(key: str, ttl: int = CACHE_TTL_SECONDS) -> Optional[float]:  # noqa: UP045
     """Return cached price if present and within TTL, else None."""
     entry = _load_cache().get(key)
-    if entry and time.time() - entry.get("ts", 0) < CACHE_TTL_SECONDS:
+    if entry and time.time() - entry.get("ts", 0) < ttl:
         return float(entry["price"])
     return None
 
@@ -123,12 +125,19 @@ def _cache_get_stale(key: str) -> Optional[float]:  # noqa: UP045
 # ---------------------------------------------------------------------------
 
 
-def _parse_ec2_price_from_stream(stream: io.TextIOWrapper, instance_type: str) -> float:
-    """Stream-parse an AWS EC2 pricing CSV and return the on-demand Linux price."""
+def _parse_ec2_all_prices_from_stream(
+    stream: io.TextIOWrapper,
+    instance_type: str,
+) -> tuple[float, Optional[float], Optional[float]]:  # noqa: UP045
+    """
+    Single-pass parse of an AWS EC2 pricing CSV.
+
+    Returns (on_demand, reserved_1yr_no_upfront, reserved_3yr_no_upfront).
+    Reserved values may be None if not found in the CSV.
+    Raises PricingError if on-demand price is not found.
+    """
     reader = csv.reader(stream)
 
-    # The CSV has ~5 metadata lines before the real header.
-    # The header row starts with the literal field "SKU".
     headers: Optional[list[str]] = None  # noqa: UP045
     for row in reader:
         if row and row[0].strip().strip('"') == "SKU":
@@ -147,42 +156,86 @@ def _parse_ec2_price_from_stream(stream: io.TextIOWrapper, instance_type: str) -
         cap_col = idx["CapacityStatus"]
         term_col = idx["TermType"]
         price_col = idx["PricePerUnit"]
+        lease_col = idx["LeaseContractLength"]
+        po_col = idx["PurchaseOption"]
     except KeyError as exc:
         raise PricingError(
             f"Missing expected column in AWS EC2 pricing CSV: {exc}"
         ) from exc
 
-    max_col = max(it_col, os_col, ten_col, sw_col, cap_col, term_col, price_col)
+    max_col = max(
+        it_col, os_col, ten_col, sw_col, cap_col, term_col, price_col, lease_col, po_col
+    )  # noqa: E501
+
+    on_demand: Optional[float] = None  # noqa: UP045
+    reserved_1yr: Optional[float] = None  # noqa: UP045
+    reserved_3yr: Optional[float] = None  # noqa: UP045
+
     for row in reader:
         if len(row) <= max_col:
             continue
-        if (
+        if not (
             row[it_col] == instance_type
             and row[os_col] == "Linux"
             and row[ten_col] == "Shared"
             and row[sw_col] == "NA"
             and row[cap_col] == "Used"
-            and row[term_col] == "OnDemand"
         ):
-            try:
-                price = float(row[price_col])
-                if price > 0:
-                    return price
-            except ValueError:
-                continue
+            continue
+        term = row[term_col]
+        try:
+            price = float(row[price_col])
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
 
-    raise PricingError(
-        f"No on-demand Linux price found for instance type {instance_type!r}. "
-        "Verify the instance type and region are valid AWS values."
-    )
+        if term == "OnDemand" and on_demand is None:
+            on_demand = price
+        elif term == "Reserved" and row[po_col] == "No Upfront":
+            lease = row[lease_col]
+            if lease == "1yr" and reserved_1yr is None:
+                reserved_1yr = price
+            elif lease == "3yr" and reserved_3yr is None:
+                reserved_3yr = price
+
+        if (
+            on_demand is not None
+            and reserved_1yr is not None
+            and reserved_3yr is not None
+        ):  # noqa: E501
+            break  # early exit once all three are found
+
+    if on_demand is None:
+        raise PricingError(
+            f"No on-demand Linux price found for instance type {instance_type!r}. "
+            "Verify the instance type and region are valid AWS values."
+        )
+
+    return on_demand, reserved_1yr, reserved_3yr
+
+
+def _parse_ec2_price_from_stream(stream: io.TextIOWrapper, instance_type: str) -> float:
+    """Stream-parse an AWS EC2 pricing CSV and return the on-demand Linux price."""
+    on_demand, _, _ = _parse_ec2_all_prices_from_stream(stream, instance_type)
+    return on_demand
 
 
 def _fetch_ec2_price_from_api(region: str, instance_type: str) -> float:
+    """Fetch on-demand price from API. Opportunistically seeds reserved price cache."""
     url = _EC2_CSV_URL.format(region=region)
-    req = urllib.request.Request(url, headers={"User-Agent": "pat-cli/0.5.0"})  # noqa: S310
+    req = urllib.request.Request(url, headers={"User-Agent": "pat-cli/0.6.0"})  # noqa: S310
     with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
         stream = io.TextIOWrapper(resp, encoding="utf-8", errors="replace")
-        return _parse_ec2_price_from_stream(stream, instance_type)
+        on_demand, reserved_1yr, reserved_3yr = _parse_ec2_all_prices_from_stream(
+            stream, instance_type
+        )
+    # Seed reserved cache at no extra network cost
+    if reserved_1yr is not None:
+        _cache_set(f"ec2:reserved1yr:{region}:{instance_type}", reserved_1yr)
+    if reserved_3yr is not None:
+        _cache_set(f"ec2:reserved3yr:{region}:{instance_type}", reserved_3yr)
+    return on_demand
 
 
 def get_ec2_price(
@@ -259,7 +312,7 @@ def _parse_fargate_rates(data: dict, location: str) -> tuple[float, float]:
 
 def _fetch_fargate_rates_from_api(region: str) -> tuple[float, float]:
     req = urllib.request.Request(  # noqa: S310
-        _FARGATE_JSON_URL, headers={"User-Agent": "pat-cli/0.5.0"}
+        _FARGATE_JSON_URL, headers={"User-Agent": "pat-cli/0.6.0"}
     )
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
         data = json.loads(resp.read())
@@ -299,7 +352,130 @@ def get_fargate_rates(
 
 
 # ---------------------------------------------------------------------------
-# CostParams builder
+# Error type  (defined before builders so builders can raise it)
+# ---------------------------------------------------------------------------
+
+
+class PricingError(Exception):
+    """Raised when cloud pricing cannot be fetched or parsed."""
+
+
+# ---------------------------------------------------------------------------
+# AWS reserved pricing
+# ---------------------------------------------------------------------------
+
+
+def get_ec2_reserved_prices(
+    region: str,
+    instance_type: str,
+    no_cache: bool = False,
+) -> tuple[tuple[float, float], bool]:
+    """
+    Return ((reserved_1yr_no_upfront, reserved_3yr_no_upfront), from_cache).
+
+    Checks the cache first (seeded opportunistically by get_ec2_price).
+    On cache miss fetches the EC2 CSV, which also refreshes the on-demand cache.
+    Raises PricingError if reserved pricing is not available for this instance.
+    """
+    key1 = f"ec2:reserved1yr:{region}:{instance_type}"
+    key3 = f"ec2:reserved3yr:{region}:{instance_type}"
+    if not no_cache:
+        r1 = _cache_get(key1)
+        r3 = _cache_get(key3)
+        if r1 is not None and r3 is not None:
+            return (r1, r3), True
+
+    try:
+        # _fetch_ec2_price_from_api seeds reserved cache as a side-effect
+        _fetch_ec2_price_from_api(region, instance_type)
+    except Exception as exc:  # noqa: BLE001
+        r1 = _cache_get_stale(key1)
+        r3 = _cache_get_stale(key3)
+        if r1 is not None and r3 is not None:
+            return (r1, r3), True
+        raise PricingError(
+            f"Failed to fetch EC2 reserved pricing and no local cache is available: {exc}"  # noqa: E501
+        ) from exc
+
+    r1 = _cache_get(key1)
+    r3 = _cache_get(key3)
+    if r1 is not None and r3 is not None:
+        return (r1, r3), False
+
+    raise PricingError(
+        f"No reserved (No Upfront) pricing found for {instance_type!r} in {region}. "
+        "Reserved pricing may not be available for this instance/region."
+    )
+
+
+# ---------------------------------------------------------------------------
+# AWS spot pricing (requires boto3 + AWS credentials)
+# ---------------------------------------------------------------------------
+
+
+def get_ec2_spot_price(
+    region: str,
+    instance_type: str,
+    no_cache: bool = False,
+) -> tuple[float, bool]:
+    """
+    Return (current spot price USD/hr, from_cache).
+
+    Requires boto3 installed and AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars.
+    Cache TTL: 5 minutes (spot prices are volatile).
+    """
+    import os  # noqa: PLC0415
+
+    key = f"ec2:spot:{region}:{instance_type}"
+    if not no_cache:
+        cached = _cache_get(key, ttl=SPOT_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached, True
+
+    if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get(
+        "AWS_SECRET_ACCESS_KEY"
+    ):
+        raise PricingError(
+            "AWS credentials are required for spot pricing. "
+            "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
+        )
+
+    try:
+        import boto3  # noqa: PLC0415
+    except ImportError as exc:
+        raise PricingError(
+            "boto3 is required for spot pricing. "
+            "Install with: pip install 'presidio-hardened-arch-translucency[spot]'"
+        ) from exc
+
+    try:
+        ec2 = boto3.client("ec2", region_name=region)
+        response = ec2.describe_spot_price_history(
+            InstanceTypes=[instance_type],
+            ProductDescriptions=["Linux/UNIX"],
+            MaxResults=1,
+        )
+        prices = response.get("SpotPriceHistory", [])
+        if not prices:
+            raise PricingError(
+                f"No spot price history found for {instance_type!r} in {region}."
+            )
+        price = float(prices[0]["SpotPrice"])
+        _cache_set(key, price)
+        return price, False
+    except PricingError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        stale = _cache_get_stale(key)
+        if stale is not None:
+            return stale, True
+        raise PricingError(
+            f"Failed to fetch spot price for {instance_type!r} in {region}: {exc}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# CostParams builders
 # ---------------------------------------------------------------------------
 
 
@@ -312,6 +488,25 @@ class CloudPricingResult:
     source_description: str
 
 
+@dataclass
+class TieredPricingResult:
+    """Multi-tier pricing result (on-demand, reserved, spot) for a single provider."""
+
+    on_demand: CloudPricingResult
+    reserved_1yr: Optional[CloudPricingResult] = field(default=None)  # noqa: UP045
+    reserved_3yr: Optional[CloudPricingResult] = field(default=None)  # noqa: UP045
+    spot: Optional[CloudPricingResult] = field(default=None)  # noqa: UP045
+
+
+def _ec2_params(node_price: float) -> CostParams:
+    return CostParams(
+        cost_per_container_hour=node_price / _CONTAINERS_PER_NODE,
+        cost_per_pod_hour=node_price / _PODS_PER_NODE,
+        cost_per_deployment_hour=node_price,
+        cost_per_node_hour=node_price,
+    )
+
+
 def build_cost_params_from_aws(
     region: str,
     instance_type: Optional[str] = None,  # noqa: UP045
@@ -319,16 +514,24 @@ def build_cost_params_from_aws(
     vcpu: Optional[float] = None,  # noqa: UP045
     memory_gb: Optional[float] = None,  # noqa: UP045
     no_cache: bool = False,
-) -> CloudPricingResult:
+    show_reserved: bool = False,
+    show_spot: bool = False,
+) -> TieredPricingResult:
     """
-    Build CostParams from live AWS on-demand pricing.
+    Build tiered CostParams from live AWS pricing.
 
-    EC2 mode (instance_type set): all four layers are derived from the instance
+    EC2 mode (instance_type set): derives all four layers from the instance
     price using packing ratios (containers_per_node=16, pods_per_node=8).
+    Optionally includes reserved (--show-reserved) and spot (--spot) tiers.
 
     Fargate mode (fargate=True): container/pod layers from task pricing;
-    deployment/node estimated at 4×/8× pod cost (no host node in Fargate).
+    deployment/node estimated at 4×/8× pod cost.
+    Reserved and spot pricing are not applicable in Fargate mode.
     """
+    import logging  # noqa: PLC0415
+
+    log = logging.getLogger(__name__)
+
     if fargate:
         if vcpu is None or memory_gb is None:
             raise PricingError(
@@ -343,7 +546,7 @@ def build_cost_params_from_aws(
             cost_per_deployment_hour=task_cost * 4.0,
             cost_per_node_hour=task_cost * 8.0,
         )
-        return CloudPricingResult(
+        on_demand = CloudPricingResult(
             params=params,
             from_cache=from_cache,
             source_description=(
@@ -352,17 +555,12 @@ def build_cost_params_from_aws(
                 f"(vCPU ${vcpu_rate:.5f}/hr · mem ${mem_rate:.6f}/GB-hr)"
             ),
         )
+        return TieredPricingResult(on_demand=on_demand)
 
     if instance_type:
         node_price, from_cache = get_ec2_price(region, instance_type, no_cache=no_cache)
-        params = CostParams(
-            cost_per_container_hour=node_price / _CONTAINERS_PER_NODE,
-            cost_per_pod_hour=node_price / _PODS_PER_NODE,
-            cost_per_deployment_hour=node_price,
-            cost_per_node_hour=node_price,
-        )
-        return CloudPricingResult(
-            params=params,
+        on_demand = CloudPricingResult(
+            params=_ec2_params(node_price),
             from_cache=from_cache,
             source_description=(
                 f"AWS EC2 on-demand · {region} · {instance_type} "
@@ -372,15 +570,56 @@ def build_cost_params_from_aws(
             ),
         )
 
+        r1_result: Optional[CloudPricingResult] = None  # noqa: UP045
+        r3_result: Optional[CloudPricingResult] = None  # noqa: UP045
+        if show_reserved:
+            try:
+                (r1_price, r3_price), res_from_cache = get_ec2_reserved_prices(
+                    region, instance_type, no_cache=no_cache
+                )
+                r1_result = CloudPricingResult(
+                    params=_ec2_params(r1_price),
+                    from_cache=res_from_cache,
+                    source_description=(
+                        f"AWS EC2 1yr Reserved (No Upfront) · {region} · {instance_type} "  # noqa: E501
+                        f"(${r1_price:.4f}/hr)"
+                    ),
+                )
+                r3_result = CloudPricingResult(
+                    params=_ec2_params(r3_price),
+                    from_cache=res_from_cache,
+                    source_description=(
+                        f"AWS EC2 3yr Reserved (No Upfront) · {region} · {instance_type} "  # noqa: E501
+                        f"(${r3_price:.4f}/hr)"
+                    ),
+                )
+            except PricingError as exc:
+                log.warning("Reserved pricing not available: %s", exc)
+
+        spot_result: Optional[CloudPricingResult] = None  # noqa: UP045
+        if show_spot:
+            try:
+                spot_price, spot_from_cache = get_ec2_spot_price(
+                    region, instance_type, no_cache=no_cache
+                )
+                spot_result = CloudPricingResult(
+                    params=_ec2_params(spot_price),
+                    from_cache=spot_from_cache,
+                    source_description=(
+                        f"AWS EC2 Spot · {region} · {instance_type} "
+                        f"(${spot_price:.4f}/hr  ⚠ spot — interruption risk)"
+                    ),
+                )
+            except PricingError as exc:
+                log.warning("Spot pricing not available: %s", exc)
+
+        return TieredPricingResult(
+            on_demand=on_demand,
+            reserved_1yr=r1_result,
+            reserved_3yr=r3_result,
+            spot=spot_result,
+        )
+
     raise PricingError(
         "Specify either --instance-type <type> or --fargate for cloud pricing."
     )
-
-
-# ---------------------------------------------------------------------------
-# Error type
-# ---------------------------------------------------------------------------
-
-
-class PricingError(Exception):
-    """Raised when cloud pricing cannot be fetched or parsed."""
