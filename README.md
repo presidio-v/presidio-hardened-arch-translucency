@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.5.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.6.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -186,13 +186,13 @@ satisfies your p99 target.
 
 ---
 
-## Cloud Billing Integration (v0.5.0)
+## Cloud Billing Integration (v0.5.0 / v0.6.0)
 
-Replaces manual `--cost-per-*-hour` flags with **live AWS on-demand prices**
-fetched from the public AWS Pricing API (no credentials required). Results are
-cached locally for 24 hours at `~/.pat/pricing-cache.json`.
+Replaces manual `--cost-per-*-hour` flags with **live cloud prices** fetched from
+public APIs (no credentials required for on-demand/reserved). Results are cached
+locally at `~/.pat/pricing-cache.json`.
 
-### `pat cost --cloud aws` — EC2 instance pricing
+### `pat cost --cloud aws` — EC2 on-demand pricing (v0.5.0)
 
 ```bash
 pat cost \
@@ -204,40 +204,72 @@ pat cost \
   --instance-type m5.large
 ```
 
-Per-layer costs are derived from the full node price using packing ratios
-(16 containers/node, 8 pods/node).
+Per-layer costs use packing ratios: 16 containers/node, 8 pods/node.
 
-### `pat cost --cloud aws --fargate` — Fargate task pricing
+### `pat cost --cloud aws --show-reserved` — Reserved pricing (v0.6.0)
+
+Add `--show-reserved` to render 1-year and 3-year No Upfront reserved pricing
+alongside on-demand in separate tables:
 
 ```bash
-pat cost \
-  --requests-per-second 500 \
-  --avg-latency-ms 80 \
-  --current-layer container \
-  --cloud aws \
-  --region us-east-1 \
-  --fargate \
-  --vcpu 0.5 \
-  --memory-gb 1.0
+pat cost -r 500 -l 80 -c container \
+  --cloud aws --region us-east-1 --instance-type m5.large \
+  --show-reserved
 ```
 
-Container cost = 25 % of task price; pod = full task; deployment = 4×; node = 8×.
+### `pat cost --cloud aws --spot` — Spot pricing (v0.6.0)
 
-### `pat demo --cloud aws` — Demo with live pricing
-
-Pass the same `--cloud aws` flags to `pat demo` to replace the default
-`--cost-per-container-hour` with live AWS prices:
+Requires boto3 and AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`):
 
 ```bash
-pat demo --cloud aws --region us-east-1 --instance-type m5.large
+pip install "presidio-hardened-arch-translucency[spot]"
+
+pat cost -r 500 -l 80 -c container \
+  --cloud aws --region us-east-1 --instance-type m5.large \
+  --spot
+```
+
+Spot prices use a **5-minute cache TTL** and are annotated with an interruption-risk warning.
+
+### `pat cost --cloud aws --fargate` — Fargate task pricing (v0.5.0)
+
+```bash
+pat cost -r 500 -l 80 -c container \
+  --cloud aws --region us-east-1 --fargate --vcpu 0.5 --memory-gb 1
+```
+
+### `pat cost --cloud gcp` — GCP Compute Engine pricing (v0.6.0)
+
+Fetches from the public GCP Pricing Calculator JSON (no credentials required):
+
+```bash
+pat cost -r 500 -l 80 -c container \
+  --cloud gcp --region us-central1 --machine-type n2-standard-4
+
+# Add --spot for preemptible pricing with interruption-risk annotation
+pat cost -r 500 -l 80 -c container \
+  --cloud gcp --region us-central1 --machine-type n2-standard-4 --spot
+```
+
+### `pat cost --cloud azure` — Azure VM pricing (v0.6.0)
+
+Fetches from the official Azure Retail Prices API (no credentials required):
+
+```bash
+pat cost -r 500 -l 80 -c container \
+  --cloud azure --region eastus --sku-name "D2s v3"
+
+# Add --spot for Azure Spot VM pricing
+pat cost -r 500 -l 80 -c container \
+  --cloud azure --region eastus --sku-name "D2s v3" --spot
 ```
 
 ### Cache control
 
 | Flag | Effect |
 |---|---|
-| *(default)* | Use cache if < 24 h old |
-| `--no-cache` | Force a fresh API fetch |
+| *(default)* | On-demand/reserved: 24 h cache; spot: 5 min cache |
+| `--no-cache` | Force a fresh API fetch (use in CI cost-gate pipelines) |
 
 ---
 
@@ -401,8 +433,8 @@ pytest
 | v0.2.0 | Multi-Python CI hardening |
 | v0.3.0 | HPA lag model (`pat what-if`, `pat slo`) |
 | v0.4.0 | Cost-aware replication analysis (`pat cost`) |
-| **v0.5.0** | **Cloud billing integration — AWS on-demand pricing** |
-| v0.6.0 | Cloud billing — reserved/spot + GCP + Azure |
+| v0.5.0 | Cloud billing integration — AWS on-demand pricing |
+| **v0.6.0** | **Cloud billing — AWS reserved/spot + GCP + Azure** |
 | v0.7.0 | Autoresearch — `pat demo` observation + simple moving average predictions |
 | v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model |
 
