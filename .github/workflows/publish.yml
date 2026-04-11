@@ -7,6 +7,7 @@ on:
 
 permissions:
   id-token: write  # required for OIDC trusted publishing
+  contents: read   # required for actions/checkout
 
 jobs:
   publish:
