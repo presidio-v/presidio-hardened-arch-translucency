@@ -227,6 +227,26 @@ Based on 10 observed samples (SMA):
 ~/.pat/pricing-cache.json  # from v0.5.0
 ```
 
+### Findings from 2026-04-20 dogfood (incorporate into v0.7.0 scope)
+
+Two observations surfaced while dogfooding the `pat` Agent Skill against a
+realistic K8s scaffolding scenario (500 req/s, 80 ms, AWS m5.large):
+
+1. **Default α/β may be over-aggressive.** `pat analyze -r 500 -l 80 -c container`
+   recommends **64 replicas**, implying each replica is modelled at ~12 req/s of
+   capacity. That is plausible for a single-threaded Python worker but wrong for
+   a typical async service. Action: during `pat calibrate` development, validate
+   the current defaults against ≥2 reference workloads (async Python, Go) and
+   either (a) ship improved defaults or (b) make `pat analyze` warn when no
+   local `.pat-model.json` exists and the workload profile is outside the
+   default's validity envelope.
+
+2. **Cost/request display precision is too coarse.** The `pat cost` top panel
+   shows `Cost/request: $0.000000` at very low per-request costs — the value is
+   truncated to 6 decimals. Action: widen to 7–8 decimals (or switch to
+   scientific notation below $1e-6) in the top-panel Cost/request field and
+   per-layer table. Tiny fix, should ship with v0.7.0 alongside `pat calibrate`.
+
 ---
 
 ## v0.8.0 — Autoresearch: Prometheus Integration + ARIMA

@@ -34,8 +34,10 @@ htmlcov/
 .vscode/
 *.swp
 
-# Tooling directories (never commit)
-.claude/
+# Tooling directories — personal settings only; published assets (e.g. .claude/skills/) stay tracked
+.claude/settings*.json
+.claude/todos/
+.claude/history/
 .specify/
 *.log
 *.tmp
