@@ -303,3 +303,8 @@ Emitted YAML sanitized — no secrets, no raw user input echoed.
 | SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
 | On-demand before reserved/spot | Universally available without credentials |
 | AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
+
+## SDLC
+
+These requirements are delivered under the family-wide Presidio SDLC:
+<https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md>.

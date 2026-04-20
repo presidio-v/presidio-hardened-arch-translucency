@@ -499,3 +499,10 @@ MIT — see [LICENSE](LICENSE).
 - V. Stantchev, M. Malek, "Architectural translucency in service-oriented
   architectures," *IEE Proceedings — Software*, vol. 153, no. 1, pp. 31–37, 2006.
   DOI: 10.1049/ip-sen:20050017
+
+---
+
+## SDLC
+
+This repository is developed under the Presidio hardened-family SDLC:
+<https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md>.
