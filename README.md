@@ -18,6 +18,49 @@ This CLI tool (`pat`) helps you choose the replication layer that gives the
 
 ---
 
+## Agent Skill — use `pat` from Claude Code, Cursor, etc.
+
+`pat` ships with an Agent Skill for AI coding assistants. When an assistant
+edits a Kubernetes manifest, an HPA, Terraform for EKS/GKE/AKS/ECS/Fargate,
+or reasons about replica counts and cost-per-request, the skill triggers the
+assistant to invoke `pat` and ground its recommendation in the architectural
+translucency model instead of guessing.
+
+### Project-local (auto-discovered in this repo)
+
+| Assistant | Path |
+|---|---|
+| Claude Code | `.claude/skills/pat/SKILL.md` |
+| Cursor | `.cursor/skills/pat/SKILL.md` |
+
+An assistant working in this repo discovers them automatically.
+
+### Personal install (works across all your projects)
+
+```bash
+# Claude Code
+cp -r .claude/skills/pat ~/.claude/skills/pat
+
+# Cursor
+cp -r .cursor/skills/pat ~/.cursor/skills/pat
+```
+
+### What the skill does
+
+- Triggers on Kubernetes manifests (Deployment, HPA, StatefulSet, ReplicaSet),
+  Docker Compose `deploy.replicas`, and Terraform for ECS/Fargate/EKS/GKE/AKS/ACI
+- Runs `pat analyze`, `pat cost`, `pat slo`, or `pat what-if` with inputs
+  gathered from code and context
+- Injects the recommendation into the assistant's plan or PR description,
+  citing the architectural translucency model so reviewers can reproduce it
+- **Refuses to fabricate** `rps` or `avg_latency_ms` — asks the user instead
+
+The skill is MIT-licensed (same as `pat` itself) and adds no runtime
+dependencies; it's plain Markdown that instructs the assistant to shell out
+to the `pat` CLI you already installed.
+
+---
+
 ## Replication Layers (Docker/Kubernetes)
 
 | Layer | Description | Fixed Overhead | Coordination Cost |
@@ -381,49 +424,6 @@ pat analyze Options:
 
 ---
 
-## Agent Skill — use `pat` from Claude Code, Cursor, etc.
-
-`pat` ships with an Agent Skill for AI coding assistants. When an assistant
-edits a Kubernetes manifest, an HPA, Terraform for EKS/GKE/AKS/ECS/Fargate,
-or reasons about replica counts and cost-per-request, the skill triggers the
-assistant to invoke `pat` and ground its recommendation in the architectural
-translucency model instead of guessing.
-
-### Project-local (auto-discovered in this repo)
-
-| Assistant | Path |
-|---|---|
-| Claude Code | `.claude/skills/pat/SKILL.md` |
-| Cursor | `.cursor/skills/pat/SKILL.md` |
-
-An assistant working in this repo discovers them automatically.
-
-### Personal install (works across all your projects)
-
-```bash
-# Claude Code
-cp -r .claude/skills/pat ~/.claude/skills/pat
-
-# Cursor
-cp -r .cursor/skills/pat ~/.cursor/skills/pat
-```
-
-### What the skill does
-
-- Triggers on Kubernetes manifests (Deployment, HPA, StatefulSet, ReplicaSet),
-  Docker Compose `deploy.replicas`, and Terraform for ECS/Fargate/EKS/GKE/AKS/ACI
-- Runs `pat analyze`, `pat cost`, `pat slo`, or `pat what-if` with inputs
-  gathered from code and context
-- Injects the recommendation into the assistant's plan or PR description,
-  citing the architectural translucency model so reviewers can reproduce it
-- **Refuses to fabricate** `rps` or `avg_latency_ms` — asks the user instead
-
-The skill is MIT-licensed (same as `pat` itself) and adds no runtime
-dependencies; it's plain Markdown that instructs the assistant to shell out
-to the `pat` CLI you already installed.
-
----
-
 ## Theory: Architectural Translucency Model
 
 The model is based on the replication performance equations from Stantchev's work:
@@ -499,3 +499,10 @@ MIT — see [LICENSE](LICENSE).
 - V. Stantchev, M. Malek, "Architectural translucency in service-oriented
   architectures," *IEE Proceedings — Software*, vol. 153, no. 1, pp. 31–37, 2006.
   DOI: 10.1049/ip-sen:20050017
+
+---
+
+## SDLC
+
+This repository is developed under the Presidio hardened-family SDLC:
+<https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md>.
