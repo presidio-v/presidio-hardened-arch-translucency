@@ -15,6 +15,8 @@ from presidio_arch_translucency.cloud import (
     _save_cache,
 )
 from presidio_arch_translucency.cloud_azure import (
+    _fetch_azure_vm_price_from_api,
+    _odata_escape,
     _parse_azure_price,
     build_cost_params_from_azure,
     get_azure_vm_price,
@@ -82,6 +84,85 @@ class TestParseAzurePrice:
         }
         price = _parse_azure_price(data, "D2s v3", "eastus", False)
         assert price == pytest.approx(0.096)
+
+    def test_skips_mismatched_sku(self):
+        # A broadened/tampered response that returns a different SKU first must
+        # not have its price accepted for the requested SKU.
+        data = {
+            "Items": [
+                {
+                    "retailPrice": 9.99,
+                    "skuName": "M128s v2",
+                    "armRegionName": "eastus",
+                    "type": "Consumption",
+                },
+                {
+                    "retailPrice": 0.096,
+                    "skuName": "D2s v3",
+                    "armRegionName": "eastus",
+                    "type": "Consumption",
+                },
+            ]
+        }
+        price = _parse_azure_price(data, "D2s v3", "eastus", False)
+        assert price == pytest.approx(0.096)
+
+    def test_skips_mismatched_region(self):
+        data = {
+            "Items": [
+                {
+                    "retailPrice": 9.99,
+                    "skuName": "D2s v3",
+                    "armRegionName": "westeurope",
+                    "type": "Consumption",
+                },
+                {
+                    "retailPrice": 0.096,
+                    "skuName": "D2s v3",
+                    "armRegionName": "eastus",
+                    "type": "Consumption",
+                },
+            ]
+        }
+        price = _parse_azure_price(data, "D2s v3", "eastus", False)
+        assert price == pytest.approx(0.096)
+
+
+class TestODataEscaping:
+    def test_doubles_single_quotes(self):
+        assert _odata_escape("D2s v3") == "D2s v3"
+        assert _odata_escape("a' or '1' eq '1") == "a'' or ''1'' eq ''1"
+
+    def test_injection_attempt_is_escaped_in_request_url(self):
+        captured = {}
+
+        class _Resp:
+            status = 200
+
+            def read(self):
+                return b'{"Items": []}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, *a, **k):
+            captured["url"] = req.full_url
+            return _Resp()
+
+        with patch(
+            "presidio_arch_translucency.cloud_azure.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            with pytest.raises(PricingError):
+                _fetch_azure_vm_price_from_api("eastus", "x' or skuName eq 'y")
+
+        # The injected quote must be doubled (escaped) before URL-encoding,
+        # so the encoded filter contains the %27%27 sequence rather than a
+        # break-out single quote.
+        assert "%27%27" in captured["url"]
 
 
 # ---------------------------------------------------------------------------

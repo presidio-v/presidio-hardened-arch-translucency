@@ -65,6 +65,8 @@ import json, os, random, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+MAX_N = 5_000_000
+
 def mc_pi(n):
     return 4.0 * sum(
         1 for _ in range(n)
@@ -77,7 +79,12 @@ class H(BaseHTTPRequestHandler):
         if p.path == '/health':
             self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
         elif p.path == '/compute':
-            n = int(parse_qs(p.query).get('n', ['200000'])[0])
+            try:
+                n = int(parse_qs(p.query).get('n', ['200000'])[0])
+            except ValueError:
+                self.send_error(400, 'n must be an integer'); return
+            if not (1 <= n <= MAX_N):
+                self.send_error(400, 'n out of range'); return
             t0 = time.perf_counter()
             pi = mc_pi(n)
             ms = (time.perf_counter() - t0) * 1000

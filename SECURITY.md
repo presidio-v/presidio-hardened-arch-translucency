@@ -45,11 +45,18 @@ Dependencies are pinned in `pyproject.toml` and monitored via:
 - `pip-audit` on every CLI run
 - CodeQL static analysis on every push and weekly schedule
 
-## Known Limitations (v0.4.0)
+## Known Limitations (v0.6.0)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
+- GCP pricing is sourced from an unofficial third-party pricelist endpoint and
+  should be treated as a best-effort estimate.
+- The demo workload server (`demo/app.py`) is for local demonstration only and
+  must not be exposed to untrusted networks.
+
+A full manual security audit and its remediation status are tracked in
+[`SECURITY-AUDIT.md`](SECURITY-AUDIT.md).
 
 ## Software Development Lifecycle
 

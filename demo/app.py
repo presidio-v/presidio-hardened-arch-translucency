@@ -13,6 +13,10 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+# Bound the per-request work to prevent an unbounded-`n` CPU/availability DoS.
+DEFAULT_ITERATIONS = 200_000
+MAX_ITERATIONS = 5_000_000
+
 
 def monte_carlo_pi(n: int) -> float:
     return (
@@ -31,7 +35,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
         elif parsed.path == "/compute":
             params = parse_qs(parsed.query)
-            n = int(params.get("n", ["200000"])[0])
+            raw_n = params.get("n", [str(DEFAULT_ITERATIONS)])[0]
+            try:
+                n = int(raw_n)
+            except ValueError:
+                self.send_error(400, "query parameter 'n' must be an integer")
+                return
+            if not (1 <= n <= MAX_ITERATIONS):
+                self.send_error(
+                    400, f"query parameter 'n' must be between 1 and {MAX_ITERATIONS}"
+                )
+                return
             t0 = time.perf_counter()
             pi = monte_carlo_pi(n)
             elapsed_ms = (time.perf_counter() - t0) * 1000

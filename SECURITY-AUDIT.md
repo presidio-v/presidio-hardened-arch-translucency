@@ -51,6 +51,28 @@ library/CLI itself.
 
 ---
 
+## Remediation status (updated 2026-06-04)
+
+The following fixes were applied on branch `claude/security-audit-Xz1F1` and are
+covered by the existing test suite (250 passing, ruff clean):
+
+| # | Status | What changed |
+|---|--------|--------------|
+| 1 | ✅ Fixed | `demo/app.py` and the embedded workload in `demo.py` now bound `n` to `[1, 5_000_000]` and return HTTP 400 on non-integer / out-of-range input. |
+| 2 | ✅ Fixed | `ci.yml` now declares top-level `permissions: contents: read`. |
+| 4 | ✅ Fixed | Azure OData `$filter` values are escaped (`_odata_escape`), and `_parse_azure_price` now rejects items whose `skuName`/`armRegionName` don't match the request. New tests added. |
+| 5 | ✅ Partial | Demo `Dockerfile` now runs as a non-root user (`uid 10001`) with a `HEALTHCHECK`. Base-image **digest pinning still pending** (needs a verified digest). |
+| 6 | ✅ Partial | GCP fetch now logs a warning that the pricelist endpoint is unofficial/best-effort. Migration to the official Billing Catalog API still recommended. |
+| 7 | ✅ Fixed | Pricing cache dir/file created `0o700`/`0o600`; cache reads validate entry shape and fall back to `None` on malformed data. |
+| 8 | ✅ Fixed | `publish.yml` job bound to a protected `environment: pypi` (configure required reviewers in repo settings). |
+| 10 | ✅ Fixed | `region` is URL-encoded before being interpolated into the EC2 pricing URL. |
+| 12 | ✅ Fixed | `SECURITY.md` refreshed to v0.6.0 with current limitations and a link to this report. |
+| 3 | ⏳ Deferred | Pinning Actions to commit SHAs requires resolving each SHA online; left to Dependabot + a follow-up with verified SHAs to avoid breaking CI. |
+| 9 | ⏳ Deferred | Validation `assert`s are internal type-guards only; low risk, left as-is to limit churn. |
+| 11 | ⏳ Deferred | Broad excepts are confined to best-effort container teardown; acceptable. |
+
+---
+
 ## Detailed findings
 
 ### 1. Unbounded compute & unhandled exception in demo workload server — Medium
