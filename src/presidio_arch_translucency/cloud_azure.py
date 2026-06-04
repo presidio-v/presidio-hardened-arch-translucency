@@ -52,16 +52,30 @@ _PODS_PER_NODE = 8
 
 
 def _parse_azure_price(data: dict, sku_name: str, region: str, spot: bool) -> float:
-    """Extract retail price from Azure Retail Prices API response."""
+    """Extract retail price from Azure Retail Prices API response.
+
+    Defensively verifies that each candidate item actually matches the
+    requested SKU/region (when those fields are present) so a broadened or
+    tampered response can't yield a price for the wrong instance.
+    """
+    expected_sku = f"{sku_name} Spot" if spot else sku_name
     for item in data.get("Items", []):
-        if item.get("type") in ("Consumption", "DevTestConsumption"):
-            try:
-                price = float(item.get("retailPrice", 0))
-            except (TypeError, ValueError):
-                continue
-            if price > 0:
-                return price
-    label = f"{sku_name} Spot" if spot else sku_name
+        if item.get("type") not in ("Consumption", "DevTestConsumption"):
+            continue
+        # Best-effort match: only reject when the field is present and differs.
+        item_sku = item.get("skuName")
+        if item_sku is not None and item_sku != expected_sku:
+            continue
+        item_region = item.get("armRegionName")
+        if item_region is not None and item_region != region:
+            continue
+        try:
+            price = float(item.get("retailPrice", 0))
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            return price
+    label = expected_sku
     raise PricingError(
         f"No Azure price found for SKU {label!r} in region {region!r}. "
         "Verify the SKU name and region "
@@ -74,6 +88,16 @@ def _parse_azure_price(data: dict, sku_name: str, region: str, spot: bool) -> fl
 # ---------------------------------------------------------------------------
 
 
+def _odata_escape(value: str) -> str:
+    """Escape a string literal for an OData ``$filter`` clause.
+
+    OData escapes a single quote by doubling it; doing so prevents a value
+    such as ``D2s v3' or skuName eq 'X`` from breaking out of the literal and
+    injecting additional filter logic.
+    """
+    return value.replace("'", "''")
+
+
 def _fetch_azure_vm_price_from_api(
     region: str, sku_name: str, spot: bool = False
 ) -> float:
@@ -81,8 +105,8 @@ def _fetch_azure_vm_price_from_api(
     query_sku = f"{sku_name} Spot" if spot else sku_name
     filter_str = (
         f"serviceName eq 'Virtual Machines' "
-        f"and armRegionName eq '{region}' "
-        f"and skuName eq '{query_sku}'"
+        f"and armRegionName eq '{_odata_escape(region)}' "
+        f"and skuName eq '{_odata_escape(query_sku)}'"
     )
     url = (
         f"{_AZURE_RETAIL_PRICES_URL}?{urllib.parse.urlencode({'$filter': filter_str})}"  # noqa: E501

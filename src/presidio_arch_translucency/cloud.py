@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,15 +97,29 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Restrict to the owner: the cache drives cost output, so another local
+    # user must not be able to read or poison it.
+    CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     CACHE_FILE.write_text(json.dumps(cache, indent=2))
+    try:
+        CACHE_FILE.chmod(0o600)
+    except OSError:
+        # Best-effort hardening: some filesystems (e.g. Windows, certain mounts)
+        # don't support chmod. The cache holds only public pricing data, so a
+        # failure to tighten perms is non-fatal — keep the cached value.
+        pass
 
 
 def _cache_get(key: str, ttl: int = CACHE_TTL_SECONDS) -> Optional[float]:  # noqa: UP045
-    """Return cached price if present and within TTL, else None."""
+    """Return cached price if present, valid, and within TTL, else None."""
     entry = _load_cache().get(key)
-    if entry and time.time() - entry.get("ts", 0) < ttl:
-        return float(entry["price"])
+    if not isinstance(entry, dict):
+        return None
+    try:
+        if time.time() - float(entry.get("ts", 0)) < ttl:
+            return float(entry["price"])
+    except (KeyError, TypeError, ValueError):
+        return None
     return None
 
 
@@ -117,7 +132,12 @@ def _cache_set(key: str, price: float) -> None:
 def _cache_get_stale(key: str) -> Optional[float]:  # noqa: UP045
     """Return cached price regardless of TTL (offline fallback)."""
     entry = _load_cache().get(key)
-    return float(entry["price"]) if entry else None
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return float(entry["price"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +243,8 @@ def _parse_ec2_price_from_stream(stream: io.TextIOWrapper, instance_type: str) -
 
 def _fetch_ec2_price_from_api(region: str, instance_type: str) -> float:
     """Fetch on-demand price from API. Opportunistically seeds reserved price cache."""
-    url = _EC2_CSV_URL.format(region=region)
+    # Encode the region so a malformed value cannot alter the request path.
+    url = _EC2_CSV_URL.format(region=urllib.parse.quote(region, safe=""))
     req = urllib.request.Request(url, headers={"User-Agent": "pat-cli/0.6.0"})  # noqa: S310
     with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
         stream = io.TextIOWrapper(resp, encoding="utf-8", errors="replace")

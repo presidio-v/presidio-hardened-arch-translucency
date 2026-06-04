@@ -13,6 +13,10 @@ jobs:
   publish:
     name: Build and publish
     runs-on: ubuntu-latest
+    # Bind to a protected environment so a manual workflow_dispatch (or release)
+    # publish to PyPI requires the reviewers/rules configured on the `pypi`
+    # environment in repo settings before the OIDC token is issued.
+    environment: pypi
 
     steps:
       - uses: actions/checkout@v4

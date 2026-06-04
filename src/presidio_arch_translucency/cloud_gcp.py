@@ -118,6 +118,14 @@ def _parse_gcp_price(
 def _fetch_gcp_price_from_api(
     region: str, machine_type: str, preemptible: bool = False
 ) -> float:
+    import logging  # noqa: PLC0415
+
+    # The pricelist endpoint is an unofficial, unauthenticated third-party
+    # source whose contents are trusted verbatim — surface that to the user.
+    logging.getLogger(__name__).warning(
+        "Fetching GCP pricing from the unofficial cloudpricingcalculator "
+        "endpoint; treat the resulting figures as best-effort estimates."
+    )
     req = urllib.request.Request(  # noqa: S310
         _GCP_PRICELIST_URL, headers={"User-Agent": "pat-cli/0.6.0"}
     )
