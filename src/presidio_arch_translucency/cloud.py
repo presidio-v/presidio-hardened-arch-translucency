@@ -104,6 +104,9 @@ def _save_cache(cache: dict) -> None:
     try:
         CACHE_FILE.chmod(0o600)
     except OSError:
+        # Best-effort hardening: some filesystems (e.g. Windows, certain mounts)
+        # don't support chmod. The cache holds only public pricing data, so a
+        # failure to tighten perms is non-fatal — keep the cached value.
         pass
 
 
