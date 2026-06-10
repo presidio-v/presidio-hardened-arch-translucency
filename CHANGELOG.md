@@ -10,6 +10,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable ARIMA order bounds for `pat optimize` (v0.9.0 Phase 3).** The
+  AIC order grid is no longer hard-coded: `--max-p`, `--max-d` and `--max-q`
+  set the upper bounds of the `p`/`d`/`q` sweep (defaults `3`/`2`/`3`, exactly
+  reproducing the previous 4×3×4 = 48-model search). `--auto-diff` replaces the
+  `d` sweep with a single differencing order chosen by a dependency-free
+  variance heuristic — raw vs. first- vs. second-difference variance — which
+  shrinks the search and side-steps guessing `d`; the heuristic's choice is
+  capped at `--max-d`. All flags are optional and only affect `--model arima`.
+
 ## [0.8.0] - 2026-06-10
 
 The **autoresearch** release: an observe→optimize loop that records live
