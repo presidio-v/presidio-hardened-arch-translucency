@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,10 @@ from presidio_arch_translucency.prometheus import (
     DEFAULT_RPS_QUERY,
     PrometheusError,
     _build_query_url,
+    _kubeconfig_path,
+    _parse_yaml_subset,
+    _resolve_token,
+    _token_from_kubeconfig,
     fetch_observation,
     instant_query,
 )
@@ -359,3 +364,246 @@ class TestObservePrometheusCLI:
             "--prometheus", _URL, "--layer", "bogus", "--db", str(tmp_path / "obs.db")
         )
         assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# kubeconfig auth (D3 follow-on)
+# ---------------------------------------------------------------------------
+
+
+_KUBECONFIG_WITH_AUTH = """\
+apiVersion: v1
+kind: Config
+current-context: prod
+clusters:
+- cluster:
+    server: https://10.0.0.1:6443
+  name: prod-cluster
+contexts:
+- context:
+    cluster: prod-cluster
+    user: prod-user
+  name: prod
+- name: staging
+  context:
+    cluster: staging-cluster
+    user: staging-user
+users:
+- name: prod-user
+  user:
+    token: kube-prod-token-XYZ
+- name: staging-user
+  user:
+    token: "kube-staging-token-QRS"
+"""
+
+# A current user that authenticates with a client cert, not a token.
+_KUBECONFIG_CERT_ONLY = """\
+apiVersion: v1
+kind: Config
+current-context: prod
+contexts:
+- context:
+    cluster: prod-cluster
+    user: prod-user
+  name: prod
+users:
+- name: prod-user
+  user:
+    client-certificate-data: QkxBSAo=
+    client-key-data: QkxBSAo=
+"""
+
+
+def _write_kubeconfig(tmp_path, text: str):
+    path = tmp_path / "kubeconfig"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+class TestParseYamlSubset:
+    def test_parses_token_for_current_context(self):
+        cfg = _parse_yaml_subset(_KUBECONFIG_WITH_AUTH)
+        assert cfg["current-context"] == "prod"
+        assert [c["name"] for c in cfg["contexts"]] == ["prod", "staging"]
+        # key order within the staging item is swapped (name before context)
+        assert cfg["contexts"][1]["context"]["user"] == "staging-user"
+        assert cfg["users"][0]["user"]["token"] == "kube-prod-token-XYZ"  # noqa: S105
+
+    def test_unquotes_quoted_scalar(self):
+        cfg = _parse_yaml_subset(_KUBECONFIG_WITH_AUTH)
+        assert cfg["users"][1]["user"]["token"] == "kube-staging-token-QRS"  # noqa: S105
+
+    def test_ignores_comments_and_blank_lines(self):
+        text = "# a comment\n\ncurrent-context: x\n\n# trailing\n"
+        assert _parse_yaml_subset(text) == {"current-context": "x"}
+
+    def test_empty_text_returns_empty_mapping(self):
+        assert _parse_yaml_subset("   \n\n") == {}
+
+    def test_key_with_no_value_is_none(self):
+        # A bare "key:" with no nested block resolves to None, not a crash.
+        assert _parse_yaml_subset("a:\nb: 1") == {"a": None, "b": "1"}
+
+    def test_top_level_sequence_parses_to_list(self):
+        assert _parse_yaml_subset("- x: 1\n- x: 2") == [{"x": "1"}, {"x": "2"}]
+
+
+class TestKubeconfigPath:
+    def test_kubeconfig_env_first_entry_wins(self, tmp_path, monkeypatch):
+        first = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        missing = tmp_path / "second"
+        monkeypatch.setenv("KUBECONFIG", f"{first}{os.pathsep}{missing}")
+        assert _kubeconfig_path() == first
+
+    def test_kubeconfig_env_missing_first_file_returns_none(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("KUBECONFIG", str(tmp_path / "nope"))
+        assert _kubeconfig_path() is None
+
+    def test_kubeconfig_env_empty_first_entry_returns_none(self, monkeypatch):
+        # e.g. KUBECONFIG=":/some/other" — the (empty) first entry wins → None.
+        monkeypatch.setenv("KUBECONFIG", f"{os.pathsep}/some/other")
+        assert _kubeconfig_path() is None
+
+    def test_default_path_used_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KUBECONFIG", raising=False)
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setattr(
+            "presidio_arch_translucency.prometheus._DEFAULT_KUBECONFIG", cfg
+        )
+        assert _kubeconfig_path() == cfg
+
+    def test_default_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KUBECONFIG", raising=False)
+        monkeypatch.setattr(
+            "presidio_arch_translucency.prometheus._DEFAULT_KUBECONFIG",
+            tmp_path / "absent",
+        )
+        assert _kubeconfig_path() is None
+
+
+class TestTokenFromKubeconfig:
+    def test_reads_active_context_token(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() == "kube-prod-token-XYZ"
+
+    def test_context_override_selects_other_context(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig("staging") == "kube-staging-token-QRS"
+
+    def test_missing_file_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KUBECONFIG", str(tmp_path / "absent"))
+        assert _token_from_kubeconfig() is None
+
+    def test_cert_only_user_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_CERT_ONLY)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_unknown_override_context_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig("does-not-exist") is None
+
+    def test_malformed_kubeconfig_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, "current-context: prod\ncontexts: notalist\n")
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_no_kubeconfig_path_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "presidio_arch_translucency.prometheus._kubeconfig_path", lambda: None
+        )
+        assert _token_from_kubeconfig() is None
+
+    def test_config_not_a_mapping_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, "- a: 1\n- b: 2\n")  # top-level sequence
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_no_current_context_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, "apiVersion: v1\nkind: Config\n")
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_context_without_inner_mapping_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(
+            tmp_path, "current-context: prod\ncontexts:\n- name: prod\n  context:\n"
+        )
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_user_referenced_but_absent_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(
+            tmp_path,
+            "current-context: prod\n"
+            "contexts:\n- name: prod\n  context:\n    user: ghost\n"
+            "users:\n- name: someone-else\n  user:\n    token: t\n",
+        )
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        assert _token_from_kubeconfig() is None
+
+    def test_unreadable_file_returns_none(self, tmp_path, monkeypatch):
+        # _kubeconfig_path gates on is_file, so force the OSError path directly.
+        a_dir = tmp_path / "as-dir"
+        a_dir.mkdir()
+        monkeypatch.setattr(
+            "presidio_arch_translucency.prometheus._kubeconfig_path", lambda: a_dir
+        )
+        assert _token_from_kubeconfig() is None
+
+    def test_parse_failure_returns_none(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+
+        def boom(_text):
+            raise RuntimeError("parser blew up")
+
+        monkeypatch.setattr(
+            "presidio_arch_translucency.prometheus._parse_yaml_subset", boom
+        )
+        assert _token_from_kubeconfig() is None
+
+
+class TestResolveToken:
+    def test_env_token_takes_priority_over_kubeconfig(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        monkeypatch.setenv("PAT_PROMETHEUS_TOKEN", "env-wins")
+        assert _resolve_token(_URL) == "env-wins"
+
+    def test_falls_back_to_kubeconfig_when_env_absent(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
+        assert _resolve_token(_URL) == "kube-prod-token-XYZ"
+
+    def test_kubeconfig_context_env_override(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
+        monkeypatch.setenv("PAT_KUBECONFIG_CONTEXT", "staging")
+        assert _resolve_token(_URL) == "kube-staging-token-QRS"
+
+    def test_no_token_anywhere_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
+        monkeypatch.setenv("KUBECONFIG", str(tmp_path / "absent"))
+        assert _resolve_token(_URL) is None
+
+    def test_fetch_observation_uses_kubeconfig_token(self, tmp_path, monkeypatch):
+        cfg = _write_kubeconfig(tmp_path, _KUBECONFIG_WITH_AUTH)
+        monkeypatch.setenv("KUBECONFIG", str(cfg))
+        monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.get_header("Authorization"))
+            return _urlopen_cm(_vector(4))
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            fetch_observation(_URL, "pod")
+        assert seen and all(h == "Bearer kube-prod-token-XYZ" for h in seen)
