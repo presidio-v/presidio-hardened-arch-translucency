@@ -10,6 +10,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Changed
+
+- Trove classifier promoted from `Development Status :: 3 - Alpha` to
+  `Development Status :: 4 - Beta`, reflecting v0.7.0 maturity. (#24)
+
+### Tests
+
+- Backfilled offline/error/fallback coverage for the security and cloud-pricing
+  modules — `security.py`, `cloud.py`, `cloud_gcp.py`, and `cloud_azure.py` are
+  now all ≥99% covered. All paths are mocked; no live API calls. (#23)
+
 ## [0.7.0] - 2026-06-10
 
 ### Added

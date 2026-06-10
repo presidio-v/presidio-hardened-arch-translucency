@@ -291,6 +291,46 @@ Emitted YAML sanitized — no secrets, no raw user input echoed.
 - kubeconfig path validated and never logged
 - HPA YAML output sanitized before emission
 
+### Design decisions (locked 2026-06-10)
+
+Context: v0.7.0 shipped `pat calibrate` (analytical mode) plus the cost-precision
+and α/β-recalibration fixes, but deferred the rest of the autoresearch scope
+(`pat observe`, `pat optimize`). v0.8.0 builds that foundation and then layers
+Prometheus + ARIMA on top. The following decisions are locked.
+
+**D1 — Foundation-first sequencing.** Build the autoresearch base before the
+advanced models: (1) `pat observe` SQLite store + source-agnostic ingestion,
+(2) `pat optimize --model sma` over that store, then (3) Prometheus as an
+observation source and (4) ARIMA as an opt-in model on top. This honours the
+existing "SMA before ARIMA" cross-cutting decision, and ARIMA's
+`<30 samples → SMA` fallback hard-requires SMA to exist first.
+
+**D2 — `pat observe` process model: cron/launchd, single-shot.** `pat observe`
+is a single-shot collection script — it takes one measurement (or one Prometheus
+scrape), appends it to the store, and exits. It is **not** a daemon and **not** a
+foreground polling loop. Users schedule recurring collection externally (cron,
+launchd, a Kubernetes CronJob, CI). This keeps the tool stateless, testable, and
+crash-safe, and avoids owning a long-running process. The earlier
+`--duration/--interval` framing is superseded by this decision.
+
+**D3 — Prometheus auth: env token only for v0.8.0.** Prometheus authentication
+uses the bearer token from `PAT_PROMETHEUS_TOKEN` only. kubeconfig-based auth (and
+the optional `kubernetes` client dependency) is **deferred** beyond v0.8.0. Tokens
+are never accepted as CLI args and never logged.
+
+**D4 — Calibrate: build to the original spec in v0.8.0.** Extend the shipped
+calibrate (global concurrency κ + β, analytical-only) toward the original
+contract as new work: add **per-layer α/β fitting** via `--layer web/worker/cache/db`
+and a **Docker benchmark mode** that runs controlled replica sweeps and fits from
+the measured results. The v0.7.0 analytical, global-fit path remains supported.
+
+**D5 — Model file location: project-local overrides global.** Fitted parameters
+may live in a project-local `.pat-model.json` (cwd) and/or a global
+`~/.pat/model.json`. The loader checks **project-local first and falls back to
+global** — project-local overrides global. (This matches the behaviour already in
+`model._model_search_paths`; the divergence in earlier notes that implied a single
+location is resolved in favour of this two-tier scheme.)
+
 ---
 
 ## Cross-cutting decisions
@@ -298,7 +338,7 @@ Emitted YAML sanitized — no secrets, no raw user input echoed.
 | Decision | Rationale |
 |---|---|
 | `~/.pat/` as global store | Consistent home for cache, observations, and fitted models |
-| `.pat-model.json` as project-local | Fitted params are environment-specific |
+| `.pat-model.json` (project-local) overrides `~/.pat/model.json` (global) | Fitted params are environment-specific; project-local wins, global is the fallback (see D5) |
 | Analytical calibrate mode from v0.7.0 | CI compatibility — no Docker daemon required |
 | SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
 | On-demand before reserved/spot | Universally available without credentials |
