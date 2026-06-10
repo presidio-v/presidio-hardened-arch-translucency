@@ -236,6 +236,7 @@ def _fit_best_arima(series: list[float]):
     lowest AIC, or ``None`` if no order converges.  statsmodels is imported
     lazily so the rest of the tool never pays for it.
     """
+    import math  # noqa: PLC0415
     import warnings  # noqa: PLC0415
 
     from statsmodels.tsa.arima.model import ARIMA  # noqa: PLC0415
@@ -253,7 +254,7 @@ def _fit_best_arima(series: list[float]):
                     except Exception:  # noqa: BLE001, S112 — unstable orders skipped
                         continue
                     aic = fitted.aic
-                    if aic is None or aic != aic:  # NaN check
+                    if aic is None or math.isnan(aic):  # skip NaN AIC
                         continue
                     if best_aic is None or aic < best_aic:
                         best, best_aic, best_order = fitted, aic, (p, d, q)
