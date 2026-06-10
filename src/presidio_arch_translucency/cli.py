@@ -1199,7 +1199,7 @@ def _render_calibration(result: object, path: Path) -> None:
     table.add_column("Residual", justify="right")
 
     for obs, pred, resid in zip(
-        result.observations, result.predictions, result.residuals
+        result.observations, result.predictions, result.residuals, strict=True
     ):
         resid_color = "green" if abs(resid) < 0.01 * max(obs.rps, 1.0) else "yellow"
         table.add_row(

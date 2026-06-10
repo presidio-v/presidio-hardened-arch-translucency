@@ -267,7 +267,7 @@ def _horizon_steps(t_min: list[float], horizon_minutes: float) -> int:
     """Forecast steps = horizon / median sampling interval (≥ 1)."""
     import statistics  # noqa: PLC0415
 
-    diffs = [b - a for a, b in zip(t_min, t_min[1:]) if b - a > 0]
+    diffs = [b - a for a, b in zip(t_min, t_min[1:], strict=False) if b - a > 0]
     interval = statistics.median(diffs) if diffs else 0.0
     if interval <= 0:
         return 1

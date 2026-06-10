@@ -8,7 +8,7 @@ version = "0.7.0"
 description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "Vladimir Stantchev" },
 ]
@@ -20,7 +20,6 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -61,7 +60,7 @@ addopts = "--cov=presidio_arch_translucency --cov-report=term-missing --cov-fail
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 src = ["src"]
 
 [tool.ruff.lint]
