@@ -33,12 +33,14 @@ from presidio_arch_translucency.hpa import (
     simulate_scale_event,
 )
 from presidio_arch_translucency.model import (
+    DEFAULT_LAYER_NAME,
     REFERENCE_LATENCY_RANGE_MS,
     REFERENCE_RPS_RANGE,
     VALID_LAYERS,
     ReplicationLayer,
     analyze,
     model_is_calibrated,
+    resolve_concurrency,
 )
 from presidio_arch_translucency.security import (
     InputValidationError,
@@ -142,6 +144,15 @@ def analyze_cmd(
         "-c",
         help=f"Current replication layer. One of: {', '.join(VALID_LAYERS)}",
     ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label whose calibrated parameters to use "
+            "(see `pat calibrate --layer`). Falls back to the global fit."
+        ),
+    ),
     show_all: bool = typer.Option(
         False,
         "--show-all",
@@ -178,6 +189,7 @@ def analyze_cmd(
         requests_per_second=rps,
         avg_latency_ms=lat,
         current_layer=current,
+        layer=model_layer,
     )
 
     # --- Presidio security event logging ---
@@ -327,6 +339,15 @@ def what_if_cmd(
         "-c",
         help=f"Replication layer to model. One of: {', '.join(VALID_LAYERS)}",
     ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label whose calibrated parameters to use "
+            "(see `pat calibrate --layer`). Falls back to the global fit."
+        ),
+    ),
     hpa_poll_s: float = typer.Option(
         15.0, "--hpa-poll-s", help="HPA scrape interval in seconds."
     ),
@@ -393,6 +414,7 @@ def what_if_cmd(
         params=params,
         replicas_before=replicas_before,
         replicas_after=replicas_after,
+        concurrency=resolve_concurrency(model_layer),
     )
     log_security_event("WHAT_IF_INVOCATION", {"layer": layer_str, "spike_rps": srps})
     _render_what_if(result, cost_per_req=cost_per_req)
@@ -430,6 +452,15 @@ def slo_cmd(
         help="Load spike factor applied to requests-per-second (default 3×).",
         min=1.01,
     ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label whose calibrated parameters to use "
+            "(see `pat calibrate --layer`). Falls back to the global fit."
+        ),
+    ),
     hpa_poll_s: float = typer.Option(
         15.0, "--hpa-poll-s", help="HPA scrape interval in seconds."
     ),
@@ -461,6 +492,7 @@ def slo_cmd(
         cold_start_s=cold_start_s,
     )
 
+    concurrency = resolve_concurrency(model_layer)
     results = {
         layer: simulate_scale_event(
             rps_baseline=rps,
@@ -468,6 +500,7 @@ def slo_cmd(
             avg_latency_ms=lat,
             layer=layer,
             params=params,
+            concurrency=concurrency,
         )
         for layer in ReplicationLayer
     }
@@ -729,6 +762,22 @@ def calibrate_cmd(
             "(e.g. 300:80:5). Repeat for multiple points; >=2 recommended."
         ),
     ),
+    layer: str = typer.Option(
+        DEFAULT_LAYER_NAME,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label for this observation set (e.g. 'api', 'worker'). "
+            "Fits per-layer parameters into model.json under layers.<name>; run "
+            "again with a different --layer to add more. Default fits the global "
+            "(pooled) parameters."
+        ),
+    ),
+    show_global: bool = typer.Option(
+        False,
+        "--show-global",
+        help="Also show the global (pooled) fit alongside a per-layer fit.",
+    ),
 ) -> None:
     """
     Fit the translucency model to measured workload points (analytical mode).
@@ -740,8 +789,12 @@ def calibrate_cmd(
     `pat analyze` uses your calibrated parameters and stops warning. No Docker
     required.
 
+    Tag observations with --layer to fit per-layer parameters; `pat analyze`,
+    `what-if`, `slo`, and `optimize` then select them with their own --layer.
+
     \b
       pat calibrate --observation 100:50:2 --observation 300:80:5
+      pat calibrate --layer api --observation 200:40:3 --observation 600:55:8
     """
     from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
         CalibrationError,
@@ -750,6 +803,9 @@ def calibrate_cmd(
         write_model_file,
     )
 
+    layer_name = layer.strip() or DEFAULT_LAYER_NAME
+    is_named_layer = layer_name != DEFAULT_LAYER_NAME
+
     try:
         parsed = [parse_observation(raw) for raw in observations]
         result = fit_calibration(parsed)
@@ -757,9 +813,28 @@ def calibrate_cmd(
         err_console.print(f"[bold red]Calibration error:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
-    path = write_model_file(result)
-    log_security_event("CALIBRATE_INVOCATION", {"observations": len(parsed)})
-    _render_calibration(result, path)
+    path = write_model_file(result, layer=layer_name if is_named_layer else None)
+    log_security_event(
+        "CALIBRATE_INVOCATION",
+        {"observations": len(parsed), "layer": layer_name},
+    )
+
+    global_record = None
+    if show_global and is_named_layer:
+        from presidio_arch_translucency.model import (  # noqa: PLC0415
+            load_calibrated_model,
+        )
+
+        model = load_calibrated_model()
+        if isinstance(model, dict) and "concurrency" in model:
+            global_record = model
+
+    _render_calibration(
+        result,
+        path,
+        layer=layer_name if is_named_layer else None,
+        global_record=global_record,
+    )
 
 
 @app.command("observe")
@@ -1023,18 +1098,24 @@ def optimize_cmd(
         )
         return
 
+    # Use the calibrated per-replica capacity for the selected layer (if any),
+    # falling back to the global fit then the model default.
+    concurrency = resolve_concurrency(layer_filter)
     try:
         if model_name == "arima":
             result = optimize_arima(
                 rows,
                 horizon_minutes=horizon_minutes,
+                concurrency=concurrency,
                 max_p=max_p,
                 max_d=max_d,
                 max_q=max_q,
                 auto_diff=auto_diff,
             )
         else:
-            result = optimize_sma(rows, horizon_minutes=horizon_minutes)
+            result = optimize_sma(
+                rows, horizon_minutes=horizon_minutes, concurrency=concurrency
+            )
     except OptimizeError as exc:  # pragma: no cover - guarded by the empty check
         err_console.print(f"[bold red]Cannot optimise:[/] {exc}")
         raise typer.Exit(code=1) from exc
@@ -1205,7 +1286,12 @@ def _render_observations(rows: list, total: int) -> None:
     console.print()
 
 
-def _render_calibration(result: object, path: Path) -> None:
+def _render_calibration(
+    result: object,
+    path: Path,
+    layer: Optional[str] = None,  # noqa: UP045
+    global_record: Optional[dict] = None,  # noqa: UP045
+) -> None:
     """Render fitted parameters, per-point predictions, and fit quality."""
     from presidio_arch_translucency.calibrate import (  # local import
         CalibrationResult,
@@ -1213,8 +1299,12 @@ def _render_calibration(result: object, path: Path) -> None:
 
     assert isinstance(result, CalibrationResult)  # noqa: S101
 
+    table_title = "Calibration fit — observed vs predicted"
+    if layer is not None:
+        table_title = f"Calibration fit ({layer}) — observed vs predicted"
+
     table = Table(
-        title="Calibration fit — observed vs predicted",
+        title=table_title,
         box=box.ROUNDED,
         show_lines=True,
     )
@@ -1237,26 +1327,52 @@ def _render_calibration(result: object, path: Path) -> None:
         )
 
     r2_color = "green" if result.r_squared >= 0.95 else "yellow"
+    if layer is not None:
+        written_line = (
+            f"Layer {layer!r} written to {path} (layers.{layer})\n"
+            f"`pat analyze --layer {layer}` will now use these parameters."
+        )
+    else:
+        written_line = (
+            f"Written to {path}\n"
+            "`pat analyze` will now use these calibrated parameters."
+        )
     body = (
         f"[bold]Concurrency (κ):[/]   [cyan]{result.concurrency:.3f}[/] "
         "req/replica in-flight\n"
         f"[bold]Overhead β:[/]        [cyan]{result.overhead_beta:.4f}[/]\n"
         f"[bold]R²:[/]                [{r2_color}]{result.r_squared:.4f}[/]\n"
         f"[bold]RMSE:[/]              {result.rmse:.4f} req/s\n\n"
-        f"[dim]Written to {path}\n"
-        f"`pat analyze` will now use these calibrated parameters.[/]"
+        f"[dim]{written_line}[/]"
     )
+
+    panel_title = "[bold blue]Presidio Architectural Translucency — Calibration[/]"
+    if layer is not None:
+        panel_title = (
+            "[bold blue]Presidio Architectural Translucency — "
+            f"Calibration (layer: {layer})[/]"
+        )
 
     console.print()
     console.print(
         Panel(
             body,
-            title="[bold blue]Presidio Architectural Translucency — Calibration[/]",
+            title=panel_title,
             border_style="blue",
         )
     )
     console.print()
     console.print(table)
+
+    if global_record is not None:
+        g_conc = global_record.get("concurrency")
+        g_beta = global_record.get("overhead_beta")
+        if g_conc is not None:
+            beta_str = f"{g_beta:.4f}" if isinstance(g_beta, (int, float)) else "n/a"
+            console.print(
+                f"\n[dim]Global (pooled) fit:[/] κ={float(g_conc):.3f}, β={beta_str}"
+            )
+
     console.print()
 
 

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from presidio_arch_translucency.model import (
     DEFAULT_CONCURRENCY,
+    DEFAULT_LAYER_NAME,
     GLOBAL_MODEL_RELPATH,
 )
 
@@ -160,14 +161,9 @@ def global_model_path() -> Path:
     return Path.home() / GLOBAL_MODEL_RELPATH[0] / GLOBAL_MODEL_RELPATH[1]
 
 
-def write_model_file(result: CalibrationResult) -> Path:
-    """
-    Persist *result* to ``~/.pat/model.json`` (creating ``~/.pat/`` as needed)
-    and return the path.  The ``concurrency`` key is what `pat analyze` reads.
-    """
-    path = global_model_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _fit_record(result: CalibrationResult) -> dict:
+    """Serialise a fit to the on-disk record shape (`pat analyze` reads these)."""
+    return {
         "concurrency": result.concurrency,
         "overhead_beta": result.overhead_beta,
         "r_squared": result.r_squared,
@@ -177,5 +173,50 @@ def write_model_file(result: CalibrationResult) -> Path:
             [o.rps, o.latency_ms, o.replicas] for o in result.observations
         ],
     }
+
+
+def _read_existing_model(path: Path) -> dict:
+    """Return the current global model file as a dict, or ``{}`` if absent/bad."""
+    try:
+        if path.is_file():
+            with path.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def write_model_file(result: CalibrationResult, layer: str | None = None) -> Path:
+    """
+    Persist *result* to ``~/.pat/model.json`` (creating ``~/.pat/`` as needed)
+    and return the path.  The ``concurrency`` key is what `pat analyze` reads.
+
+    When *layer* is ``None`` or the reserved ``"default"``, the fit is written to
+    the top-level (global pooled) parameters — the v0.7.0/v0.8.0 behaviour.  When
+    *layer* names a service layer, the fit is upserted into
+    ``model["layers"][layer]`` (v0.9.0); the global parameters and every other
+    layer are preserved untouched.
+    """
+    path = global_model_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = _fit_record(result)
+
+    if layer is None or layer == DEFAULT_LAYER_NAME:
+        # Global write: keep any previously-fitted per-layer records intact.
+        existing = _read_existing_model(path)
+        payload = record
+        if isinstance(existing.get("layers"), dict):
+            payload["layers"] = existing["layers"]
+    else:
+        # Per-layer upsert: preserve global params and other layers.
+        payload = _read_existing_model(path)
+        layers = payload.get("layers")
+        if not isinstance(layers, dict):
+            layers = {}
+        layers[layer] = record
+        payload["layers"] = layers
+
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path

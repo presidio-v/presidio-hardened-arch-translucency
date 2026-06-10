@@ -12,6 +12,27 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- **Per-layer `pat calibrate` (v0.9.0 Phase 1).** `pat calibrate --layer <name>`
+  tags an observation set with a service layer and fits per-layer model
+  parameters, upserting them into `~/.pat/model.json` under `layers.<name>`
+  while preserving the global (pooled) fit and every other layer. `--show-global`
+  prints the pooled fit alongside a per-layer fit. `pat analyze`, `what-if`,
+  `slo`, and `optimize` accept `--layer` to select the calibrated per-layer
+  capacity, falling back to the global fit then the built-in default. The model
+  file stays backward-compatible: a pre-v0.9.0 file with no `layers` key resolves
+  exactly as before. Delivers the per-layer fitting half of design decision D4
+  (the Docker `--benchmark` mode remains deferred). (#37)
+- **Kubeconfig auth for `pat observe --prometheus` (v0.9.0 Phase 2).** When
+  `PAT_PROMETHEUS_TOKEN` is unset, the bearer token is now resolved from the
+  active kubeconfig context (`KUBECONFIG`, first entry, or `~/.kube/config`),
+  enabling clusters that front Prometheus behind the kube-apiserver proxy.
+  Resolution order is env var → kubeconfig → unauthenticated, and is fully
+  automatic — no new CLI flags. `PAT_KUBECONFIG_CONTEXT` overrides which context
+  is read without editing the kubeconfig. The kubeconfig is parsed with a
+  minimal, dependency-free YAML-subset reader (no `pyyaml`); a missing,
+  unreadable, or token-less kubeconfig degrades silently to an unauthenticated
+  request rather than erroring. The token is never logged and is sent only as
+  `Authorization: Bearer …`. Completes the D3 follow-on auth work.
 - **Configurable ARIMA order bounds for `pat optimize` (v0.9.0 Phase 3).** The
   AIC order grid is no longer hard-coded: `--max-p`, `--max-d` and `--max-q`
   set the upper bounds of the `p`/`d`/`q` sweep (defaults `3`/`2`/`3`, exactly
