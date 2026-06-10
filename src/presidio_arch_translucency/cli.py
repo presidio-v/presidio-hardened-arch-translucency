@@ -793,6 +793,16 @@ def observe_cmd(
             "Defaults to 'manual' when recording; filters the list when given."
         ),
     ),
+    prometheus: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--prometheus",
+        help=(
+            "Prometheus base URL (e.g. http://prometheus:9090). Scrapes one "
+            "sample and records it (source='prometheus'). Needs --layer. "
+            "Single-shot — schedule repeats via cron/launchd. "
+            "Token from PAT_PROMETHEUS_TOKEN env only."
+        ),
+    ),
     list_recent: bool = typer.Option(
         False, "--list", help="List recent observations instead of recording one."
     ),
@@ -811,8 +821,8 @@ def observe_cmd(
     Single-shot by design: this records a single measurement and exits. Schedule
     recurring collection externally (cron / launchd / a Kubernetes CronJob).
     The store is source-agnostic — supply numbers measured by any source (APM, a
-    load test, prior `pat demo` output); `pat demo` and Prometheus sources are
-    wired in later v0.8.0 phases. `pat optimize` reads this store back.
+    load test, prior `pat demo` output), or scrape one sample from Prometheus
+    with --prometheus. `pat optimize` reads this store back.
     """
     from presidio_arch_translucency import observe as store  # noqa: PLC0415
 
@@ -824,6 +834,10 @@ def observe_cmd(
         total = store.count_observations(db_path=db, layer=layer_filter, source=source)
         log_security_event("OBSERVE_LIST", {"rows": len(rows)})
         _render_observations(rows, total=total)
+        return
+
+    if prometheus is not None:
+        _observe_from_prometheus(prometheus, layer, db)
         return
 
     # --- Record mode: all measurement fields are required ---
@@ -866,6 +880,43 @@ def observe_cmd(
     log_security_event("OBSERVE_RECORD", {"layer": layer_str, "replicas": replicas})
     console.print(
         f"[green]✓ Recorded[/] {obs.layer} observation "
+        f"({obs.rps:.0f} req/s, p99 {obs.p99_latency_ms:.0f} ms, "
+        f"{obs.replicas} replicas) → {total} total in store.\n"
+    )
+
+
+def _observe_from_prometheus(url: str, layer: str | None, db: Path | None) -> None:
+    """Scrape one sample from Prometheus and record it (single-shot)."""
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+    from presidio_arch_translucency.prometheus import (  # noqa: PLC0415
+        PrometheusError,
+        fetch_observation,
+    )
+
+    if not layer:
+        err_console.print(
+            "[bold red]--prometheus requires --layer[/] "
+            f"(one of: {', '.join(VALID_LAYERS)}).\n"
+            "[dim]Prometheus does not know the replication layer — tag it.[/]"
+        )
+        raise typer.Exit(code=2)
+    try:
+        layer_str = sanitize_layer(layer, VALID_LAYERS)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    try:
+        obs = fetch_observation(url, layer_str)
+        store.record_observation(obs, db_path=db)
+    except (PrometheusError, store.ObservationError) as exc:
+        err_console.print(f"[bold red]Prometheus collection failed:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    total = store.count_observations(db_path=db)
+    log_security_event("OBSERVE_RECORD", {"layer": layer_str, "source": "prometheus"})
+    console.print(
+        f"[green]✓ Scraped[/] {obs.layer} observation from Prometheus "
         f"({obs.rps:.0f} req/s, p99 {obs.p99_latency_ms:.0f} ms, "
         f"{obs.replicas} replicas) → {total} total in store.\n"
     )
