@@ -21,6 +21,7 @@ from presidio_arch_translucency.cost import (
     CostParams,
     build_cost_results,
     cost_per_request,
+    format_cost_per_request,
     hourly_cost,
     trough_cost_usd,
 )
@@ -283,7 +284,7 @@ def _render_results(
                     cost_params,
                 )
                 row.append(f"${hc:.4f}")
-                row.append(f"${cpr:.6f}")
+                row.append(format_cost_per_request(cpr))
             row.append("[bold green]✓[/]" if is_rec else "")
             table.add_row(*row)
 
@@ -779,12 +780,13 @@ def _render_cost(
     best = next(r for r in cost_results if r.is_recommended)
 
     # Summary panel
+    cpr_str = format_cost_per_request(best.cost_per_request_usd)
     body = (
         f"[bold]Best ROI layer:[/]  [cyan]{best.layer.value}[/]\n"
         f"[bold]Replicas:[/]        [cyan]{best.replicas}[/]\n"
         f"[bold]Throughput gain:[/] [green]{best.throughput_gain_pct:+.1f}%[/]\n"
         f"[bold]Cost/hour:[/]       ${best.hourly_cost_usd:.4f}\n"
-        f"[bold]Cost/request:[/]    ${best.cost_per_request_usd:.6f}\n"
+        f"[bold]Cost/request:[/]    {cpr_str}\n"
         f"[bold]ROI score:[/]       {best.roi_score:.1f}\n\n"
         f"[dim]{best.description}[/]"
     )
@@ -829,7 +831,7 @@ def _render_cost(
             f"[{tp_color}]{cr.throughput_gain_pct:+.1f}%[/]",
             f"[{rt_color}]{cr.response_time_change_pct:+.1f}%[/]",
             f"${cr.hourly_cost_usd:.4f}",
-            f"${cr.cost_per_request_usd:.6f}",
+            format_cost_per_request(cr.cost_per_request_usd),
             f"{cr.roi_score:.1f}",
             "[bold green]✓[/]" if is_rec else "",
         )

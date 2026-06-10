@@ -528,6 +528,7 @@ def _render_cost_section(
     from presidio_arch_translucency.cost import (  # noqa: PLC0415
         CostParams,
         build_cost_results,
+        format_cost_per_request,
     )
     from presidio_arch_translucency.model import (  # noqa: PLC0415
         ReplicationLayer,
@@ -575,7 +576,7 @@ def _render_cost_section(
 
     for i, (r, hc, cpr) in enumerate(cost_rows):
         is_best = i == best_roi_idx
-        cpr_str = f"${cpr:.6f}" if cpr != float("inf") else "—"
+        cpr_str = format_cost_per_request(cpr)
         table.add_row(
             r.name,
             str(r.n_workers + r.n_lb),
@@ -606,12 +607,13 @@ def _render_cost_section(
     body = (
         source_line + "[bold]Best measured variant:[/]  "
         f"[cyan]{cost_rows[best_roi_idx][0].name}[/]\n"
-        f"  Cost/req  ${cpr_measured:.6f}  ·  Cost/hr  ${hc_measured:.4f}\n\n"
+        f"  Cost/req  {format_cost_per_request(cpr_measured)}  ·  "
+        f"Cost/hr  ${hc_measured:.4f}\n\n"
         f"[bold]Analytical best-ROI layer:[/]  [cyan]{best_analytical.layer.value}[/]\n"
         f"  Replicas  {best_analytical.replicas}  ·  "
         f"Throughput gain  {best_analytical.throughput_gain_pct:+.1f}%\n"
-        f"  Cost/req  ${best_analytical.cost_per_request_usd:.6f}  ·  "
-        f"Cost/hr  ${best_analytical.hourly_cost_usd:.4f}\n"
+        f"  Cost/req  {format_cost_per_request(best_analytical.cost_per_request_usd)}"
+        f"  ·  Cost/hr  ${best_analytical.hourly_cost_usd:.4f}\n"
         f"  ROI score  {best_analytical.roi_score:.1f}\n\n"
         "[dim]Run [bold]pat cost --cloud aws[/] with your region and instance type"
         " for a live-priced full breakdown.[/]"
