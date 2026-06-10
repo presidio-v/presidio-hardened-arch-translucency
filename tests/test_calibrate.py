@@ -24,6 +24,19 @@ def invoke(*args: str):
     return runner.invoke(app, ["--skip-audit", *args])
 
 
+def combined_output(result) -> str:
+    """Runner stdout+stderr, robust across click versions.
+
+    The click resolved on Python 3.9 mixes stderr into stdout and leaves
+    ``stderr_bytes`` None, so ``result.stderr`` raises; newer click captures it
+    apart. Append stderr only when it was captured separately.
+    """
+    text = result.output or ""
+    if getattr(result, "stderr_bytes", None) is not None:
+        text += result.stderr
+    return text
+
+
 # ── parse_observation ─────────────────────────────────────────────────────────
 
 
@@ -139,7 +152,7 @@ def test_calibrate_then_analyze_warning_suppressed(tmp_path, monkeypatch) -> Non
 
     # Before calibration: warning present.
     before = invoke("analyze", "-r", "500", "-l", "80", "-c", "container")
-    assert "pat calibrate" in (before.output + before.stderr)
+    assert "pat calibrate" in combined_output(before)
 
     cal = invoke(
         "calibrate",
@@ -155,7 +168,7 @@ def test_calibrate_then_analyze_warning_suppressed(tmp_path, monkeypatch) -> Non
     # After calibration: warning suppressed and the fitted model is used.
     after = invoke("analyze", "-r", "500", "-l", "80", "-c", "container")
     assert after.exit_code == 0
-    assert "pat calibrate" not in (after.output + after.stderr)
+    assert "pat calibrate" not in combined_output(after)
 
 
 def test_calibrate_cmd_invalid_observation_exits_2(tmp_path, monkeypatch) -> None:
