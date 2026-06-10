@@ -196,9 +196,10 @@ class TestOptimizeCLI:
         assert "Predicted" in result.output
 
     def test_unsupported_model_exits_2(self, tmp_path):
-        result = _invoke("--model", "arima", "--db", str(tmp_path / "obs.db"))
+        # 'sma' and 'arima' are valid; anything else is rejected.
+        result = _invoke("--model", "prophet", "--db", str(tmp_path / "obs.db"))
         assert result.exit_code == 2
-        assert "arima" in result.output.lower()
+        assert "sma" in result.output.lower()
 
     def test_invalid_layer_exits_2(self, tmp_path):
         result = _invoke("--layer", "not-a-layer", "--db", str(tmp_path / "obs.db"))

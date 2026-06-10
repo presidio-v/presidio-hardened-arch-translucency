@@ -927,10 +927,11 @@ def optimize_cmd(
     model: str = typer.Option(
         "sma",
         "--model",
-        help="Prediction model. Only 'sma' in v0.8.0 ('arima' arrives later).",
+        help="Prediction model: 'sma' (default) or 'arima' (auto-falls back to "
+        "sma below 30 samples).",
     ),
     window: int = typer.Option(
-        10, "--window", help="Number of most-recent samples to smooth.", min=1
+        10, "--window", help="Number of most-recent samples to smooth (sma).", min=1
     ),
     horizon_minutes: float = typer.Option(
         10.0, "--horizon-minutes", help="How far ahead to project demand.", min=0.0
@@ -946,22 +947,25 @@ def optimize_cmd(
     ),
 ) -> None:
     """
-    Proactive scaling recommendation from observed history (SMA).
+    Proactive scaling recommendation from observed history (SMA or ARIMA).
 
-    Reads the rolling observation store, smooths the recent demand with a simple
-    moving average, projects it a few minutes ahead, and recommends the replica
-    count to serve the predicted load. Record samples first with `pat observe`.
+    Reads the rolling observation store, projects demand a few minutes ahead, and
+    recommends the replica count to serve it. `--model arima` fits a statsmodels
+    ARIMA with a 95% confidence interval (and replica range), auto-falling back to
+    SMA below 30 samples. Record samples first with `pat observe`.
     """
     from presidio_arch_translucency import observe as store  # noqa: PLC0415
     from presidio_arch_translucency.optimize import (  # noqa: PLC0415
+        ARIMA_DEFAULT_HISTORY,
         OptimizeError,
+        optimize_arima,
         optimize_sma,
     )
 
-    if model.lower() != "sma":
+    model_name = model.lower()
+    if model_name not in ("sma", "arima"):
         err_console.print(
-            f"[bold red]Unsupported --model {model!r}.[/] "
-            "Only 'sma' is available in v0.8.0; 'arima' arrives in a later phase."
+            f"[bold red]Unsupported --model {model!r}.[/] Choose 'sma' or 'arima'."
         )
         raise typer.Exit(code=2)
 
@@ -973,7 +977,9 @@ def optimize_cmd(
             err_console.print(f"[bold red]Input validation error:[/] {exc}")
             raise typer.Exit(code=2) from exc
 
-    rows = store.latest_observations(window, db_path=db, layer=layer_filter)
+    # ARIMA wants as much history as it can get; SMA uses the smoothing window.
+    fetch_n = max(window, ARIMA_DEFAULT_HISTORY) if model_name == "arima" else window
+    rows = store.latest_observations(fetch_n, db_path=db, layer=layer_filter)
     if not rows:
         scope = f" for layer {layer_filter!r}" if layer_filter else ""
         console.print(
@@ -984,13 +990,19 @@ def optimize_cmd(
         return
 
     try:
-        result = optimize_sma(rows, horizon_minutes=horizon_minutes)
+        if model_name == "arima":
+            result = optimize_arima(rows, horizon_minutes=horizon_minutes)
+        else:
+            result = optimize_sma(rows, horizon_minutes=horizon_minutes)
     except OptimizeError as exc:  # pragma: no cover - guarded by the empty check
         err_console.print(f"[bold red]Cannot optimise:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
+    if result.fallback_reason:
+        warn_console.print(f"[yellow]⚠ {result.fallback_reason}[/]")
+
     log_security_event(
-        "OPTIMIZE_INVOCATION", {"layer": result.layer, "samples": result.samples}
+        "OPTIMIZE_INVOCATION", {"model": result.model, "samples": result.samples}
     )
     _render_optimize(result)
 
@@ -999,7 +1011,7 @@ def optimize_cmd(
 
 
 def _render_optimize(result: object) -> None:
-    """Render the SMA proactive scaling recommendation."""
+    """Render the proactive scaling recommendation (SMA or ARIMA)."""
     from presidio_arch_translucency.optimize import OptimizeResult  # local import
 
     assert isinstance(result, OptimizeResult)  # noqa: S101
@@ -1011,26 +1023,60 @@ def _render_optimize(result: object) -> None:
         "hold": "[green]Hold at[/]",
     }[result.action]
 
+    if result.model == "arima" and result.arima_order is not None:
+        p, d, q = result.arima_order
+        model_tag = f"ARIMA({p},{d},{q})"
+    else:
+        model_tag = "SMA"
+
+    # Predicted line — add the 95% CI band when ARIMA provides one.
+    predicted_line = (
+        f"  Predicted   ~{result.predicted_rps:.0f} req/s "
+        f"in ~{result.horizon_minutes:.0f} min"
+    )
+    if result.has_interval:
+        predicted_line += (
+            f"  [dim](95% CI {result.predicted_rps_lower:.0f}–"
+            f"{result.predicted_rps_upper:.0f})[/]"
+        )
+    else:
+        predicted_line += f"  [dim]({result.slope_rps_per_min:+.1f} req/s/min)[/]"
+
+    # Recommend line — add the replica range under the CI when ARIMA provides one.
+    recommend_line = (
+        f"  Recommend   {action_label} [bold]{result.recommended_replicas}[/] "
+        f"replicas ({result.layer})"
+    )
+    if (
+        result.recommended_replicas_lower is not None
+        and result.recommended_replicas_upper is not None
+        and result.recommended_replicas_lower != result.recommended_replicas_upper
+    ):
+        recommend_line += (
+            f"  [dim](range {result.recommended_replicas_lower}–"
+            f"{result.recommended_replicas_upper})[/]"
+        )
+
     span = result.window_minutes
     body = (
-        f"[bold]Based on {result.samples} sample(s) (SMA, "
+        f"[bold]Based on {result.samples} sample(s) ({model_tag}, "
         f"{result.layer}):[/]\n"
         f"  Window      {span:.0f} min  "
         f"({result.first_ts:%Y-%m-%d %H:%M} → {result.last_ts:%H:%M} UTC)\n"
         f"  Demand      {result.sma_rps:.0f} req/s smoothed  "
         f"([{trend_color}]{result.trend_pct:+.0f}%[/] over {span:.0f} min)\n"
-        f"  Predicted   ~{result.predicted_rps:.0f} req/s "
-        f"in ~{result.horizon_minutes:.0f} min "
-        f"([dim]{result.slope_rps_per_min:+.1f} req/s/min[/])\n"
+        f"{predicted_line}\n"
         f"  Current     {result.current_replicas} replicas\n"
-        f"  Recommend   {action_label} [bold]{result.recommended_replicas}[/] "
-        f"replicas ({result.layer})"
+        f"{recommend_line}"
     )
     console.print()
     console.print(
         Panel(
             body,
-            title="[bold blue]Presidio Architectural Translucency — Optimize (SMA)[/]",
+            title=(
+                "[bold blue]Presidio Architectural Translucency — "
+                f"Optimize ({model_tag})[/]"
+            ),
             border_style="blue",
         )
     )
