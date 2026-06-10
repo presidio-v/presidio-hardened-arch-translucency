@@ -56,17 +56,6 @@ CREATE INDEX IF NOT EXISTS idx_{_TABLE}_ts ON {_TABLE} (timestamp);
 CREATE INDEX IF NOT EXISTS idx_{_TABLE}_layer_ts ON {_TABLE} (layer, timestamp);
 """
 
-_COLUMNS = (
-    "timestamp",
-    "rps",
-    "avg_latency_ms",
-    "p99_latency_ms",
-    "throughput",
-    "layer",
-    "replicas",
-    "source",
-)
-
 
 def default_db_path() -> Path:
     """Return the global observation store path (``~/.pat/observations.db``)."""
