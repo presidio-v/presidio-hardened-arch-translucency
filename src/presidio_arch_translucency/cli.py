@@ -942,6 +942,21 @@ def optimize_cmd(
         "-c",
         help="Restrict to one replication layer (default: use all recorded).",
     ),
+    emit_hpa_patch: bool = typer.Option(
+        False,
+        "--emit-hpa-patch",
+        help="Emit an apply-able HPA manifest to stdout instead of the summary. "
+        "Requires --target.",
+    ),
+    target: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--target",
+        help="Deployment name for the HPA manifest (RFC 1123). Use with "
+        "--emit-hpa-patch.",
+    ),
+    namespace: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--namespace", help="Namespace for the emitted HPA manifest."
+    ),
     db: Optional[Path] = typer.Option(  # noqa: UP045, B008
         None, "--db", help="Override the store path (default: ~/.pat/observations.db)."
     ),
@@ -1004,7 +1019,47 @@ def optimize_cmd(
     log_security_event(
         "OPTIMIZE_INVOCATION", {"model": result.model, "samples": result.samples}
     )
+
+    if emit_hpa_patch:
+        _emit_hpa_patch(result, target, namespace)
+        return
+
     _render_optimize(result)
+
+
+def _emit_hpa_patch(result: object, target: str | None, namespace: str | None) -> None:
+    """Emit a sanitised HPA manifest to stdout (for `kubectl apply`)."""
+    from presidio_arch_translucency.hpa_patch import (  # noqa: PLC0415
+        HpaPatchError,
+        build_hpa_patch,
+    )
+    from presidio_arch_translucency.optimize import OptimizeResult  # noqa: PLC0415
+
+    assert isinstance(result, OptimizeResult)  # noqa: S101
+
+    if not target:
+        err_console.print(
+            "[bold red]--emit-hpa-patch requires --target[/] (the Deployment to scale)."
+        )
+        raise typer.Exit(code=2)
+
+    # min = the point recommendation (pre-provision it); max = the ARIMA upper
+    # CI bound when available, else the point estimate.
+    min_replicas = result.recommended_replicas
+    max_replicas = result.recommended_replicas_upper or result.recommended_replicas
+    try:
+        manifest = build_hpa_patch(
+            target=target,
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            namespace=namespace,
+        )
+    except HpaPatchError as exc:
+        err_console.print(f"[bold red]Cannot emit HPA patch:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    # Plain stdout — clean YAML, no Rich styling/markup interference.
+    typer.echo(manifest, nl=False)
 
 
 # ── rendering helpers ─────────────────────────────────────────────────────────
