@@ -10,6 +10,20 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **Kubeconfig auth for `pat observe --prometheus` (v0.9.0 Phase 2).** When
+  `PAT_PROMETHEUS_TOKEN` is unset, the bearer token is now resolved from the
+  active kubeconfig context (`KUBECONFIG`, first entry, or `~/.kube/config`),
+  enabling clusters that front Prometheus behind the kube-apiserver proxy.
+  Resolution order is env var → kubeconfig → unauthenticated, and is fully
+  automatic — no new CLI flags. `PAT_KUBECONFIG_CONTEXT` overrides which context
+  is read without editing the kubeconfig. The kubeconfig is parsed with a
+  minimal, dependency-free YAML-subset reader (no `pyyaml`); a missing,
+  unreadable, or token-less kubeconfig degrades silently to an unauthenticated
+  request rather than erroring. The token is never logged and is sent only as
+  `Authorization: Bearer …`. Completes the D3 follow-on auth work.
+
 ## [0.8.0] - 2026-06-10
 
 The **autoresearch** release: an observe→optimize loop that records live
