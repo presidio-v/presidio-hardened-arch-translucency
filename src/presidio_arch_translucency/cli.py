@@ -785,6 +785,14 @@ def observe_cmd(
     replicas: Optional[int] = typer.Option(  # noqa: UP045
         None, "--replicas", help="Replica count during the measurement.", min=1
     ),
+    source: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--source",
+        help=(
+            "Measurement origin (manual/demo/prometheus/…). "
+            "Defaults to 'manual' when recording; filters the list when given."
+        ),
+    ),
     list_recent: bool = typer.Option(
         False, "--list", help="List recent observations instead of recording one."
     ),
@@ -810,8 +818,10 @@ def observe_cmd(
 
     if list_recent:
         layer_filter = layer.strip().lower() if layer else None
-        rows = store.latest_observations(limit, db_path=db, layer=layer_filter)
-        total = store.count_observations(db_path=db, layer=layer_filter)
+        rows = store.latest_observations(
+            limit, db_path=db, layer=layer_filter, source=source
+        )
+        total = store.count_observations(db_path=db, layer=layer_filter, source=source)
         log_security_event("OBSERVE_LIST", {"rows": len(rows)})
         _render_observations(rows, total=total)
         return
@@ -845,6 +855,7 @@ def observe_cmd(
             throughput=throughput,
             layer=layer_str,
             replicas=replicas,
+            source=source or "manual",
             db_path=db,
         )
     except (InputValidationError, store.ObservationError) as exc:
@@ -885,6 +896,7 @@ def _render_observations(rows: list, total: int) -> None:
     table.add_column("p99 ms", justify="right")
     table.add_column("Throughput", justify="right")
     table.add_column("Replicas", justify="right")
+    table.add_column("Source", style="magenta")
 
     for obs in rows:
         table.add_row(
@@ -895,6 +907,7 @@ def _render_observations(rows: list, total: int) -> None:
             f"{obs.p99_latency_ms:.0f}",
             f"{obs.throughput:.0f}",
             str(obs.replicas),
+            obs.source,
         )
 
     console.print()

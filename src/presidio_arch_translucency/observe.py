@@ -16,7 +16,9 @@ Storage (decision D5 / cross-cutting): the global store lives at
     timestamp, rps, avg_latency_ms, p99_latency_ms, throughput, layer, replicas
 
 An autoincrement ``id`` is added as the primary key (insertion order, used only
-to break ties between identical timestamps).
+to break ties between identical timestamps), plus a ``source`` column
+(``manual`` / ``demo`` / ``prometheus`` / …) so later phases can tell where a
+measurement came from.
 """
 
 from __future__ import annotations
@@ -36,6 +38,8 @@ _GLOBAL_DB_RELPATH: tuple[str, str] = (".pat", "observations.db")
 
 _TABLE = "observations"
 
+_DEFAULT_SOURCE = "manual"
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {_TABLE} (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +49,8 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     p99_latency_ms REAL    NOT NULL,
     throughput     REAL    NOT NULL,
     layer          TEXT    NOT NULL,
-    replicas       INTEGER NOT NULL
+    replicas       INTEGER NOT NULL,
+    source         TEXT    NOT NULL DEFAULT '{_DEFAULT_SOURCE}'
 );
 CREATE INDEX IF NOT EXISTS idx_{_TABLE}_ts ON {_TABLE} (timestamp);
 CREATE INDEX IF NOT EXISTS idx_{_TABLE}_layer_ts ON {_TABLE} (layer, timestamp);
@@ -59,6 +64,7 @@ _COLUMNS = (
     "throughput",
     "layer",
     "replicas",
+    "source",
 )
 
 
@@ -87,11 +93,14 @@ class Observation:
     throughput: float
     layer: str
     replicas: int
+    source: str = _DEFAULT_SOURCE
 
     def validate(self) -> Observation:
         """Return self if valid, else raise ObservationError."""
         if not self.layer or not str(self.layer).strip():
             raise ObservationError("layer must be a non-empty string")
+        if not self.source or not str(self.source).strip():
+            raise ObservationError("source must be a non-empty string")
         for name in ("rps", "avg_latency_ms", "p99_latency_ms", "throughput"):
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or value < 0:
@@ -142,10 +151,22 @@ def _connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     try:
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an older store forward (additive, idempotent)."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({_TABLE})")}
+    if "source" not in cols:
+        # Stores created before the source column gain it with the default.
+        conn.execute(
+            f"ALTER TABLE {_TABLE} "  # noqa: S608 — fixed identifiers
+            f"ADD COLUMN source TEXT NOT NULL DEFAULT '{_DEFAULT_SOURCE}'"
+        )
 
 
 def init_store(db_path: Path | None = None) -> Path:
@@ -167,7 +188,7 @@ def record_observation(obs: Observation, db_path: Path | None = None) -> int:
         cur = conn.execute(
             f"INSERT INTO {_TABLE} "  # noqa: S608 — fixed identifiers, params bound
             "(timestamp, rps, avg_latency_ms, p99_latency_ms, throughput, layer, "
-            "replicas) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "replicas, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _iso(obs.timestamp),
                 float(obs.rps),
@@ -176,6 +197,7 @@ def record_observation(obs: Observation, db_path: Path | None = None) -> int:
                 float(obs.throughput),
                 str(obs.layer),
                 int(obs.replicas),
+                str(obs.source),
             ),
         )
         return int(cur.lastrowid)
@@ -189,6 +211,7 @@ def record(
     layer: str,
     replicas: int,
     timestamp: datetime | None = None,
+    source: str = _DEFAULT_SOURCE,
     db_path: Path | None = None,
 ) -> Observation:
     """
@@ -196,6 +219,8 @@ def record(
 
     ``timestamp`` defaults to now (UTC) — callers replaying historical data
     (e.g. a Prometheus range query) should pass the measurement's own time.
+    ``source`` records where the measurement came from (``manual`` / ``demo`` /
+    ``prometheus`` / …); it defaults to ``manual``.
     """
     obs = Observation(
         timestamp=timestamp if timestamp is not None else utcnow(),
@@ -205,6 +230,7 @@ def record(
         throughput=throughput,
         layer=layer,
         replicas=replicas,
+        source=source,
     )
     record_observation(obs, db_path=db_path)
     return obs
@@ -224,6 +250,7 @@ def _row_to_obs(row: sqlite3.Row) -> Observation:
         throughput=row["throughput"],
         layer=row["layer"],
         replicas=row["replicas"],
+        source=row["source"],
     )
 
 
@@ -232,18 +259,23 @@ def load_observations(
     layer: str | None = None,
     since: datetime | None = None,
     limit: int | None = None,
+    source: str | None = None,
 ) -> list[Observation]:
     """
     Return observations in chronological order (oldest first).
 
-    ``layer`` filters to one layer; ``since`` keeps only rows at/after a time;
-    ``limit`` caps to the most recent N (still returned oldest-first).
+    ``layer`` filters to one layer; ``source`` filters to one origin
+    (``manual`` / ``demo`` / ``prometheus`` / …); ``since`` keeps only rows
+    at/after a time; ``limit`` caps to the most recent N (still oldest-first).
     """
     clauses: list[str] = []
     params: list[object] = []
     if layer is not None:
         clauses.append("layer = ?")
         params.append(layer)
+    if source is not None:
+        clauses.append("source = ?")
+        params.append(source)
     if since is not None:
         clauses.append("timestamp >= ?")
         params.append(_iso(since))
@@ -268,22 +300,30 @@ def latest_observations(
     n: int,
     db_path: Path | None = None,
     layer: str | None = None,
+    source: str | None = None,
 ) -> list[Observation]:
     """Return the most recent *n* observations, oldest-first (SMA window helper)."""
     if n <= 0:
         return []
-    return load_observations(db_path=db_path, layer=layer, limit=n)
+    return load_observations(db_path=db_path, layer=layer, source=source, limit=n)
 
 
 def count_observations(
     db_path: Path | None = None,
     layer: str | None = None,
+    source: str | None = None,
 ) -> int:
-    """Return the number of stored observations (optionally for one layer)."""
+    """Return the number of stored observations (optionally filtered)."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if layer is not None:
+        clauses.append("layer = ?")
+        params.append(layer)
+    if source is not None:
+        clauses.append("source = ?")
+        params.append(source)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with _connect(db_path) as conn:
-        if layer is not None:
-            sql = f"SELECT COUNT(*) AS c FROM {_TABLE} WHERE layer = ?"  # noqa: S608
-            row = conn.execute(sql, (layer,)).fetchone()
-        else:
-            row = conn.execute(f"SELECT COUNT(*) AS c FROM {_TABLE}").fetchone()  # noqa: S608
+        sql = f"SELECT COUNT(*) AS c FROM {_TABLE} {where}"  # noqa: S608
+        row = conn.execute(sql, params).fetchone()
     return int(row["c"])

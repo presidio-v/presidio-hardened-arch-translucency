@@ -72,6 +72,7 @@ def test_init_store_creates_file_and_schema(db):
         "throughput",
         "layer",
         "replicas",
+        "source",
     }
 
 
@@ -228,6 +229,96 @@ class TestQueries:
 
 
 # ---------------------------------------------------------------------------
+# source column
+# ---------------------------------------------------------------------------
+
+
+class TestSourceColumn:
+    def test_default_source_is_manual(self, db):
+        record_observation(_obs(_T0), db_path=db)
+        (loaded,) = load_observations(db_path=db)
+        assert loaded.source == "manual"
+
+    def test_explicit_source_roundtrips(self, db):
+        record(
+            rps=500,
+            avg_latency_ms=80,
+            p99_latency_ms=140,
+            throughput=480,
+            layer="container",
+            replicas=6,
+            source="prometheus",
+            timestamp=_T0,
+            db_path=db,
+        )
+        (loaded,) = load_observations(db_path=db)
+        assert loaded.source == "prometheus"
+
+    def test_filters_by_source(self, db):
+        record(
+            rps=500,
+            avg_latency_ms=80,
+            p99_latency_ms=140,
+            throughput=480,
+            layer="container",
+            replicas=6,
+            source="demo",
+            timestamp=_T0,
+            db_path=db,
+        )
+        record(
+            rps=200,
+            avg_latency_ms=40,
+            p99_latency_ms=90,
+            throughput=195,
+            layer="pod",
+            replicas=4,
+            source="prometheus",
+            timestamp=_T0 + timedelta(minutes=1),
+            db_path=db,
+        )
+        demo = load_observations(db_path=db, source="demo")
+        assert [o.source for o in demo] == ["demo"]
+        assert count_observations(db_path=db, source="prometheus") == 1
+        assert count_observations(db_path=db) == 2
+        latest = latest_observations(5, db_path=db, source="prometheus")
+        assert [o.source for o in latest] == ["prometheus"]
+
+    def test_empty_source_rejected(self, db):
+        bad = Observation(_T0, 500, 80, 140, 480, "container", 6, source="  ")
+        with pytest.raises(ObservationError, match="source"):
+            record_observation(bad, db_path=db)
+
+    def test_migration_adds_source_to_legacy_store(self, db):
+        # A store created before the source column should gain it (default
+        # 'manual') the next time it is opened through the API.
+        conn = sqlite3.connect(str(db))
+        conn.executescript(
+            """
+            CREATE TABLE observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL, rps REAL NOT NULL,
+                avg_latency_ms REAL NOT NULL, p99_latency_ms REAL NOT NULL,
+                throughput REAL NOT NULL, layer TEXT NOT NULL,
+                replicas INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO observations "
+            "(timestamp, rps, avg_latency_ms, p99_latency_ms, throughput, layer, "
+            "replicas) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("2026-06-01T12:00:00+00:00", 500, 80, 140, 480, "container", 6),
+        )
+        conn.commit()
+        conn.close()
+
+        rows = load_observations(db_path=db)  # opening triggers _migrate
+        assert len(rows) == 1
+        assert rows[0].source == "manual"
+
+
+# ---------------------------------------------------------------------------
 # CLI: pat observe
 # ---------------------------------------------------------------------------
 
@@ -273,6 +364,32 @@ class TestObserveCLI:
         result = _invoke("--list", "--db", str(db))
         assert result.exit_code == 0
         assert "No observations recorded yet" in result.output
+
+    def test_record_with_source_and_list_filter(self, db):
+        rec = _invoke(
+            "--layer",
+            "container",
+            "--rps",
+            "500",
+            "--avg-latency-ms",
+            "80",
+            "--p99-latency-ms",
+            "140",
+            "--throughput",
+            "480",
+            "--replicas",
+            "6",
+            "--source",
+            "demo",
+            "--db",
+            str(db),
+        )
+        assert rec.exit_code == 0
+        assert count_observations(db_path=db, source="demo") == 1
+        # Filtering the list by a different source yields nothing.
+        listed = _invoke("--list", "--source", "prometheus", "--db", str(db))
+        assert listed.exit_code == 0
+        assert "No observations recorded yet" in listed.output
 
     def test_invalid_layer_exits_2(self, db):
         result = _invoke(
