@@ -10,6 +10,19 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **Per-layer `pat calibrate` (v0.9.0 Phase 1).** `pat calibrate --layer <name>`
+  tags an observation set with a service layer and fits per-layer model
+  parameters, upserting them into `~/.pat/model.json` under `layers.<name>`
+  while preserving the global (pooled) fit and every other layer. `--show-global`
+  prints the pooled fit alongside a per-layer fit. `pat analyze`, `what-if`,
+  `slo`, and `optimize` accept `--layer` to select the calibrated per-layer
+  capacity, falling back to the global fit then the built-in default. The model
+  file stays backward-compatible: a pre-v0.9.0 file with no `layers` key resolves
+  exactly as before. Delivers the per-layer fitting half of design decision D4
+  (the Docker `--benchmark` mode remains deferred). (#37)
+
 ## [0.8.0] - 2026-06-10
 
 The **autoresearch** release: an observe→optimize loop that records live
