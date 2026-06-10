@@ -16,6 +16,19 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def combined_output(result) -> str:
+    """Runner stdout+stderr, robust across click versions.
+
+    Newer click (>=8.2) captures stderr separately; the click resolved on
+    Python 3.9 mixes stderr into stdout and leaves ``stderr_bytes`` as None, so
+    accessing ``result.stderr`` raises. Append stderr only when captured apart.
+    """
+    text = result.output or ""
+    if getattr(result, "stderr_bytes", None) is not None:
+        text += result.stderr
+    return text
+
+
 def invoke(*args: str, skip_audit: bool = True):
     """Helper: invoke pat with --skip-audit by default to avoid network calls."""
     base = ["--skip-audit"] if skip_audit else []
@@ -239,7 +252,7 @@ class TestEnvelopeWarning:
             "container",
         )
         assert result.exit_code == 0
-        combined = strip_ansi(result.output + result.stderr)
+        combined = strip_ansi(combined_output(result))
         assert "pat calibrate" in combined
         assert "default parameters" in combined.lower()
 
@@ -261,5 +274,5 @@ class TestEnvelopeWarning:
             "container",
         )
         assert result.exit_code == 0
-        combined = strip_ansi(result.output + result.stderr)
+        combined = strip_ansi(combined_output(result))
         assert "pat calibrate" not in combined
