@@ -89,7 +89,7 @@ def test_fit_predictions_and_residuals_aligned() -> None:
     result = fit_calibration(obs)
     assert len(result.predictions) == len(obs)
     assert len(result.residuals) == len(obs)
-    for o, pred, resid in zip(obs, result.predictions, result.residuals):
+    for o, pred, resid in zip(obs, result.predictions, result.residuals, strict=True):
         assert resid == pytest.approx(o.rps - pred, abs=1e-9)
 
 
