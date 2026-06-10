@@ -96,16 +96,47 @@ def model_is_calibrated() -> bool:
     return load_calibrated_model() is not None
 
 
-def resolve_concurrency() -> float:
-    """Concurrency from a calibrated model if present, else the default."""
+# Reserved layer name meaning "the global/top-level pooled fit" rather than a
+# named per-layer fit (v0.9.0).  ``pat calibrate`` with no ``--layer`` (or
+# ``--layer default``) writes the top-level parameters; named layers live under
+# ``model["layers"][name]``.
+DEFAULT_LAYER_NAME: Final[str] = "default"
+
+
+def _concurrency_from_record(record: object) -> float | None:
+    """Extract a positive ``concurrency`` from a fit record, or ``None``."""
+    if not isinstance(record, dict):
+        return None
+    try:
+        value = float(record["concurrency"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def resolve_concurrency(layer: str | None = None) -> float:
+    """
+    Concurrency from a calibrated model if present, else the default.
+
+    When *layer* names a per-layer fit (``model["layers"][layer]``, v0.9.0) that
+    record's ``concurrency`` is preferred; otherwise resolution falls back to the
+    global top-level ``concurrency``, then to :data:`DEFAULT_CONCURRENCY`.  The
+    reserved name ``"default"`` and ``None`` both mean "use the global fit".
+    """
     model = load_calibrated_model()
-    if model is not None:
-        try:
-            value = float(model["concurrency"])
-            if value > 0:
+    if model is None:
+        return DEFAULT_CONCURRENCY
+
+    if layer is not None and layer != DEFAULT_LAYER_NAME:
+        layers = model.get("layers")
+        if isinstance(layers, dict):
+            value = _concurrency_from_record(layers.get(layer))
+            if value is not None:
                 return value
-        except (KeyError, TypeError, ValueError):
-            pass
+
+    value = _concurrency_from_record(model)
+    if value is not None:
+        return value
     return DEFAULT_CONCURRENCY
 
 
@@ -294,6 +325,7 @@ def analyze(
     avg_latency_ms: float,
     current_layer: ReplicationLayer,
     concurrency: float | None = None,
+    layer: str | None = None,
 ) -> AnalysisResult:
     """
     Core architectural translucency analysis.
@@ -301,11 +333,12 @@ def analyze(
     For each layer, sweep replication factors δ = 1..max_replicas and find the
     smallest δ that saturates demand (maximises throughput).  ``concurrency``
     sets per-replica capacity; when ``None`` it is resolved from a calibrated
-    ``.pat-model.json`` / ``~/.pat/model.json`` or falls back to the async
+    ``.pat-model.json`` / ``~/.pat/model.json`` — honouring the per-layer fit
+    named by ``layer`` when present (v0.9.0) — or falls back to the async
     default.  Returns a full AnalysisResult with a cross-layer recommendation.
     """
     if concurrency is None:
-        concurrency = resolve_concurrency()
+        concurrency = resolve_concurrency(layer)
 
     base_cap = _base_capacity(requests_per_second, avg_latency_ms, concurrency)
     baseline_rps = min(base_cap, requests_per_second)

@@ -57,8 +57,8 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.4.0 | Cost-aware replication analysis (`pat cost`) | Released |
 | v0.5.0 | Cloud billing integration — AWS on-demand | Released |
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
-| v0.7.0 | Autoresearch — `pat demo` observation + simple moving average | Planned |
-| v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model | Planned |
+| v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
+| v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
 
 ---
 
@@ -330,6 +330,75 @@ may live in a project-local `.pat-model.json` (cwd) and/or a global
 global** — project-local overrides global. (This matches the behaviour already in
 `model._model_search_paths`; the divergence in earlier notes that implied a single
 location is resolved in favour of this two-tier scheme.)
+
+### v0.8.0 Delivery (shipped 2026-06-10)
+
+Released as **v0.8.0** on 2026-06-10. Built foundation-first per D1, one PR per
+phase. This record closes the loop between the spec/decisions above and what
+actually shipped.
+
+#### What shipped (Phases 1–5)
+
+| Phase | Deliverable | PR | Notes |
+|---|---|---|---|
+| 1 | `pat observe` — source-agnostic SQLite store | #26 | `~/.pat/observations.db`; record one measurement or `--list` recent; `--db` override; `--source` tag |
+| 2 | `pat optimize --model sma` | #27 | SMA over `--window` recent samples, projects `--horizon-minutes` ahead, recommends replicas |
+| 3 | Prometheus observation source | #28 | `pat observe --prometheus <url> --layer <layer>`; PromQL matches spec (`sum(rate(http_requests_total[1m]))`, `histogram_quantile(0.99, …)`, `count(up == 1)`); token from `PAT_PROMETHEUS_TOKEN` env only |
+| 4 | `pat optimize --model arima` | #29 | `statsmodels` ARIMA, order AIC-minimised over a bounded grid (p,q ∈ [0,3], d ∈ [0,2]); 95% CI bands + replica range; auto-falls back to SMA below 30 samples |
+| 5 | `pat optimize --emit-hpa-patch` | #30 | Emits a sanitised `HorizontalPodAutoscaler` to stdout; `minReplicas` = point estimate, `maxReplicas` = ARIMA upper-CI bound when available |
+
+All security commitments from the spec held: the Prometheus token is read from
+`PAT_PROMETHEUS_TOKEN` only (never a CLI arg, never logged), and the emitted HPA
+manifest is sanitised (target/namespace validated as RFC 1123 names, no raw user
+input echoed).
+
+#### Deviations from the original 2026-03-27 spec
+
+1. **`pat observe` process model — single-shot, not a daemon.** The original
+   spec framed collection as `pat observe --duration 1h --interval-minutes 1`
+   (a long-running poller). Per **D2** (locked 2026-06-10), `pat observe` ships
+   as a single-shot command — one measurement (or one Prometheus scrape) per
+   invocation, scheduled externally via cron/launchd/CronJob. The
+   `--duration`/`--interval` flags were not implemented.
+
+2. **D4 (extended `pat calibrate`) deferred — not delivered in v0.8.0.** D4
+   called for extending calibrate toward the original contract in v0.8.0:
+   **per-layer α/β fitting** (`--layer web/worker/cache/db`) and a **Docker
+   benchmark mode** (`--benchmark`) that runs controlled replica sweeps. Neither
+   shipped. The v0.7.0 analytical, global-fit path (`--observation
+   rps:latency:replicas`, fitting global concurrency κ + β) remains the only
+   calibrate mode. **Carried to v0.9.0.** Rationale: the observe→optimize loop
+   (D1's higher-priority autoresearch base) consumed the v0.8.0 sprint, and the
+   shipped analytical calibrate is sufficient to seed the model for `pat
+   optimize`.
+
+3. **HPA emitter requires `--target`.** The spec sketched `pat optimize
+   --model arima --emit-hpa-patch > hpa-patch.yaml` with no target. The shipped
+   command requires `--target <deployment>` (and accepts `--namespace`) because
+   a valid `HorizontalPodAutoscaler` must name its `scaleTargetRef`. This is a
+   refinement, not a reduction, of scope.
+
+4. **kubeconfig auth + optional `kubernetes` client — deferred (as planned).**
+   Per **D3**, Prometheus auth is env-token-only for v0.8.0; kubeconfig-based
+   auth and the optional `kubernetes` dependency remain deferred beyond v0.8.0.
+
+#### Python 3.9 deprecation (out-of-band, #32)
+
+Not part of the original autoresearch scope. During the sprint, GitHub
+Dependabot flagged **19 vulnerability alerts** on the default branch, all in
+transitive dependencies whose patched releases require Python ≥ 3.10
+(`requests`, `urllib3`, `filelock`, and others pinned by `matplotlib`/`pillow`
+on 3.9). Resolving them required dropping Python 3.9. `requires-python` is now
+`>=3.10`; the CI matrix, trove classifiers, and `ruff target-version` are
+3.10–3.12; `uv.lock` was regenerated with all 19 alerts cleared. (A stale
+"Test (Python 3.9)" required status check in branch protection was also removed
+so PRs could merge.)
+
+#### Carried to v0.9.0 planning
+
+- **D4 calibrate extension** — per-layer α/β fitting and Docker benchmark mode
+  (the only unshipped locked decision from this cycle).
+- Optional kubeconfig auth for Prometheus (D3 follow-on).
 
 ---
 
