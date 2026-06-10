@@ -5,6 +5,7 @@ import math
 import pytest
 
 from presidio_arch_translucency.model import (
+    DEFAULT_CONCURRENCY,
     LAYER_PARAMS,
     AnalysisResult,
     LayerResult,
@@ -12,6 +13,9 @@ from presidio_arch_translucency.model import (
     _base_capacity,
     analyze,
     intensity_after_replication,
+    load_calibrated_model,
+    model_is_calibrated,
+    resolve_concurrency,
     response_time_ms,
     throughput,
 )
@@ -194,3 +198,99 @@ class TestAnalyze:
         result = analyze(rps, lat, layer)
         assert result.recommended_layer in ReplicationLayer
         assert result.recommended_replicas >= 1
+
+
+# ---------------------------------------------------------------------------
+# Async α/β recalibration (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncRecalibration:
+    """The reference async workload must recommend a realistic replica count.
+
+    Pre-v0.7.0 the serial (concurrency=1) capacity model recommended 64
+    container replicas for 500 rps / 80 ms — ~12 rps/replica, wrong for async
+    services.  The recalibrated default must land in the 4–8 replica band.
+    """
+
+    def test_reference_workload_recommends_4_to_8_replicas(self):
+        result = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
+        assert 4 <= result.recommended_replicas <= 8, (
+            f"expected 4–8 replicas for 500 rps / 80 ms async, "
+            f"got {result.recommended_replicas}"
+        )
+
+    def test_reference_workload_not_over_provisioned(self):
+        # Regression guard: the old defaults pinned every layer at max_replicas.
+        result = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
+        for lr in result.layers:
+            assert lr.optimal_replicas < LAYER_PARAMS[lr.layer].max_replicas
+
+    def test_default_per_replica_capacity_is_async_realistic(self):
+        # 8 concurrent in-flight requests at 80 ms ⇒ ~100 rps/replica.
+        cap = _base_capacity(500.0, 80.0)
+        assert 65.0 <= cap <= 125.0
+
+    def test_concurrency_one_reproduces_legacy_over_provisioning(self):
+        # The serial assumption still drives the count toward max_replicas.
+        legacy = analyze(500.0, 80.0, ReplicationLayer.CONTAINER, concurrency=1.0)
+        assert legacy.recommended_replicas > 8
+
+    def test_higher_concurrency_lowers_replica_count(self):
+        low = analyze(500.0, 80.0, ReplicationLayer.CONTAINER, concurrency=4.0)
+        high = analyze(500.0, 80.0, ReplicationLayer.CONTAINER, concurrency=16.0)
+        assert high.recommended_replicas <= low.recommended_replicas
+
+
+# ---------------------------------------------------------------------------
+# Calibrated-model loading / envelope detection (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class TestCalibratedModelLoading:
+    def test_uncalibrated_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert load_calibrated_model() is None
+        assert model_is_calibrated() is False
+        assert resolve_concurrency() == DEFAULT_CONCURRENCY
+
+    def test_global_model_detected(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        pat_dir = home / ".pat"
+        pat_dir.mkdir(parents=True)
+        (pat_dir / "model.json").write_text('{"concurrency": 12.0}', encoding="utf-8")
+        assert model_is_calibrated() is True
+        assert resolve_concurrency() == 12.0
+
+    def test_project_local_takes_precedence(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".pat").mkdir(parents=True)
+        (home / ".pat" / "model.json").write_text(
+            '{"concurrency": 12.0}', encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pat-model.json").write_text(
+            '{"concurrency": 5.0}', encoding="utf-8"
+        )
+        assert resolve_concurrency() == 5.0
+
+    def test_corrupt_model_falls_back_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pat-model.json").write_text("{not json", encoding="utf-8")
+        assert load_calibrated_model() is None
+        assert resolve_concurrency() == DEFAULT_CONCURRENCY
+
+    def test_calibrated_model_changes_analysis(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        baseline = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
+        (tmp_path / ".pat-model.json").write_text(
+            '{"concurrency": 2.0}', encoding="utf-8"
+        )
+        calibrated = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
+        assert calibrated.recommended_replicas > baseline.recommended_replicas

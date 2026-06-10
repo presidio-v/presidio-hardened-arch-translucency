@@ -15,9 +15,11 @@ Layer overhead coefficients are calibrated for Docker/Kubernetes realities:
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Final
 
 # ---------------------------------------------------------------------------
@@ -34,6 +36,77 @@ class ReplicationLayer(str, Enum):
     POD = "pod"
     DEPLOYMENT = "deployment"
     NODE = "node"
+
+
+# ---------------------------------------------------------------------------
+# Per-replica capacity calibration (v0.7.0)
+# ---------------------------------------------------------------------------
+# A single replica's serving capacity is modelled as
+#
+#     per_replica_capacity ≈ concurrency × (1000 / avg_latency_ms)   [rps]
+#
+# The original model assumed ``concurrency = 1`` — i.e. a single in-flight
+# request per replica (Little's Law for a serial worker).  At 80 ms latency
+# that is only ~12 rps/replica, which drove `pat analyze` to recommend ~64
+# replicas for the 500 rps / 80 ms reference workload (see the 2026-04-20
+# dogfood notes in PRESIDIO-REQ.md).  Real async Python services (FastAPI,
+# aiohttp, …) keep many requests in flight per worker, so per-replica capacity
+# is far higher.  ``DEFAULT_CONCURRENCY = 8`` yields ~100 rps/replica at 80 ms,
+# placing the reference workload at a realistic 4–8 replicas.
+DEFAULT_CONCURRENCY: Final[float] = 8.0
+
+# Validity envelope the default parameters were calibrated against.  Outside
+# this range (or for non-async workloads) the CLI warns and suggests
+# `pat calibrate`.
+REFERENCE_RPS_RANGE: Final[tuple[float, float]] = (50.0, 2000.0)
+REFERENCE_LATENCY_RANGE_MS: Final[tuple[float, float]] = (10.0, 250.0)
+
+# Fitted-parameter persistence (written by `pat calibrate`, v0.7.0).
+PROJECT_MODEL_FILENAME: Final[str] = ".pat-model.json"
+GLOBAL_MODEL_RELPATH: Final[tuple[str, str]] = (".pat", "model.json")
+
+
+def _model_search_paths() -> list[Path]:
+    """Calibrated-model locations, project-local first then the global store."""
+    return [
+        Path.cwd() / PROJECT_MODEL_FILENAME,
+        Path.home() / GLOBAL_MODEL_RELPATH[0] / GLOBAL_MODEL_RELPATH[1],
+    ]
+
+
+def load_calibrated_model() -> dict | None:
+    """
+    Return fitted model parameters from ``.pat-model.json`` (cwd) or
+    ``~/.pat/model.json``, or ``None`` when neither exists / is readable.
+
+    Project-local parameters take precedence over the global store.
+    """
+    for path in _model_search_paths():
+        try:
+            if path.is_file():
+                with path.open(encoding="utf-8") as fh:
+                    return json.load(fh)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def model_is_calibrated() -> bool:
+    """True when a calibrated `.pat-model.json` / `~/.pat/model.json` exists."""
+    return load_calibrated_model() is not None
+
+
+def resolve_concurrency() -> float:
+    """Concurrency from a calibrated model if present, else the default."""
+    model = load_calibrated_model()
+    if model is not None:
+        try:
+            value = float(model["concurrency"])
+            if value > 0:
+                return value
+        except (KeyError, TypeError, ValueError):
+            pass
+    return DEFAULT_CONCURRENCY
 
 
 # ---------------------------------------------------------------------------
@@ -185,19 +258,31 @@ class AnalysisResult:
     layers: list[LayerResult]
 
 
-def base_capacity_rps(requests_per_second: float, avg_latency_ms: float) -> float:
-    """Public alias — single-replica capacity estimate via Little's Law."""
-    return _base_capacity(requests_per_second, avg_latency_ms)
+def base_capacity_rps(
+    requests_per_second: float,
+    avg_latency_ms: float,
+    concurrency: float = DEFAULT_CONCURRENCY,
+) -> float:
+    """Public alias — single-replica capacity estimate (concurrency-aware)."""
+    return _base_capacity(requests_per_second, avg_latency_ms, concurrency)
 
 
-def _base_capacity(requests_per_second: float, avg_latency_ms: float) -> float:
+def _base_capacity(
+    requests_per_second: float,
+    avg_latency_ms: float,
+    concurrency: float = DEFAULT_CONCURRENCY,
+) -> float:
     """
-    Estimate single-replica capacity from observed latency.
+    Estimate single-replica capacity from observed latency and concurrency.
 
-    Little's Law: capacity ≈ 1000 / avg_latency_ms  (requests/sec per replica)
-    We also cap it relative to observed demand to avoid wild extrapolation.
+    A replica serving ``concurrency`` requests in flight at ``avg_latency_ms``
+    each sustains ``concurrency × 1000 / avg_latency_ms`` rps (Little's Law for
+    a server with ``concurrency`` in-flight slots).  ``concurrency = 1`` is the
+    old serial assumption; the async default (8) reflects real FastAPI/aiohttp
+    workers.  We still cap relative to observed demand to avoid wild
+    extrapolation at very low load.
     """
-    littles_capacity = 1000.0 / max(avg_latency_ms, 1.0)
+    littles_capacity = concurrency * 1000.0 / max(avg_latency_ms, 1.0)
     # Assume current utilisation is ~70% (typical production headroom target)
     utilisation_estimate = 0.70
     demand_implied_capacity = requests_per_second / utilisation_estimate
@@ -208,15 +293,21 @@ def analyze(
     requests_per_second: float,
     avg_latency_ms: float,
     current_layer: ReplicationLayer,
+    concurrency: float | None = None,
 ) -> AnalysisResult:
     """
     Core architectural translucency analysis.
 
-    For each layer, sweep replication factors δ = 1..max_replicas and find
-    the δ that maximises throughput while minimising response time.
-    Returns a full AnalysisResult with a cross-layer recommendation.
+    For each layer, sweep replication factors δ = 1..max_replicas and find the
+    smallest δ that saturates demand (maximises throughput).  ``concurrency``
+    sets per-replica capacity; when ``None`` it is resolved from a calibrated
+    ``.pat-model.json`` / ``~/.pat/model.json`` or falls back to the async
+    default.  Returns a full AnalysisResult with a cross-layer recommendation.
     """
-    base_cap = _base_capacity(requests_per_second, avg_latency_ms)
+    if concurrency is None:
+        concurrency = resolve_concurrency()
+
+    base_cap = _base_capacity(requests_per_second, avg_latency_ms, concurrency)
     baseline_rps = min(base_cap, requests_per_second)
     baseline_rt = avg_latency_ms  # single replica, no replication
 
@@ -233,8 +324,11 @@ def analyze(
             rt = response_time_ms(
                 requests_per_second, delta, layer, avg_latency_ms, base_cap
             )
-            # Optimisation objective: maximise throughput, then minimise RT
-            if tp > best_tp or (tp >= best_tp and rt < best_rt):
+            # Optimisation objective: maximise throughput, preferring the
+            # FEWEST replicas that achieve it.  Adding replicas past demand
+            # saturation only shaves idle-queue latency at extra cost, so we
+            # only adopt a larger δ when it strictly improves throughput.
+            if tp > best_tp + 1e-9:
                 best_tp = tp
                 best_rt = rt
                 best_delta = delta
