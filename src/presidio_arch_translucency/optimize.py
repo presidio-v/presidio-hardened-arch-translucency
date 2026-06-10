@@ -9,11 +9,14 @@ Two models share one :class:`OptimizeResult`:
 * **SMA** (:func:`optimize_sma`) — smooth the window, estimate the short-term
   trend, and extrapolate a point forecast.  Dependency-free and deterministic.
 * **ARIMA** (:func:`optimize_arima`) — fit an ``statsmodels`` ARIMA whose order
-  is AIC-minimised over a bounded grid (p,q ∈ [0,3], d ∈ [0,2]), forecast with a
-  **95% confidence interval**, and report a replica *range* alongside the point
-  estimate.  Per the spec it **falls back to SMA when fewer than
-  ``MIN_ARIMA_SAMPLES`` (30) observations** are available, flagging that on the
-  result via ``fallback_reason``.
+  is AIC-minimised over a bounded grid (defaults p,q ∈ [0,3], d ∈ [0,2]),
+  forecast with a **95% confidence interval**, and report a replica *range*
+  alongside the point estimate.  The grid bounds are configurable per run
+  (``max_p`` / ``max_d`` / ``max_q``), and ``auto_diff`` replaces the ``d``
+  sweep with a single variance-heuristic differencing order (see
+  :func:`_auto_diff_order`).  Per the spec it **falls back to SMA when fewer
+  than ``MIN_ARIMA_SAMPLES`` (30) observations** are available, flagging that on
+  the result via ``fallback_reason``.
 
 ``statsmodels`` is imported lazily inside the ARIMA path, so SMA and the rest of
 the tool never pay for it.
@@ -59,10 +62,12 @@ MIN_ARIMA_SAMPLES = 30
 # How many recent samples the CLI pulls for an ARIMA run (≈ a few hours at
 # minute sampling); more history → better order selection.
 ARIMA_DEFAULT_HISTORY = 240
-# Bounded order search space (AIC-minimised): p,q ∈ [0,3], d ∈ [0,2].
-_ARIMA_P_RANGE = range(0, 4)
-_ARIMA_D_RANGE = range(0, 3)
-_ARIMA_Q_RANGE = range(0, 4)
+# Default bounds for the AIC-minimised order grid: p,q ∈ [0,3], d ∈ [0,2].
+# These reproduce the historical hard-coded 4×3×4 = 48-model search; users may
+# narrow or widen them per run via the CLI (`--max-p/--max-d/--max-q`).
+DEFAULT_MAX_P = 3
+DEFAULT_MAX_D = 2
+DEFAULT_MAX_Q = 3
 
 
 class OptimizeError(ValueError):
@@ -242,25 +247,81 @@ def optimize_sma(
 # ---------------------------------------------------------------------------
 
 
-def _fit_best_arima(series: list[float]):
+def _difference(series: Sequence[float], order: int) -> list[float]:
+    """Successive first-differences of *series*, ``order`` times."""
+    s = list(series)
+    for _ in range(order):
+        s = [b - a for a, b in zip(s, s[1:], strict=False)]
+    return s
+
+
+def _variance(values: Sequence[float]) -> float:
+    """Population variance of *values* (0.0 for fewer than two points)."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return sum((v - mean) ** 2 for v in values) / n
+
+
+def _auto_diff_order(series: Sequence[float], max_d: int = DEFAULT_MAX_D) -> int:
+    """
+    Pick the differencing order ``d`` ∈ [0, ``max_d``] whose differenced series
+    has the lowest variance — a dependency-free stand-in for an ADF stationarity
+    test.
+
+    A trending / random-walk series shrinks its variance dramatically under
+    first differencing, so ``d`` climbs until the series is stationary; a series
+    that is already stationary has minimum variance at ``d=0`` (differencing it
+    only injects noise), so ``d=0`` is returned.  Ties favour the smaller ``d``.
+    """
+    max_d = max(0, max_d)
+    best_d = 0
+    best_var = _variance(series)
+    for d in range(1, max_d + 1):
+        diffed = _difference(series, d)
+        if len(diffed) < 2:
+            break  # series too short to difference further
+        var = _variance(diffed)
+        if var < best_var:
+            best_var, best_d = var, d
+    return best_d
+
+
+def _fit_best_arima(
+    series: list[float],
+    max_p: int = DEFAULT_MAX_P,
+    max_d: int = DEFAULT_MAX_D,
+    max_q: int = DEFAULT_MAX_Q,
+    auto_diff: bool = False,
+):
     """
     Grid-search ARIMA orders and return ``(fitted_result, order)`` with the
     lowest AIC, or ``None`` if no order converges.  statsmodels is imported
     lazily so the rest of the tool never pays for it.
+
+    The grid spans ``p ∈ [0, max_p]``, ``q ∈ [0, max_q]`` and either
+    ``d ∈ [0, max_d]`` (default) or — when ``auto_diff`` is set — the single
+    differencing order chosen by :func:`_auto_diff_order` (a faster search).
     """
     import math  # noqa: PLC0415
     import warnings  # noqa: PLC0415
 
     from statsmodels.tsa.arima.model import ARIMA  # noqa: PLC0415
 
+    if auto_diff:
+        d_values: Sequence[int] = (_auto_diff_order(series, max_d),)
+    else:
+        d_values = range(max_d + 1)
+
     best = None
     best_aic = None
     best_order = None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # convergence / freq noise
-        for p in _ARIMA_P_RANGE:
-            for d in _ARIMA_D_RANGE:
-                for q in _ARIMA_Q_RANGE:
+        for p in range(max_p + 1):
+            for d in d_values:
+                for q in range(max_q + 1):
                     try:
                         fitted = ARIMA(series, order=(p, d, q)).fit()
                     except Exception:  # noqa: BLE001, S112 — unstable orders skipped
@@ -305,9 +366,18 @@ def optimize_arima(
     horizon_minutes: float = DEFAULT_HORIZON_MINUTES,
     min_samples: int = MIN_ARIMA_SAMPLES,
     concurrency: float | None = None,
+    max_p: int = DEFAULT_MAX_P,
+    max_d: int = DEFAULT_MAX_D,
+    max_q: int = DEFAULT_MAX_Q,
+    auto_diff: bool = False,
 ) -> OptimizeResult:
     """
     ARIMA forecast of demand with a 95% confidence interval and a replica range.
+
+    The AIC order grid spans ``p ∈ [0, max_p]``, ``q ∈ [0, max_q]`` and either
+    ``d ∈ [0, max_d]`` or — when ``auto_diff`` is set — a single variance-chosen
+    differencing order (``max_d`` then caps that choice).  The defaults
+    reproduce the historical 4×3×4 search exactly.
 
     Falls back to SMA (over the most recent ``DEFAULT_WINDOW`` samples) when
     there are fewer than ``min_samples`` observations, or when no ARIMA order
@@ -328,7 +398,9 @@ def optimize_arima(
         )
         return result
 
-    fit = _fit_best_arima(s.rps)
+    fit = _fit_best_arima(
+        s.rps, max_p=max_p, max_d=max_d, max_q=max_q, auto_diff=auto_diff
+    )
     if fit is None:
         result = optimize_sma(
             s.obs[-DEFAULT_WINDOW:],

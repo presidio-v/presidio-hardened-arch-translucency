@@ -1011,6 +1011,25 @@ def optimize_cmd(
     horizon_minutes: float = typer.Option(
         10.0, "--horizon-minutes", help="How far ahead to project demand.", min=0.0
     ),
+    max_p: int = typer.Option(
+        3, "--max-p", help="Max AR order p in the ARIMA AIC grid.", min=0
+    ),
+    max_d: int = typer.Option(
+        2,
+        "--max-d",
+        help="Max differencing order d in the ARIMA AIC grid (ignored with "
+        "--auto-diff, which caps the chosen d at this value).",
+        min=0,
+    ),
+    max_q: int = typer.Option(
+        3, "--max-q", help="Max MA order q in the ARIMA AIC grid.", min=0
+    ),
+    auto_diff: bool = typer.Option(
+        False,
+        "--auto-diff",
+        help="Auto-select the ARIMA differencing order d via a variance "
+        "heuristic instead of sweeping d (faster; capped at --max-d).",
+    ),
     layer: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--layer",
@@ -1085,7 +1104,13 @@ def optimize_cmd(
     try:
         if model_name == "arima":
             result = optimize_arima(
-                rows, horizon_minutes=horizon_minutes, concurrency=concurrency
+                rows,
+                horizon_minutes=horizon_minutes,
+                concurrency=concurrency,
+                max_p=max_p,
+                max_d=max_d,
+                max_q=max_q,
+                auto_diff=auto_diff,
             )
         else:
             result = optimize_sma(

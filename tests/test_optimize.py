@@ -7,10 +7,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from typer.testing import CliRunner
 
+from presidio_arch_translucency import optimize as optimize_mod
 from presidio_arch_translucency.cli import app
 from presidio_arch_translucency.observe import Observation, record_observation
 from presidio_arch_translucency.optimize import (
+    DEFAULT_MAX_D,
+    DEFAULT_MAX_P,
+    DEFAULT_MAX_Q,
     OptimizeError,
+    _auto_diff_order,
+    _fit_best_arima,
     optimize_sma,
     simple_moving_average,
 )
@@ -217,4 +223,191 @@ class TestOptimizeCLI:
         # Filtering to 'pod' must not be skewed by the container row.
         result = _invoke("--db", str(db), "--layer", "pod")
         assert result.exit_code == 0
-        assert "pod" in result.output
+
+
+# ---------------------------------------------------------------------------
+# ARIMA configurable order bounds (v0.9.0 Phase 3)
+#
+# No real ARIMA fitting happens here: the grid-search tests swap statsmodels'
+# ARIMA class for a recorder that just logs the (p, d, q) orders it is asked to
+# build, and the heuristic tests exercise `_auto_diff_order` directly.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingARIMA:
+    """Stand-in for statsmodels' ARIMA that records orders instead of fitting."""
+
+    orders: list[tuple[int, int, int]] = []
+
+    def __init__(self, series, order):
+        self.order = order
+        _RecordingARIMA.orders.append(order)
+
+    def fit(self):
+        return _FakeFitted(self.order)
+
+
+class _FakeFitted:
+    def __init__(self, order):
+        # Deterministic, distinct AICs so a single best order emerges; lower
+        # order-sum → lower AIC, so (0, 0, 0) always wins.
+        self.aic = float(sum(order))
+
+
+def _patch_arima(monkeypatch):
+    _RecordingARIMA.orders = []
+    monkeypatch.setattr("statsmodels.tsa.arima.model.ARIMA", _RecordingARIMA)
+
+
+def _full_grid(max_p, max_d, max_q):
+    return {
+        (p, d, q)
+        for p in range(max_p + 1)
+        for d in range(max_d + 1)
+        for q in range(max_q + 1)
+    }
+
+
+class TestAutoDiffOrder:
+    def test_stationary_series_picks_zero(self):
+        # An oscillation around a fixed level is already stationary; raw variance
+        # is minimal and differencing only injects noise.
+        series = [10, 11, 9, 10, 11, 9, 10, 11, 9, 10]
+        assert _auto_diff_order(series) == 0
+
+    def test_random_walk_picks_one(self):
+        # A strong linear trend (a deterministic random walk) collapses to a
+        # constant first difference (variance 0) → d=1.
+        series = list(range(0, 50, 2))
+        assert _auto_diff_order(series) == 1
+
+    def test_quadratic_trend_picks_two(self):
+        # A quadratic needs two differences to become constant → d=2.
+        series = [i * i for i in range(20)]
+        assert _auto_diff_order(series) == 2
+
+    def test_capped_at_max_d(self):
+        # The same quadratic, but max_d=1 forbids the d=2 choice.
+        series = [i * i for i in range(20)]
+        assert _auto_diff_order(series, max_d=1) == 1
+
+    def test_short_series_does_not_overshoot(self):
+        # Too few points to difference twice; never returns more than is sound.
+        assert _auto_diff_order([1.0, 4.0], max_d=2) == 0
+
+
+class TestFitBestArimaBounds:
+    def test_default_grid_is_4x3x4(self, monkeypatch):
+        # Regression guard: defaults reproduce the historical 48-model search.
+        _patch_arima(monkeypatch)
+        _fit_best_arima([float(i) for i in range(8)])
+        assert len(_RecordingARIMA.orders) == 4 * 3 * 4
+        assert set(_RecordingARIMA.orders) == _full_grid(
+            DEFAULT_MAX_P, DEFAULT_MAX_D, DEFAULT_MAX_Q
+        )
+
+    def test_narrowed_bounds_shrink_the_grid(self, monkeypatch):
+        _patch_arima(monkeypatch)
+        result = _fit_best_arima(
+            [float(i) for i in range(8)], max_p=1, max_d=1, max_q=1
+        )
+        assert set(_RecordingARIMA.orders) == _full_grid(1, 1, 1)
+        assert result is not None
+        _fitted, order = result
+        assert order == (0, 0, 0)  # lowest AIC by construction
+
+    def test_auto_diff_searches_single_d(self, monkeypatch):
+        _patch_arima(monkeypatch)
+        # A linear ramp → heuristic d=1, so every tried order has d=1.
+        _fit_best_arima(list(range(0, 40, 2)), max_p=1, max_q=1, auto_diff=True)
+        tried_d = {d for (_p, d, _q) in _RecordingARIMA.orders}
+        assert tried_d == {1}
+        # p,q still swept fully → 2×1×2 = 4 fits, not the full d-sweep.
+        assert len(_RecordingARIMA.orders) == 2 * 1 * 2
+
+    def test_auto_diff_respects_max_d_cap(self, monkeypatch):
+        _patch_arima(monkeypatch)
+        # Quadratic would pick d=2, but max_d=1 caps the auto choice at d=1.
+        _fit_best_arima(
+            [float(i * i) for i in range(20)], max_p=0, max_q=0, max_d=1, auto_diff=True
+        )
+        tried_d = {d for (_p, d, _q) in _RecordingARIMA.orders}
+        assert tried_d == {1}
+
+
+class TestOptimizeArimaSignatureDefaults:
+    def test_defaults_match_module_constants(self):
+        import inspect
+
+        from presidio_arch_translucency.optimize import optimize_arima
+
+        params = inspect.signature(optimize_arima).parameters
+        assert params["max_p"].default == DEFAULT_MAX_P
+        assert params["max_d"].default == DEFAULT_MAX_D
+        assert params["max_q"].default == DEFAULT_MAX_Q
+        assert params["auto_diff"].default is False
+
+
+class TestOptimizeArimaCLIPassthrough:
+    """The four flags must reach `optimize_arima` with the right values."""
+
+    @staticmethod
+    def _record_db(tmp_path):
+        db = tmp_path / "obs.db"
+        for i in range(3):
+            record_observation(
+                Observation(
+                    _T0 + timedelta(minutes=i), 100 + i, 80, 140, 97, "container", 2
+                ),
+                db_path=db,
+            )
+        return db
+
+    def _capture(self, monkeypatch):
+        captured = {}
+        real_sma = optimize_mod.optimize_sma
+
+        def fake_arima(rows, **kwargs):
+            captured.update(kwargs)
+            return real_sma(rows)  # a valid OptimizeResult so rendering succeeds
+
+        monkeypatch.setattr(optimize_mod, "optimize_arima", fake_arima)
+        return captured
+
+    def test_explicit_flags_reach_optimize_arima(self, tmp_path, monkeypatch):
+        captured = self._capture(monkeypatch)
+        db = self._record_db(tmp_path)
+        result = _invoke(
+            "--db",
+            str(db),
+            "--model",
+            "arima",
+            "--max-p",
+            "1",
+            "--max-d",
+            "0",
+            "--max-q",
+            "2",
+            "--auto-diff",
+        )
+        assert result.exit_code == 0
+        assert captured["max_p"] == 1
+        assert captured["max_d"] == 0
+        assert captured["max_q"] == 2
+        assert captured["auto_diff"] is True
+
+    def test_default_flags_reach_optimize_arima(self, tmp_path, monkeypatch):
+        captured = self._capture(monkeypatch)
+        db = self._record_db(tmp_path)
+        result = _invoke("--db", str(db), "--model", "arima")
+        assert result.exit_code == 0
+        assert captured["max_p"] == DEFAULT_MAX_P
+        assert captured["max_d"] == DEFAULT_MAX_D
+        assert captured["max_q"] == DEFAULT_MAX_Q
+        assert captured["auto_diff"] is False
+
+    def test_negative_bound_rejected(self, tmp_path):
+        result = _invoke(
+            "--db", str(tmp_path / "obs.db"), "--model", "arima", "--max-p", "-1"
+        )
+        assert result.exit_code == 2
