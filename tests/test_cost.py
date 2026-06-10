@@ -9,6 +9,7 @@ from presidio_arch_translucency.cost import (
     CostParams,
     build_cost_results,
     cost_per_request,
+    format_cost_per_request,
     hourly_cost,
     trough_cost_usd,
 )
@@ -140,6 +141,74 @@ def test_build_cost_results_container_cheapest_per_hour() -> None:
     costs = {r.layer: r.hourly_cost_usd for r in cr}
     assert costs[ReplicationLayer.CONTAINER] <= costs[ReplicationLayer.POD]
     assert costs[ReplicationLayer.POD] <= costs[ReplicationLayer.DEPLOYMENT]
+
+
+# ── format_cost_per_request ───────────────────────────────────────────────────
+
+
+def test_format_cost_tiny_value_not_truncated_to_zero() -> None:
+    # Regression: the old "${:.6f}" format collapsed this to "$0.000000".
+    out = format_cost_per_request(2.67e-8)
+    assert out != "$0.000000"
+    assert out != "$0"
+    # scientific notation below 1e-4, with a non-zero mantissa
+    assert "e-08" in out
+    assert out.startswith("$2.67")
+
+
+def test_format_cost_below_threshold_uses_scientific() -> None:
+    assert format_cost_per_request(5e-6) == "$5.0000e-06"
+    assert format_cost_per_request(9.9999e-5).endswith("e-05")
+
+
+def test_format_cost_above_threshold_uses_significant_figures() -> None:
+    # >= 1e-4 stays in plain decimal with up to 8 significant figures
+    out = format_cost_per_request(0.0123456789)
+    assert out == "$0.012345679"
+    assert "e" not in out
+
+
+def test_format_cost_preserves_eight_sig_figs() -> None:
+    # A value just above the scientific-notation threshold keeps real digits,
+    # never rounding away to $0.000000.
+    out = format_cost_per_request(0.00012345678)
+    assert out != "$0.000000"
+    assert out.startswith("$0.00012345")
+
+
+def test_format_cost_infinity_renders_dash() -> None:
+    assert format_cost_per_request(float("inf")) == "—"
+
+
+def test_format_cost_zero_and_negative() -> None:
+    assert format_cost_per_request(0.0) == "$0"
+    assert format_cost_per_request(-1.0) == "$0"
+
+
+def test_build_cost_results_high_throughput_cpr_displays_nonzero() -> None:
+    # End-to-end: a high-throughput workload yields a sub-$1e-4 cost/request
+    # that must still render as a non-zero value through the formatter.
+    analysis = analyze(5000.0, 20.0, ReplicationLayer.CONTAINER)
+    results = build_cost_results(analysis.layers, CostParams())
+    best = next(r for r in results if r.is_recommended)
+    assert best.cost_per_request_usd < 1e-4
+    assert format_cost_per_request(best.cost_per_request_usd) not in ("$0.000000", "$0")
+
+
+def test_cost_cmd_no_truncated_zero_in_output() -> None:
+    # The rendered `pat cost` panel/table must never show the truncated
+    # "$0.000000" sentinel that motivated the precision fix.
+    result = invoke(
+        "cost",
+        "--requests-per-second",
+        "5000",
+        "--avg-latency-ms",
+        "20",
+        "--current-layer",
+        "container",
+    )
+    assert result.exit_code == 0
+    assert "$0.000000" not in result.output
 
 
 # ── pat cost CLI ─────────────────────────────────────────────────────────────
