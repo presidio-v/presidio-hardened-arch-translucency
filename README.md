@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.6.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.8.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -73,6 +73,8 @@ to the `pat` CLI you already installed.
 ---
 
 ## Installation
+
+Requires **Python ≥ 3.10**.
 
 ```bash
 pip install presidio-hardened-arch-translucency
@@ -316,6 +318,122 @@ pat cost -r 500 -l 80 -c container \
 
 ---
 
+## Autoresearch: calibrate → observe → optimize (v0.7.0 / v0.8.0)
+
+The static commands above (`analyze`, `cost`, `slo`, `what-if`) reason from the
+analytical model. The **autoresearch** commands close the loop with *measured*
+data: calibrate the model to your workload, record a rolling history of live
+measurements, and project demand forward into a proactive scaling
+recommendation — optionally emitted as an apply-able HPA manifest.
+
+All three share `~/.pat/`: the fitted model lives at `~/.pat/model.json` (or a
+project-local `.pat-model.json`, which takes precedence), and the rolling
+observation history lives in a SQLite store at `~/.pat/observations.db`.
+
+### `pat calibrate` — fit the model to measured points (v0.7.0)
+
+Fits the per-replica capacity model (concurrency κ and coordination overhead β)
+to two or more measured `rps:latency_ms:replicas` points from your APM, load
+tests, or prior `pat demo` runs. Writes `~/.pat/model.json`; afterwards the
+static commands use your fitted parameters and stop emitting the envelope
+warning. No Docker required.
+
+```bash
+pat calibrate --observation 100:50:2 --observation 300:80:5
+```
+
+Prints a per-observation prediction/residual table plus overall R² and RMSE.
+
+### `pat observe` — record a rolling measurement history (v0.8.0)
+
+Records a single workload observation into the SQLite store, or lists recent
+rows. **Single-shot by design** — it takes one measurement and exits; schedule
+recurring collection externally (cron, launchd, a Kubernetes CronJob).
+
+```bash
+# Record one measurement (all fields required when recording)
+pat observe --layer container \
+  --rps 480 --avg-latency-ms 78 --p99-latency-ms 190 \
+  --throughput 470 --replicas 4
+
+# List the most recent observations
+pat observe --list --limit 20
+```
+
+The store is **source-agnostic** — supply numbers from any source. Tag the
+origin with `--source` (defaults to `manual`), and override the store path with
+`--db`.
+
+#### `pat observe --prometheus` — scrape one sample from Prometheus (v0.8.0)
+
+Scrapes a single sample (rps, p99, replica count) from the Prometheus HTTP API
+and records it with `source='prometheus'`. Still single-shot — schedule repeats
+externally. Prometheus does not know the replication layer, so `--layer` is
+required.
+
+```bash
+export PAT_PROMETHEUS_TOKEN=...   # optional bearer token; env only, never a flag
+pat observe --prometheus http://prometheus.monitoring.svc:9090 --layer deployment
+```
+
+The bearer token is read from `PAT_PROMETHEUS_TOKEN` only — never passed as a
+CLI argument and never logged.
+
+### `pat optimize` — proactive scaling recommendation (v0.8.0)
+
+Reads the observation store, projects demand a few minutes ahead, and recommends
+the replica count to serve it.
+
+```bash
+# Simple moving average over the most-recent samples (default)
+pat optimize --model sma --window 10 --horizon-minutes 10
+
+# ARIMA forecast with a 95% confidence interval + replica range
+pat optimize --model arima --horizon-minutes 15
+```
+
+`--model arima` fits a `statsmodels` ARIMA with a 95% confidence interval and
+emits a replica range; it **auto-falls back to SMA** when fewer than 30 samples
+are available. Restrict to one layer with `--layer`, or override the store with
+`--db`.
+
+#### `pat optimize --emit-hpa-patch` — emit an apply-able HPA (v0.8.0)
+
+Instead of the summary panel, emit a sanitised `HorizontalPodAutoscaler`
+manifest to stdout for a target Deployment. `minReplicas` is the point
+recommendation; `maxReplicas` is the ARIMA upper-CI bound when available.
+
+```bash
+pat optimize --model arima --emit-hpa-patch \
+  --target my-api --namespace production > hpa-patch.yaml
+kubectl apply -f hpa-patch.yaml
+```
+
+The target and namespace are validated as RFC 1123 names; no user input is
+echoed raw into the manifest.
+
+### Workflow example — the observe → optimize loop
+
+```bash
+# 1. (Once) calibrate the model to a couple of measured operating points
+pat calibrate --observation 100:50:2 --observation 300:80:5
+
+# 2. (Recurring, e.g. a */1 * * * * cron entry) record a live sample each minute
+pat observe --prometheus http://prometheus:9090 --layer deployment
+
+# 3. After ~30+ samples accumulate, project demand and recommend replicas
+pat optimize --model arima --horizon-minutes 15
+
+# 4. When you're ready to act, emit the HPA and apply it
+pat optimize --model arima --emit-hpa-patch \
+  --target my-api --namespace production | kubectl apply -f -
+```
+
+Until ~30 samples exist, step 3 transparently falls back to SMA, so the loop is
+useful from the very first observations.
+
+---
+
 ## Live Demonstrator
 
 `pat demo` spins up real Docker containers and measures throughput, latency,
@@ -413,7 +531,14 @@ Options:
   --help                Show this message and exit.
 
 Commands:
-  analyze   Analyze workload and recommend the optimal replication layer.
+  analyze     Analyze workload and recommend the optimal replication layer.
+  what-if     Project the HPA scale-out trough for a load spike.
+  slo         Check p99 SLO compliance in steady state and during a trough.
+  cost        Rank layers by cost-per-request and performance-per-dollar.
+  calibrate   Fit the model to measured rps:latency:replicas points.
+  observe     Record one workload observation (or --list recent ones).
+  optimize    Proactive scaling recommendation from observed history.
+  demo        Run the live Docker demonstrator.
 
 pat analyze Options:
   -r, --requests-per-second FLOAT   Observed workload in req/s  [required]
@@ -421,6 +546,8 @@ pat analyze Options:
   -c, --current-layer TEXT          Current layer (container|pod|deployment|node)  [required]
   --show-all                        Show all layers in a comparison table
 ```
+
+Run `pat <command> --help` for the full option list of any command.
 
 ---
 
@@ -477,9 +604,9 @@ pytest
 | v0.3.0 | HPA lag model (`pat what-if`, `pat slo`) |
 | v0.4.0 | Cost-aware replication analysis (`pat cost`) |
 | v0.5.0 | Cloud billing integration — AWS on-demand pricing |
-| **v0.6.0** | **Cloud billing — AWS reserved/spot + GCP + Azure** |
-| v0.7.0 | Autoresearch — `pat demo` observation + simple moving average predictions |
-| v0.8.0 | Autoresearch — Prometheus integration + ARIMA time-series model |
+| v0.6.0 | Cloud billing — AWS reserved/spot + GCP + Azure |
+| v0.7.0 | Autoresearch — `pat calibrate` + observation store + SMA predictions |
+| **v0.8.0** | **Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 
