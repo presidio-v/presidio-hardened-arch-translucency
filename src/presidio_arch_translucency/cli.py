@@ -871,7 +871,119 @@ def observe_cmd(
     )
 
 
+@app.command("optimize")
+def optimize_cmd(
+    model: str = typer.Option(
+        "sma",
+        "--model",
+        help="Prediction model. Only 'sma' in v0.8.0 ('arima' arrives later).",
+    ),
+    window: int = typer.Option(
+        10, "--window", help="Number of most-recent samples to smooth.", min=1
+    ),
+    horizon_minutes: float = typer.Option(
+        10.0, "--horizon-minutes", help="How far ahead to project demand.", min=0.0
+    ),
+    layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-c",
+        help="Restrict to one replication layer (default: use all recorded).",
+    ),
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None, "--db", help="Override the store path (default: ~/.pat/observations.db)."
+    ),
+) -> None:
+    """
+    Proactive scaling recommendation from observed history (SMA).
+
+    Reads the rolling observation store, smooths the recent demand with a simple
+    moving average, projects it a few minutes ahead, and recommends the replica
+    count to serve the predicted load. Record samples first with `pat observe`.
+    """
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+    from presidio_arch_translucency.optimize import (  # noqa: PLC0415
+        OptimizeError,
+        optimize_sma,
+    )
+
+    if model.lower() != "sma":
+        err_console.print(
+            f"[bold red]Unsupported --model {model!r}.[/] "
+            "Only 'sma' is available in v0.8.0; 'arima' arrives in a later phase."
+        )
+        raise typer.Exit(code=2)
+
+    layer_filter: str | None = None
+    if layer is not None:
+        try:
+            layer_filter = sanitize_layer(layer, VALID_LAYERS)
+        except InputValidationError as exc:
+            err_console.print(f"[bold red]Input validation error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+    rows = store.latest_observations(window, db_path=db, layer=layer_filter)
+    if not rows:
+        scope = f" for layer {layer_filter!r}" if layer_filter else ""
+        console.print(
+            f"\n[yellow]No observations{scope} yet.[/] "
+            "Record some with [bold]pat observe[/] (or schedule collection via "
+            "cron/launchd), then re-run.\n"
+        )
+        return
+
+    try:
+        result = optimize_sma(rows, horizon_minutes=horizon_minutes)
+    except OptimizeError as exc:  # pragma: no cover - guarded by the empty check
+        err_console.print(f"[bold red]Cannot optimise:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    log_security_event(
+        "OPTIMIZE_INVOCATION", {"layer": result.layer, "samples": result.samples}
+    )
+    _render_optimize(result)
+
+
 # ── rendering helpers ─────────────────────────────────────────────────────────
+
+
+def _render_optimize(result: object) -> None:
+    """Render the SMA proactive scaling recommendation."""
+    from presidio_arch_translucency.optimize import OptimizeResult  # local import
+
+    assert isinstance(result, OptimizeResult)  # noqa: S101
+
+    trend_color = "green" if result.trend_pct >= 0 else "red"
+    action_label = {
+        "scale-up": "[yellow]Scale up to[/]",
+        "scale-down": "[cyan]Scale down to[/]",
+        "hold": "[green]Hold at[/]",
+    }[result.action]
+
+    span = result.window_minutes
+    body = (
+        f"[bold]Based on {result.samples} sample(s) (SMA, "
+        f"{result.layer}):[/]\n"
+        f"  Window      {span:.0f} min  "
+        f"({result.first_ts:%Y-%m-%d %H:%M} → {result.last_ts:%H:%M} UTC)\n"
+        f"  Demand      {result.sma_rps:.0f} req/s smoothed  "
+        f"([{trend_color}]{result.trend_pct:+.0f}%[/] over {span:.0f} min)\n"
+        f"  Predicted   ~{result.predicted_rps:.0f} req/s "
+        f"in ~{result.horizon_minutes:.0f} min "
+        f"([dim]{result.slope_rps_per_min:+.1f} req/s/min[/])\n"
+        f"  Current     {result.current_replicas} replicas\n"
+        f"  Recommend   {action_label} [bold]{result.recommended_replicas}[/] "
+        f"replicas ({result.layer})"
+    )
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]Presidio Architectural Translucency — Optimize (SMA)[/]",
+            border_style="blue",
+        )
+    )
+    console.print()
 
 
 def _render_observations(rows: list, total: int) -> None:
