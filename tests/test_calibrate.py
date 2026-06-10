@@ -184,3 +184,186 @@ def test_calibrate_cmd_requires_observation(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     result = invoke("calibrate")
     assert result.exit_code != 0
+
+
+# ── per-layer calibration (v0.9.0) ────────────────────────────────────────────
+
+
+def test_write_model_file_per_layer_upserts(tmp_path, monkeypatch) -> None:
+    """A named layer is written under layers.<name>; the global fit is preserved."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Seed the global (pooled) fit first.
+    global_fit = fit_calibration(_synthetic(kappa=9.0, beta=0.02))
+    write_model_file(global_fit)
+
+    api_fit = fit_calibration(_synthetic(kappa=12.0, beta=0.02))
+    path = write_model_file(api_fit, layer="api")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    # Global params untouched, layer record added.
+    assert payload["concurrency"] == pytest.approx(9.0, rel=1e-4)
+    assert payload["layers"]["api"]["concurrency"] == pytest.approx(12.0, rel=1e-4)
+    assert "calibrated_at" in payload["layers"]["api"]
+
+
+def test_write_model_file_layers_independent(tmp_path, monkeypatch) -> None:
+    """Writing one layer leaves previously-written layers untouched."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_model_file(fit_calibration(_synthetic(kappa=9.0, beta=0.02)))
+    write_model_file(fit_calibration(_synthetic(kappa=12.0, beta=0.02)), layer="api")
+    path = write_model_file(
+        fit_calibration(_synthetic(kappa=6.0, beta=0.02)), layer="worker"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert set(payload["layers"]) == {"api", "worker"}
+    assert payload["layers"]["api"]["concurrency"] == pytest.approx(12.0, rel=1e-4)
+    assert payload["layers"]["worker"]["concurrency"] == pytest.approx(6.0, rel=1e-4)
+    # Re-writing 'api' must not disturb 'worker'.
+    write_model_file(fit_calibration(_synthetic(kappa=15.0, beta=0.02)), layer="api")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["layers"]["api"]["concurrency"] == pytest.approx(15.0, rel=1e-4)
+    assert payload["layers"]["worker"]["concurrency"] == pytest.approx(6.0, rel=1e-4)
+
+
+def test_write_global_preserves_existing_layers(tmp_path, monkeypatch) -> None:
+    """Re-fitting the global (pooled) params keeps per-layer records intact."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_model_file(fit_calibration(_synthetic(kappa=9.0, beta=0.02)))
+    write_model_file(fit_calibration(_synthetic(kappa=12.0, beta=0.02)), layer="api")
+    path = write_model_file(fit_calibration(_synthetic(kappa=10.0, beta=0.02)))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["concurrency"] == pytest.approx(10.0, rel=1e-4)
+    assert payload["layers"]["api"]["concurrency"] == pytest.approx(12.0, rel=1e-4)
+
+
+def test_resolve_concurrency_layer_override_and_fallback(tmp_path, monkeypatch) -> None:
+    """layer override → global fallback → default, per v0.9.0 model loading."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    write_model_file(fit_calibration(_synthetic(kappa=9.0, beta=0.02)))
+    write_model_file(fit_calibration(_synthetic(kappa=12.0, beta=0.02)), layer="api")
+
+    # Named layer resolves to its own fit.
+    assert resolve_concurrency("api") == pytest.approx(12.0, rel=1e-4)
+    # Unknown layer falls back to the global fit.
+    assert resolve_concurrency("missing") == pytest.approx(9.0, rel=1e-4)
+    # No layer / the reserved "default" both mean the global fit.
+    assert resolve_concurrency() == pytest.approx(9.0, rel=1e-4)
+    assert resolve_concurrency("default") == pytest.approx(9.0, rel=1e-4)
+
+
+def test_resolve_concurrency_backward_compatible_no_layers(
+    tmp_path, monkeypatch
+) -> None:
+    """A pre-v0.9.0 model file (no 'layers' key) still resolves, layer or not."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    legacy = global_model_path()
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        json.dumps({"concurrency": 3.5, "overhead_beta": 0.02}), encoding="utf-8"
+    )
+    assert resolve_concurrency() == pytest.approx(3.5)
+    # A layer request on a layerless file falls back to the global value.
+    assert resolve_concurrency("api") == pytest.approx(3.5)
+
+
+def test_resolve_concurrency_no_model_returns_default(tmp_path, monkeypatch) -> None:
+    from presidio_arch_translucency.model import DEFAULT_CONCURRENCY
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert resolve_concurrency("api") == DEFAULT_CONCURRENCY
+
+
+def test_resolve_concurrency_bad_layer_record_falls_back(tmp_path, monkeypatch) -> None:
+    """A malformed layer record is ignored; resolution falls back to global."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    path = global_model_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "concurrency": 7.0,
+                "layers": {
+                    "api": {"concurrency": "not-a-number"},  # bad value
+                    "broken": "not-a-dict",  # bad record type
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert resolve_concurrency("api") == pytest.approx(7.0)
+    assert resolve_concurrency("broken") == pytest.approx(7.0)
+
+
+def test_write_model_file_corrupt_existing_is_replaced(tmp_path, monkeypatch) -> None:
+    """A corrupt model file is treated as empty rather than crashing the write."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = global_model_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not valid json", encoding="utf-8")
+    # Per-layer write over a corrupt file must succeed and produce valid JSON.
+    write_model_file(fit_calibration(_synthetic(kappa=8.0, beta=0.02)), layer="api")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["layers"]["api"]["concurrency"] == pytest.approx(8.0, rel=1e-4)
+
+
+def test_calibrate_cmd_layer_writes_layers_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = invoke(
+        "calibrate",
+        "--layer",
+        "api",
+        "--observation",
+        "200:40:3",
+        "--observation",
+        "600:55:8",
+    )
+    assert result.exit_code == 0
+    # Final-line / panel mention the layer destination.
+    assert "layers.api" in result.output
+    payload = json.loads((tmp_path / ".pat" / "model.json").read_text(encoding="utf-8"))
+    assert "api" in payload["layers"]
+
+
+def test_calibrate_cmd_show_global(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    invoke("calibrate", "--observation", "100:50:2", "--observation", "300:80:5")
+    result = invoke(
+        "calibrate",
+        "--layer",
+        "api",
+        "--observation",
+        "200:40:3",
+        "--observation",
+        "600:55:8",
+        "--show-global",
+    )
+    assert result.exit_code == 0
+    assert "Global (pooled) fit" in result.output
+
+
+def test_analyze_layer_uses_layer_calibration(tmp_path, monkeypatch) -> None:
+    """`pat analyze --layer` picks the per-layer fit (no uncalibrated warning)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    invoke("calibrate", "--observation", "100:50:2", "--observation", "300:80:5")
+    invoke(
+        "calibrate",
+        "--layer",
+        "api",
+        "--observation",
+        "200:40:3",
+        "--observation",
+        "600:55:8",
+    )
+    result = invoke(
+        "analyze", "-r", "500", "-l", "80", "-c", "container", "--layer", "api"
+    )
+    assert result.exit_code == 0
+    assert "pat calibrate" not in combined_output(result)

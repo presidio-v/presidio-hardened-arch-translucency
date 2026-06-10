@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from presidio_arch_translucency.model import (
+    DEFAULT_CONCURRENCY,
     LAYER_PARAMS,
     ReplicationLayer,
     base_capacity_rps,
@@ -29,6 +30,12 @@ from presidio_arch_translucency.model import (
 DEFAULT_HPA_POLL_S: float = 15.0
 DEFAULT_POD_STARTUP_S: float = 30.0
 DEFAULT_COLD_START_S: float = 0.0
+
+
+def _base_cap(rps: float, avg_latency_ms: float, concurrency: float | None) -> float:
+    """base_capacity_rps with the model default when *concurrency* is None."""
+    conc = DEFAULT_CONCURRENCY if concurrency is None else concurrency
+    return base_capacity_rps(rps, avg_latency_ms, conc)
 
 
 # ── data model ────────────────────────────────────────────────────────────────
@@ -123,12 +130,16 @@ def optimal_replicas_for_rps(
     rps: float,
     avg_latency_ms: float,
     layer: ReplicationLayer,
+    concurrency: float | None = None,
 ) -> int:
     """
     Minimum replica count at *layer* that achieves ≥ 98 % of *rps* throughput.
     Capped at the layer's max_replicas ceiling.
+
+    *concurrency* sets per-replica capacity; ``None`` uses the model default
+    (callers that have resolved a calibrated / per-layer value pass it here).
     """
-    base_cap = base_capacity_rps(rps, avg_latency_ms)
+    base_cap = _base_cap(rps, avg_latency_ms, concurrency)
     params = LAYER_PARAMS[layer]
     for delta in range(1, params.max_replicas + 1):
         if throughput(rps, delta, layer, base_cap) >= rps * 0.98:
@@ -146,8 +157,9 @@ def _build_timeline(
     replicas_before: int,
     replicas_after: int,
     params: ScaleEventParams,
+    concurrency: float | None = None,
 ) -> list[TimePoint]:
-    base_cap = base_capacity_rps(rps_spike, avg_latency_ms)
+    base_cap = _base_cap(rps_spike, avg_latency_ms, concurrency)
     ttr = params.time_to_ready_s
     raw_times = [
         0.0,
@@ -325,23 +337,29 @@ def simulate_scale_event(
     params: ScaleEventParams | None = None,
     replicas_before: int | None = None,
     replicas_after: int | None = None,
+    concurrency: float | None = None,
 ) -> ScaleEventResult:
     """
     Simulate an HPA scale event when load rises from *rps_baseline* to *rps_spike*.
 
     *replicas_before* / *replicas_after* default to the architectural-
-    translucency optimal replica counts for each load level.
+    translucency optimal replica counts for each load level.  *concurrency* sets
+    per-replica capacity; ``None`` uses the model default (the CLI passes a
+    calibrated / per-layer value resolved from the model file).
     """
     if params is None:
         params = ScaleEventParams()
     if replicas_before is None:
         replicas_before = max(
-            1, optimal_replicas_for_rps(rps_baseline, avg_latency_ms, layer)
+            1,
+            optimal_replicas_for_rps(rps_baseline, avg_latency_ms, layer, concurrency),
         )
     if replicas_after is None:
-        replicas_after = optimal_replicas_for_rps(rps_spike, avg_latency_ms, layer)
+        replicas_after = optimal_replicas_for_rps(
+            rps_spike, avg_latency_ms, layer, concurrency
+        )
 
-    base_cap = base_capacity_rps(rps_spike, avg_latency_ms)
+    base_cap = _base_cap(rps_spike, avg_latency_ms, concurrency)
 
     # Trough: δ_before replicas under rps_spike demand
     trough_tp = throughput(rps_spike, replicas_before, layer, base_cap)
@@ -384,5 +402,6 @@ def simulate_scale_event(
             replicas_before,
             replicas_after,
             params,
+            concurrency,
         ),
     )

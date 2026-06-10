@@ -187,10 +187,18 @@ def _window_stats(observations: Sequence[Observation]) -> _WindowStats:
     )
 
 
-def _recommend(rps: float, latency: float, layer: str, current_replicas: int) -> int:
+def _recommend(
+    rps: float,
+    latency: float,
+    layer: str,
+    current_replicas: int,
+    concurrency: float | None = None,
+) -> int:
     """Minimal replicas to serve *rps*, or current count for an unmodelled layer."""
     try:
-        return optimal_replicas_for_rps(max(0.0, rps), latency, ReplicationLayer(layer))
+        return optimal_replicas_for_rps(
+            max(0.0, rps), latency, ReplicationLayer(layer), concurrency
+        )
     except (ValueError, KeyError):
         return current_replicas
 
@@ -198,15 +206,19 @@ def _recommend(rps: float, latency: float, layer: str, current_replicas: int) ->
 def optimize_sma(
     observations: Sequence[Observation],
     horizon_minutes: float = DEFAULT_HORIZON_MINUTES,
+    concurrency: float | None = None,
 ) -> OptimizeResult:
     """
     Smooth *observations*, project demand ``horizon_minutes`` ahead, and
     recommend a replica count.  Observations are sorted by timestamp internally;
-    pass the window you want smoothed (e.g. the most recent N).
+    pass the window you want smoothed (e.g. the most recent N).  *concurrency*
+    sets per-replica capacity; ``None`` uses the model default.
     """
     s = _window_stats(observations)
     predicted_rps = max(0.0, s.level + s.slope * horizon_minutes)
-    recommended = _recommend(predicted_rps, s.sma_latency, s.layer, s.current_replicas)
+    recommended = _recommend(
+        predicted_rps, s.sma_latency, s.layer, s.current_replicas, concurrency
+    )
     return OptimizeResult(
         layer=s.layer,
         samples=s.n,
@@ -292,6 +304,7 @@ def optimize_arima(
     observations: Sequence[Observation],
     horizon_minutes: float = DEFAULT_HORIZON_MINUTES,
     min_samples: int = MIN_ARIMA_SAMPLES,
+    concurrency: float | None = None,
 ) -> OptimizeResult:
     """
     ARIMA forecast of demand with a 95% confidence interval and a replica range.
@@ -299,11 +312,16 @@ def optimize_arima(
     Falls back to SMA (over the most recent ``DEFAULT_WINDOW`` samples) when
     there are fewer than ``min_samples`` observations, or when no ARIMA order
     converges; the returned result carries ``fallback_reason`` in that case.
+    *concurrency* sets per-replica capacity; ``None`` uses the model default.
     """
     s = _window_stats(observations)
 
     if s.n < min_samples:
-        result = optimize_sma(s.obs[-DEFAULT_WINDOW:], horizon_minutes=horizon_minutes)
+        result = optimize_sma(
+            s.obs[-DEFAULT_WINDOW:],
+            horizon_minutes=horizon_minutes,
+            concurrency=concurrency,
+        )
         result.fallback_reason = (
             f"only {s.n} observation(s) (< {min_samples}); ARIMA needs more "
             "history — used SMA instead."
@@ -312,7 +330,11 @@ def optimize_arima(
 
     fit = _fit_best_arima(s.rps)
     if fit is None:
-        result = optimize_sma(s.obs[-DEFAULT_WINDOW:], horizon_minutes=horizon_minutes)
+        result = optimize_sma(
+            s.obs[-DEFAULT_WINDOW:],
+            horizon_minutes=horizon_minutes,
+            concurrency=concurrency,
+        )
         result.fallback_reason = (
             "no ARIMA order converged for this series — used SMA instead."
         )
@@ -323,9 +345,11 @@ def optimize_arima(
     point, lower, upper = _arima_forecast(fitted, steps)
     point, lower, upper = max(0.0, point), max(0.0, lower), max(0.0, upper)
 
-    recommended = _recommend(point, s.sma_latency, s.layer, s.current_replicas)
-    rec_lo = _recommend(lower, s.sma_latency, s.layer, s.current_replicas)
-    rec_hi = _recommend(upper, s.sma_latency, s.layer, s.current_replicas)
+    recommended = _recommend(
+        point, s.sma_latency, s.layer, s.current_replicas, concurrency
+    )
+    rec_lo = _recommend(lower, s.sma_latency, s.layer, s.current_replicas, concurrency)
+    rec_hi = _recommend(upper, s.sma_latency, s.layer, s.current_replicas, concurrency)
 
     return OptimizeResult(
         layer=s.layer,
