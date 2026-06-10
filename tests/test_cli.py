@@ -42,9 +42,11 @@ def invoke(*args: str, skip_audit: bool = True):
 
 class TestVersionAndHelp:
     def test_version_flag(self):
+        from presidio_arch_translucency import __version__
+
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.7.0" in result.output
+        assert __version__ in result.output
 
     def test_help_flag(self):
         result = runner.invoke(app, ["--help"])
