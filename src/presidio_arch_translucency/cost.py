@@ -78,6 +78,27 @@ def cost_per_request(
     return hourly_cost(layer, replicas, params) / (throughput_rps * 3600.0)
 
 
+def format_cost_per_request(value: float) -> str:
+    """
+    Render a USD cost-per-request value without truncating it to ``$0.000000``.
+
+    At realistic throughput the per-request cost is frequently far below the
+    fixed 6-decimal precision the CLI used previously, collapsing every value
+    to ``$0.000000`` and hiding all cost signal.  This formatter keeps up to 8
+    significant figures and switches to scientific notation below ``$1e-4`` so
+    sub-cent values stay legible (e.g. ``$2.6700e-08`` instead of ``$0.000000``).
+    """
+    if value == float("inf"):
+        return "—"
+    if value <= 0:
+        return "$0"
+    if value < 1e-4:
+        return f"${value:.4e}"
+    # %g trims trailing zeros; below 1e-4 it would switch to its own scientific
+    # form, but we have already handled that range above.
+    return f"${value:.8g}"
+
+
 def trough_cost_usd(missed_requests: int, cost_per_req: float) -> float:
     """
     Estimated revenue cost of the HPA trough window.
@@ -137,7 +158,9 @@ def build_cost_results(
                 throughput_gain_pct=lr.throughput_gain_pct,
                 response_time_change_pct=lr.response_time_change_pct,
                 hourly_cost_usd=round(hc, 4),
-                cost_per_request_usd=round(cpr, 8),
+                # 12 places (not 8) so format_cost_per_request retains enough
+                # significant figures for sub-$1e-4 values at high throughput.
+                cost_per_request_usd=round(cpr, 12),
                 roi_score=round(roi, 2),
                 description=lr.description,
             )
