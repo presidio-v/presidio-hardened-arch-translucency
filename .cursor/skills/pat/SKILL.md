@@ -30,7 +30,7 @@ Before the first invocation in a session:
 command -v pat || pip install presidio-hardened-arch-translucency
 ```
 
-If installation is disallowed (sandboxed env, strict dependency policy), skip gracefully — note the absence in the plan, continue without the recommendation rather than fabricating numbers. (A hosted HTTP mode is planned for v0.7.0 — not available yet.)
+If installation is disallowed (sandboxed env, strict dependency policy), skip gracefully — note the absence in the plan, continue without the recommendation rather than fabricating numbers.
 
 ## Decision tree: which command
 
@@ -41,6 +41,15 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | Authoring an HPA, need p99 SLO to survive a 3× spike | `pat slo` |
 | Modelling a specific load spike or cold-start trough | `pat what-if` |
 | User asks about reserved / spot pricing | `pat cost ... --show-reserved` or `--spot` |
+| User has measured rps/latency/replicas and the default model looks off | `pat calibrate` |
+| Recording a live measurement into the rolling store | `pat observe` |
+| User has observation history and wants a proactive (forward-looking) replica count | `pat optimize` |
+
+The first five rows are **analytical** (model-driven, no data needed beyond the
+inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the
+model to measured points, `observe` records a rolling history, and `optimize`
+projects that history forward. Reach for autoresearch when the user already has
+measurements or a populated `~/.pat/observations.db`; otherwise stay analytical.
 
 ## Gathering inputs
 
@@ -106,11 +115,39 @@ pat what-if -r 50 -s 200 -l 80 -c container
 
 Reports the trough duration, throughput during the trough, p99 during the trough, and estimated missed requests. Use this when the user describes a specific load event ("we expect a 4× Black Friday spike") or is debugging why existing HPAs miss requests on scale-out.
 
+### Pattern 5 — Calibrating the model to measured data (v0.7.0)
+
+When the user has real measurements (APM, load tests, prior `pat demo` output) and the default recommendation looks off — or `pat` printed the no-calibrated-model envelope warning — fit the model to their data first, then re-run the analytical commands:
+
+```bash
+pat calibrate --observation 100:50:2 --observation 300:80:5
+```
+
+Each `--observation` is `rps:latency_ms:replicas`; supply **two or more**. This writes `~/.pat/model.json` (or use a project-local `.pat-model.json`), after which `pat analyze`/`cost`/`slo`/`what-if` use the fitted parameters and stop warning. No Docker required. Do **not** fabricate observations — if the user has no measurements, stay on the default model and note that the recommendation is un-calibrated.
+
+### Pattern 6 — Proactive scaling from observed history (v0.8.0)
+
+When the user has a populated observation store (`~/.pat/observations.db`) and wants a *forward-looking* replica count rather than a point-in-time analysis, use the observe→optimize loop.
+
+```bash
+# Record a sample (single-shot; schedule via cron/launchd for a rolling history)
+pat observe --layer deployment \
+  --rps 480 --avg-latency-ms 78 --p99-latency-ms 190 --throughput 470 --replicas 4
+
+# Or scrape one sample from Prometheus (token via PAT_PROMETHEUS_TOKEN env only)
+pat observe --prometheus http://prometheus:9090 --layer deployment
+
+# Project demand forward and recommend a replica count
+pat optimize --model arima --horizon-minutes 15
+```
+
+`pat observe` is **single-shot by design** — it records one measurement and exits; recurring collection is scheduled externally (cron, launchd, a Kubernetes CronJob). `pat optimize --model arima` fits a `statsmodels` ARIMA with a 95% CI and auto-falls back to SMA below 30 samples. To turn the recommendation into an apply-able manifest, add `--emit-hpa-patch --target <deployment>` (optional `--namespace`) and pipe to `kubectl apply -f -`.
+
 ## Surfacing the recommendation
 
 After invoking pat, include a grounded one-liner in the plan, commit message, or PR description:
 
-> `pat` (v0.6.0, architectural translucency model): recommend `container` layer, 4 replicas. +45% throughput, -38% latency vs current. Cost/req $0.000044 on AWS `us-east-1` `m5.large` on-demand.
+> `pat` (v0.8.0, architectural translucency model): recommend `container` layer, 4 replicas. +45% throughput, -38% latency vs current. Cost/req $0.000044 on AWS `us-east-1` `m5.large` on-demand.
 
 This cites the source and makes the decision auditable — a reviewer can re-run `pat` with the same inputs to verify.
 
@@ -122,6 +159,7 @@ This cites the source and makes the decision auditable — a reviewer can re-run
 - `pat cost`: top panel with `Cost/hour:`, `Cost/request:`, `ROI score:`; all-layers table with a `Best ROI` column (`✓` marks the winner). Table headers may be truncated in narrow terminals — the panel values are the reliable anchors.
 - `pat slo`: per-layer table with `Before` / `After` replica columns and `SLO verdict` (`Meets SLO ✓` / `Fails SLO ✗`), plus a free-text recommendation panel that either confirms *"`<layer>` meets the steady-state SLO"* or advises *"Pre-provision `<N>` replicas and re-evaluate"*
 - `pat what-if`: `TROUGH` and `STEADY STATE` panels with `Throughput`, `p99 latency`, `Missed reqs`
+- `pat optimize`: panel with the projected demand, the recommended replica count (and, for `--model arima`, a replica range from the 95% CI). With `--emit-hpa-patch`, the **stdout is the HPA manifest itself** — capture it directly (e.g. `> hpa-patch.yaml`), do not parse a panel.
 
 If multiple values are needed reliably, prefer re-running the command with narrower arguments so a single value dominates, rather than regex-parsing the full output.
 
