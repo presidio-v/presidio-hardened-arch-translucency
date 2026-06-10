@@ -718,7 +718,106 @@ def cost_cmd(
         _render_cost(cost_results, result, pricing_note=None)
 
 
+@app.command("calibrate")
+def calibrate_cmd(
+    observations: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--observation",
+        "-o",
+        help=(
+            "Measured operating point as 'rps:latency_ms:replicas' "
+            "(e.g. 300:80:5). Repeat for multiple points; >=2 recommended."
+        ),
+    ),
+) -> None:
+    """
+    Fit the translucency model to measured workload points (analytical mode).
+
+    Supply one or more observed `rps:latency_ms:replicas` triples from your APM,
+    load tests, or prior `pat demo` output. The model's per-replica capacity
+    (concurrency) and coordination overhead are fitted with
+    scipy.optimize.curve_fit and written to ~/.pat/model.json, after which
+    `pat analyze` uses your calibrated parameters and stops warning. No Docker
+    required.
+
+    \b
+      pat calibrate --observation 100:50:2 --observation 300:80:5
+    """
+    from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
+        CalibrationError,
+        fit_calibration,
+        parse_observation,
+        write_model_file,
+    )
+
+    try:
+        parsed = [parse_observation(raw) for raw in observations]
+        result = fit_calibration(parsed)
+    except CalibrationError as exc:
+        err_console.print(f"[bold red]Calibration error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    path = write_model_file(result)
+    log_security_event("CALIBRATE_INVOCATION", {"observations": len(parsed)})
+    _render_calibration(result, path)
+
+
 # ── rendering helpers ─────────────────────────────────────────────────────────
+
+
+def _render_calibration(result: object, path: Path) -> None:
+    """Render fitted parameters, per-point predictions, and fit quality."""
+    from presidio_arch_translucency.calibrate import (  # local import
+        CalibrationResult,
+    )
+
+    assert isinstance(result, CalibrationResult)  # noqa: S101
+
+    table = Table(
+        title="Calibration fit — observed vs predicted",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Observed rps", justify="right")
+    table.add_column("Latency (ms)", justify="right")
+    table.add_column("Replicas", justify="right")
+    table.add_column("Predicted rps", justify="right")
+    table.add_column("Residual", justify="right")
+
+    for obs, pred, resid in zip(
+        result.observations, result.predictions, result.residuals
+    ):
+        resid_color = "green" if abs(resid) < 0.01 * max(obs.rps, 1.0) else "yellow"
+        table.add_row(
+            f"{obs.rps:.1f}",
+            f"{obs.latency_ms:.1f}",
+            str(obs.replicas),
+            f"{pred:.1f}",
+            f"[{resid_color}]{resid:+.2f}[/]",
+        )
+
+    r2_color = "green" if result.r_squared >= 0.95 else "yellow"
+    body = (
+        f"[bold]Concurrency (κ):[/]   [cyan]{result.concurrency:.3f}[/] "
+        "req/replica in-flight\n"
+        f"[bold]Overhead β:[/]        [cyan]{result.overhead_beta:.4f}[/]\n"
+        f"[bold]R²:[/]                [{r2_color}]{result.r_squared:.4f}[/]\n"
+        f"[bold]RMSE:[/]              {result.rmse:.4f} req/s\n\n"
+        f"[dim]Written to {path}\n"
+        f"`pat analyze` will now use these calibrated parameters.[/]"
+    )
+
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]Presidio Architectural Translucency — Calibration[/]",
+            border_style="blue",
+        )
+    )
+    console.print()
+    console.print(table)
+    console.print()
 
 
 def _render_tiered_cost(tiered: object, result: object) -> None:
