@@ -10,10 +10,56 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-10
+
+The **autoresearch** release: an observe→optimize loop that records live
+workload measurements and turns them into proactive scaling recommendations,
+plus an apply-able HPA manifest. Built foundation-first per the v0.8.0 design
+decisions (D1–D5 in `PRESIDIO-REQ.md`).
+
+### Added
+
+- **`pat observe` — source-agnostic observation store (Phase 1).** Records a
+  single workload measurement (`--layer`, `--rps`, `--avg-latency-ms`,
+  `--p99-latency-ms`, `--throughput`, `--replicas`) into a local SQLite store at
+  `~/.pat/observations.db`, or lists recent rows with `--list`. Single-shot by
+  design — schedule recurring collection externally (cron / launchd /
+  Kubernetes CronJob). `--db` overrides the store path. (#26)
+- **`pat optimize --model sma` — proactive scaling recommendation (Phase 2).**
+  Reads the observation store, smooths the most-recent samples with a simple
+  moving average (`--window`, default 10), projects demand `--horizon-minutes`
+  ahead, and recommends the replica count to serve it. (#27)
+- **Prometheus observation source (Phase 3).** `pat observe --prometheus <url>
+  --layer <layer>` scrapes one sample (rps, p99, replica count) from the
+  Prometheus HTTP API and records it with `source='prometheus'`. Single-shot;
+  bearer token read from `PAT_PROMETHEUS_TOKEN` only — never a CLI argument,
+  never logged. (#28)
+- **`pat optimize --model arima` — ARIMA time-series forecast (Phase 4).** Fits
+  a `statsmodels` ARIMA model with a 95% confidence interval and emits a replica
+  range alongside the point recommendation. Automatically falls back to SMA when
+  fewer than 30 samples are available, with a stderr notice. Adds `statsmodels`
+  as a runtime dependency. (#29)
+- **`pat optimize --emit-hpa-patch` — HPA manifest emitter (Phase 5).** Emits an
+  apply-able `HorizontalPodAutoscaler` manifest to stdout for a `--target`
+  Deployment (optional `--namespace`). `minReplicas` is the point
+  recommendation; `maxReplicas` is the ARIMA upper-CI bound when available. The
+  manifest is sanitised — target/namespace are validated as RFC 1123 names, no
+  user input is echoed raw. (#30)
+
 ### Changed
 
+- **Dropped Python 3.9; minimum supported version is now 3.10.** The CI matrix,
+  trove classifiers, and `ruff target-version` are 3.10–3.12. This was required
+  to pull patched releases of several transitive dependencies (see Security).
+  (#32)
 - Trove classifier promoted from `Development Status :: 3 - Alpha` to
   `Development Status :: 4 - Beta`, reflecting v0.7.0 maturity. (#24)
+
+### Security
+
+- **Resolved all 19 open Dependabot vulnerability alerts** on the default
+  branch by dropping Python 3.9 and bumping the affected transitive
+  dependencies to their patched versions in `uv.lock`. (#32)
 
 ### Tests
 
@@ -51,5 +97,6 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.8.0
 [0.7.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.7.0
