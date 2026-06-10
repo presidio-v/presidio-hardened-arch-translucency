@@ -217,3 +217,49 @@ class TestAnalyzeValidationErrors:
             "Pod",
         )
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Envelope warning (v0.7.0) — fires unless a calibrated model exists
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeWarning:
+    def test_warning_shown_when_uncalibrated(self, tmp_path, monkeypatch):
+        # Empty HOME + cwd ⇒ no calibrated model ⇒ warning must appear.
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        result = invoke(
+            "analyze",
+            "--requests-per-second",
+            "500",
+            "--avg-latency-ms",
+            "80",
+            "--current-layer",
+            "container",
+        )
+        assert result.exit_code == 0
+        combined = strip_ansi(result.output + result.stderr)
+        assert "pat calibrate" in combined
+        assert "default parameters" in combined.lower()
+
+    def test_warning_suppressed_when_calibrated(self, tmp_path, monkeypatch):
+        # A global ~/.pat/model.json suppresses the warning.
+        home = tmp_path / "home"
+        pat_dir = home / ".pat"
+        pat_dir.mkdir(parents=True)
+        (pat_dir / "model.json").write_text('{"concurrency": 8.0}', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        result = invoke(
+            "analyze",
+            "--requests-per-second",
+            "500",
+            "--avg-latency-ms",
+            "80",
+            "--current-layer",
+            "container",
+        )
+        assert result.exit_code == 0
+        combined = strip_ansi(result.output + result.stderr)
+        assert "pat calibrate" not in combined

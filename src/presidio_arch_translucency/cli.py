@@ -32,9 +32,12 @@ from presidio_arch_translucency.hpa import (
     simulate_scale_event,
 )
 from presidio_arch_translucency.model import (
+    REFERENCE_LATENCY_RANGE_MS,
+    REFERENCE_RPS_RANGE,
     VALID_LAYERS,
     ReplicationLayer,
     analyze,
+    model_is_calibrated,
 )
 from presidio_arch_translucency.security import (
     InputValidationError,
@@ -60,6 +63,28 @@ app.command("demo")(demo_command)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
+warn_console = Console(stderr=True)
+
+
+def _envelope_warning_text() -> str:
+    """Message shown when running against uncalibrated default parameters."""
+    rps_lo, rps_hi = REFERENCE_RPS_RANGE
+    lat_lo, lat_hi = REFERENCE_LATENCY_RANGE_MS
+    return (
+        "[yellow]⚠ No calibrated model found (.pat-model.json or ~/.pat/model.json). "
+        "Using default parameters calibrated for async Python services in the "
+        f"~{rps_lo:.0f}–{rps_hi:.0f} req/s and ~{lat_lo:.0f}–{lat_hi:.0f} ms latency "
+        "envelope. Results may be inaccurate outside this range or for non-async "
+        "(single-threaded / CPU-bound) workloads.\n"
+        "  Run [bold]pat calibrate[/] with your measured workload to tune the "
+        "model.[/]"
+    )
+
+
+def _warn_if_uncalibrated() -> None:
+    """Emit the envelope warning to stderr unless a calibrated model exists."""
+    if not model_is_calibrated():
+        warn_console.print(_envelope_warning_text())
 
 
 def _version_callback(value: bool) -> None:
@@ -145,6 +170,7 @@ def analyze_cmd(
         raise typer.Exit(code=2) from exc
 
     current = ReplicationLayer(layer_str)
+    _warn_if_uncalibrated()
 
     # --- Run analysis ---
     result = analyze(
@@ -352,6 +378,7 @@ def what_if_cmd(
         raise typer.Exit(code=2)
 
     layer = ReplicationLayer(layer_str)
+    _warn_if_uncalibrated()
     params = ScaleEventParams(
         hpa_poll_s=hpa_poll_s,
         pod_startup_s=pod_startup_s,
@@ -425,6 +452,7 @@ def slo_cmd(
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
+    _warn_if_uncalibrated()
     spike_rps = rps * spike_multiplier
     params = ScaleEventParams(
         hpa_poll_s=hpa_poll_s,
@@ -567,6 +595,7 @@ def cost_cmd(
         raise typer.Exit(code=2) from exc
 
     current = ReplicationLayer(layer_str)
+    _warn_if_uncalibrated()
     result = analyze(requests_per_second=rps, avg_latency_ms=lat, current_layer=current)
 
     if cloud is not None:
