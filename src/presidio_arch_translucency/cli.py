@@ -762,7 +762,157 @@ def calibrate_cmd(
     _render_calibration(result, path)
 
 
+@app.command("observe")
+def observe_cmd(
+    layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-c",
+        help=f"Replication layer of the measurement. One of: {', '.join(VALID_LAYERS)}",
+    ),
+    rps: Optional[float] = typer.Option(  # noqa: UP045
+        None, "--rps", "-r", help="Measured requests per second.", min=0.0
+    ),
+    avg_latency_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None, "--avg-latency-ms", "-l", help="Measured average latency (ms).", min=0.0
+    ),
+    p99_latency_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None, "--p99-latency-ms", help="Measured p99 latency (ms).", min=0.0
+    ),
+    throughput: Optional[float] = typer.Option(  # noqa: UP045
+        None, "--throughput", help="Measured served throughput (req/s).", min=0.0
+    ),
+    replicas: Optional[int] = typer.Option(  # noqa: UP045
+        None, "--replicas", help="Replica count during the measurement.", min=1
+    ),
+    source: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--source",
+        help=(
+            "Measurement origin (manual/demo/prometheus/…). "
+            "Defaults to 'manual' when recording; filters the list when given."
+        ),
+    ),
+    list_recent: bool = typer.Option(
+        False, "--list", help="List recent observations instead of recording one."
+    ),
+    limit: int = typer.Option(
+        20, "--limit", help="Number of rows to show with --list.", min=1
+    ),
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--db",
+        help="Override the store path (default: ~/.pat/observations.db).",
+    ),
+) -> None:
+    """
+    Record one workload observation, or list recent ones (--list).
+
+    Single-shot by design: this records a single measurement and exits. Schedule
+    recurring collection externally (cron / launchd / a Kubernetes CronJob).
+    The store is source-agnostic — supply numbers measured by any source (APM, a
+    load test, prior `pat demo` output); `pat demo` and Prometheus sources are
+    wired in later v0.8.0 phases. `pat optimize` reads this store back.
+    """
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+
+    if list_recent:
+        layer_filter = layer.strip().lower() if layer else None
+        rows = store.latest_observations(
+            limit, db_path=db, layer=layer_filter, source=source
+        )
+        total = store.count_observations(db_path=db, layer=layer_filter, source=source)
+        log_security_event("OBSERVE_LIST", {"rows": len(rows)})
+        _render_observations(rows, total=total)
+        return
+
+    # --- Record mode: all measurement fields are required ---
+    required = {
+        "--layer": layer,
+        "--rps": rps,
+        "--avg-latency-ms": avg_latency_ms,
+        "--p99-latency-ms": p99_latency_ms,
+        "--throughput": throughput,
+        "--replicas": replicas,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        err_console.print(
+            "[bold red]Recording requires all measurement options:[/] "
+            + ", ".join(missing)
+            + "\n[dim]Or use --list to view recent observations.[/]"
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        lat = sanitize_latency_ms(avg_latency_ms)
+        p99 = sanitize_latency_ms(p99_latency_ms)
+        layer_str = sanitize_layer(layer, VALID_LAYERS)
+        obs = store.record(
+            rps=rps,
+            avg_latency_ms=lat,
+            p99_latency_ms=p99,
+            throughput=throughput,
+            layer=layer_str,
+            replicas=replicas,
+            source=source or "manual",
+            db_path=db,
+        )
+    except (InputValidationError, store.ObservationError) as exc:
+        err_console.print(f"[bold red]Invalid observation:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    total = store.count_observations(db_path=db)
+    log_security_event("OBSERVE_RECORD", {"layer": layer_str, "replicas": replicas})
+    console.print(
+        f"[green]✓ Recorded[/] {obs.layer} observation "
+        f"({obs.rps:.0f} req/s, p99 {obs.p99_latency_ms:.0f} ms, "
+        f"{obs.replicas} replicas) → {total} total in store.\n"
+    )
+
+
 # ── rendering helpers ─────────────────────────────────────────────────────────
+
+
+def _render_observations(rows: list, total: int) -> None:
+    """Render recent observations from the rolling store."""
+    if not rows:
+        console.print(
+            "\n[dim]No observations recorded yet. "
+            "Record one with [bold]pat observe --layer … --rps … …[/], or schedule "
+            "collection via cron/launchd.[/]\n"
+        )
+        return
+
+    table = Table(
+        title=f"Recent observations (showing {len(rows)} of {total})",
+        box=box.ROUNDED,
+        show_lines=False,
+    )
+    table.add_column("Timestamp (UTC)", style="dim", no_wrap=True)
+    table.add_column("Layer", style="cyan")
+    table.add_column("req/s", justify="right")
+    table.add_column("Avg ms", justify="right")
+    table.add_column("p99 ms", justify="right")
+    table.add_column("Throughput", justify="right")
+    table.add_column("Replicas", justify="right")
+    table.add_column("Source", style="magenta")
+
+    for obs in rows:
+        table.add_row(
+            obs.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            obs.layer,
+            f"{obs.rps:.0f}",
+            f"{obs.avg_latency_ms:.0f}",
+            f"{obs.p99_latency_ms:.0f}",
+            f"{obs.throughput:.0f}",
+            str(obs.replicas),
+            obs.source,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
 
 
 def _render_calibration(result: object, path: Path) -> None:
