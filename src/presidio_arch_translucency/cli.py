@@ -837,8 +837,21 @@ def calibrate_cmd(
     )
 
 
-@app.command("observe")
+observe_app = typer.Typer(
+    name="observe",
+    help=(
+        "Record one workload observation, list recent ones (--list), or manage "
+        "the background collection daemon (`pat observe daemon …`)."
+    ),
+    add_completion=False,
+    invoke_without_command=True,
+)
+app.add_typer(observe_app, name="observe")
+
+
+@observe_app.callback(invoke_without_command=True)
 def observe_cmd(
+    ctx: typer.Context,
     layer: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--layer",
@@ -894,11 +907,17 @@ def observe_cmd(
     Record one workload observation, or list recent ones (--list).
 
     Single-shot by design: this records a single measurement and exits. Schedule
-    recurring collection externally (cron / launchd / a Kubernetes CronJob).
+    recurring collection externally (cron / launchd / a Kubernetes CronJob), or
+    let `pat observe daemon install` write the scheduler unit for you.
     The store is source-agnostic — supply numbers measured by any source (APM, a
     load test, prior `pat demo` output), or scrape one sample from Prometheus
     with --prometheus. `pat optimize` reads this store back.
     """
+    # A subcommand (e.g. `daemon …`) handles its own logic; the callback only
+    # runs the record/list flow when invoked bare (`pat observe …`).
+    if ctx.invoked_subcommand is not None:
+        return
+
     from presidio_arch_translucency import observe as store  # noqa: PLC0415
 
     if list_recent:
@@ -994,6 +1013,110 @@ def _observe_from_prometheus(url: str, layer: str | None, db: Path | None) -> No
         f"[green]✓ Scraped[/] {obs.layer} observation from Prometheus "
         f"({obs.rps:.0f} req/s, p99 {obs.p99_latency_ms:.0f} ms, "
         f"{obs.replicas} replicas) → {total} total in store.\n"
+    )
+
+
+# ── observe daemon: continuous collection via launchd / systemd ───────────────
+
+daemon_app = typer.Typer(
+    name="daemon",
+    help=(
+        "Run `pat observe` continuously via a launchd (macOS) or systemd (Linux) "
+        "unit. Single-shot still applies — the scheduler fires observe on an "
+        "interval; it does not become a long-running process."
+    ),
+    add_completion=False,
+)
+observe_app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("install")
+def daemon_install_cmd(
+    prometheus: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--prometheus",
+        help="Prometheus base URL the scheduled `pat observe` should scrape.",
+    ),
+    layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        help=f"Replication layer to tag (required for --prometheus). "
+        f"One of: {', '.join(VALID_LAYERS)}",
+    ),
+    interval: int = typer.Option(
+        60,
+        "--interval",
+        help="Seconds between scheduled `pat observe` runs.",
+        min=1,
+    ),
+) -> None:
+    """Write the launchd plist (macOS) or systemd unit(s) (Linux)."""
+    from presidio_arch_translucency.daemon import DaemonError, install  # noqa: PLC0415
+
+    try:
+        result = install(prometheus=prometheus, layer=layer, interval=interval)
+    except DaemonError as exc:
+        err_console.print(f"[bold red]Cannot install daemon:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "OBSERVE_DAEMON_INSTALL",
+        {"platform": result.platform, "interval": interval},
+    )
+    console.print(
+        f"[green]✓ Installed[/] pat observe daemon ({result.platform}, "
+        f"every {interval}s):"
+    )
+    for path in result.paths:
+        console.print(f"    {path}")
+    if result.reload_hint:
+        console.print(f"\n[dim]Activate it with:[/]\n    {result.reload_hint}\n")
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall_cmd() -> None:
+    """Remove the daemon's launchd plist / systemd unit(s)."""
+    from presidio_arch_translucency.daemon import (  # noqa: PLC0415
+        DaemonError,
+        uninstall,
+    )
+
+    try:
+        removed = uninstall()
+    except DaemonError as exc:
+        err_console.print(f"[bold red]Cannot uninstall daemon:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event("OBSERVE_DAEMON_UNINSTALL", {"removed": len(removed)})
+    if not removed:
+        console.print("[dim]No daemon unit files found — nothing to remove.[/]\n")
+        return
+    console.print("[green]✓ Removed[/] pat observe daemon:")
+    for path in removed:
+        console.print(f"    {path}")
+    console.print()
+
+
+@daemon_app.command("status")
+def daemon_status_cmd() -> None:
+    """Show whether the daemon is installed and loaded/running."""
+    from presidio_arch_translucency.daemon import DaemonError, status  # noqa: PLC0415
+
+    try:
+        result = status()
+    except DaemonError as exc:
+        err_console.print(f"[bold red]Cannot read daemon status:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if not result.installed:
+        console.print(
+            "[yellow]pat observe daemon is not installed.[/] "
+            "Install it with [bold]pat observe daemon install[/].\n"
+        )
+        return
+    color = "green" if result.loaded else "yellow"
+    console.print(
+        f"pat observe daemon ({result.platform}): [{color}]{result.detail}[/]\n"
     )
 
 

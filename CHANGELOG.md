@@ -12,6 +12,19 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- **`pat observe daemon` — continuous collection (v0.9.0).** `pat observe daemon
+  install` writes a platform-native scheduler unit that fires `pat observe` on an
+  interval: a launchd LaunchAgent
+  (`~/Library/LaunchAgents/eu.presidio-group.pat.observe.plist`) on macOS, or a
+  systemd `--user` `.service` + `.timer` (`~/.config/systemd/user/`) on Linux;
+  other platforms error. `install` accepts `--prometheus`, `--layer` and
+  `--interval` (default 60 s). `daemon uninstall` removes the unit(s) (and
+  best-effort `launchctl bootout` on macOS); `daemon status` reports
+  loaded/running, installed-but-inactive, or not-installed. This is an opt-in
+  convenience on top of cron/launchd — observe stays single-shot (decision D2 is
+  extended, not reversed): the scheduler invokes it, it does not become a
+  long-running process. No new dependencies (`subprocess` / `pathlib` /
+  `shutil`).
 - **Per-layer `pat calibrate` (v0.9.0 Phase 1).** `pat calibrate --layer <name>`
   tags an observation set with a service layer and fits per-layer model
   parameters, upserting them into `~/.pat/model.json` under `layers.<name>`
