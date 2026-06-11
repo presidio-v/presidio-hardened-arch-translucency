@@ -299,7 +299,11 @@ class TestDaemonCLI:
         out = _invoke("install", "--interval", "30")
         assert out.exit_code == 0
         assert "Installed" in out.output
-        assert plist.name in out.output
+        assert "every 30s" in out.output
+        # Rich soft-wraps the long path at 80 cols (inserting newlines mid-token),
+        # so collapse whitespace before checking the filename is present.
+        collapsed = "".join(out.output.split())
+        assert plist.name in collapsed
         assert "bootstrap" in out.output
 
     def test_install_unsupported_platform_exit_2(self, monkeypatch):
