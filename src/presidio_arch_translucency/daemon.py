@@ -251,6 +251,8 @@ def uninstall(home: Path | None = None) -> list[Path]:
                 check=False,
             )
         except OSError:
+            # launchctl missing or not executable — nothing to unload; file
+            # removal below is the operation that actually matters.
             pass
         if path.exists():
             path.unlink()
