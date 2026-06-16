@@ -1,5 +1,5 @@
 """
-Analytical model calibration — v0.7.0.
+Analytical model calibration -- v0.7.0.
 
 Fits the architectural-translucency per-replica capacity model to a handful of
 observed ``(rps, latency_ms, replicas)`` points using
@@ -10,11 +10,11 @@ Calibration model
 -----------------
 At a replica count chosen to serve demand, the system saturates when
 
-    rps ≈ concurrency × (1000 / latency_ms) × replicas × (1 − β·ln(replicas))
+    rps ~= concurrency x (1000 / latency_ms) x replicas x (1 - beta*ln(replicas))
 
-where ``concurrency`` (κ) is the per-replica async in-flight factor and ``β``
-is the coordination overhead that erodes efficiency as replicas grow.  These
-are exactly the parameters `pat analyze` consumes via the calibrated-model
+where ``concurrency`` (kappa) is the per-replica async in-flight factor and
+``beta`` is the coordination overhead that erodes efficiency as replicas grow.
+These are exactly the parameters `pat analyze` consumes via the calibrated-model
 file, so a fit here directly tunes the recommendation.
 
 This module is intentionally Docker-free (analytical mode only): observations
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +37,7 @@ from presidio_arch_translucency.model import (
 )
 
 # Default coordination overhead used when a single observation cannot constrain
-# β (one point, two free parameters).
+# beta (one point, two free parameters).
 _DEFAULT_BETA: float = 0.02
 
 
@@ -57,8 +58,8 @@ class Observation:
 class CalibrationResult:
     """Fitted parameters plus per-point predictions and fit quality."""
 
-    concurrency: float  # κ
-    overhead_beta: float  # β
+    concurrency: float  # kappa
+    overhead_beta: float  # beta
     r_squared: float
     rmse: float
     observations: list[Observation]
@@ -70,7 +71,7 @@ def parse_observation(raw: str) -> Observation:
     """
     Parse a ``rps:latency_ms:replicas`` triple (e.g. ``300:80:5``).
 
-    Raises CalibrationError on malformed input — note the values are bounded so
+    Raises CalibrationError on malformed input -- note the values are bounded so
     a stray negative or zero cannot poison the fit.
     """
     parts = raw.split(":")
@@ -101,11 +102,11 @@ def predict_rps(latency_ms: float, replicas: float, concurrency: float, beta: fl
 
 def fit_calibration(observations: list[Observation]) -> CalibrationResult:
     """
-    Fit ``concurrency`` (κ) and ``overhead_beta`` (β) to *observations*.
+    Fit ``concurrency`` (kappa) and ``overhead_beta`` (beta) to *observations*.
 
     Uses ``scipy.optimize.curve_fit`` with bounded parameters.  With a single
-    observation β is fixed at its default and κ solved directly (a 1-point fit
-    cannot constrain two parameters).
+    observation beta is fixed at its default and kappa solved directly (a
+    1-point fit cannot constrain two parameters).
     """
     if not observations:
         raise CalibrationError("At least one observation is required to calibrate.")
@@ -132,7 +133,7 @@ def fit_calibration(observations: list[Observation]) -> CalibrationResult:
         )
         kappa, beta = float(popt[0]), float(popt[1])
     else:
-        # One point: hold β at the default and solve κ exactly.
+        # One point: hold beta at the default and solve kappa exactly.
         beta = _DEFAULT_BETA
         eff = 1.0 - beta * math.log(max(replicas[0], 1.0))
         kappa = float(rps[0] / ((1000.0 / latency[0]) * replicas[0] * eff))
@@ -184,8 +185,20 @@ def _read_existing_model(path: Path) -> dict:
             if isinstance(data, dict):
                 return data
     except (OSError, ValueError):
-        pass
+        return {}
     return {}
+
+
+def _prepare_model_path(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with suppress(OSError):
+        path.parent.chmod(0o700)
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with suppress(OSError):
+        path.chmod(0o600)
 
 
 def write_model_file(result: CalibrationResult, layer: str | None = None) -> Path:
@@ -194,13 +207,13 @@ def write_model_file(result: CalibrationResult, layer: str | None = None) -> Pat
     and return the path.  The ``concurrency`` key is what `pat analyze` reads.
 
     When *layer* is ``None`` or the reserved ``"default"``, the fit is written to
-    the top-level (global pooled) parameters — the v0.7.0/v0.8.0 behaviour.  When
+    the top-level (global pooled) parameters -- the v0.7.0/v0.8.0 behaviour.  When
     *layer* names a service layer, the fit is upserted into
     ``model["layers"][layer]`` (v0.9.0); the global parameters and every other
     layer are preserved untouched.
     """
     path = global_model_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_model_path(path)
     record = _fit_record(result)
 
     if layer is None or layer == DEFAULT_LAYER_NAME:
@@ -218,5 +231,5 @@ def write_model_file(result: CalibrationResult, layer: str | None = None) -> Pat
         layers[layer] = record
         payload["layers"] = layers
 
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _write_private_json(path, payload)
     return path

@@ -1,10 +1,10 @@
 """
 Rolling observation store (v0.8.0, Phase 1).
 
-A source-agnostic SQLite store for workload measurements.  Any source — a
-``pat demo`` run, a Prometheus scrape, a load test, or a manual entry — builds an
-:class:`Observation` and calls :func:`record_observation`; ``pat optimize`` reads
-them back via :func:`load_observations` / :func:`latest_observations`.
+A source-agnostic SQLite store for workload measurements.  Any source -- a
+``pat demo`` run, a Prometheus scrape, a load test, or a manual entry -- builds
+an :class:`Observation` and calls :func:`record_observation`; ``pat optimize``
+reads them back via :func:`load_observations` / :func:`latest_observations`.
 
 The store is intentionally **single-shot** (decision D2): a caller records one
 measurement and returns.  Recurring collection is scheduled externally
@@ -17,7 +17,7 @@ Storage (decision D5 / cross-cutting): the global store lives at
 
 An autoincrement ``id`` is added as the primary key (insertion order, used only
 to break ties between identical timestamps), plus a ``source`` column
-(``manual`` / ``demo`` / ``prometheus`` / …) so later phases can tell where a
+(``manual`` / ``demo`` / ``prometheus`` / ...) so later phases can tell where a
 measurement came from.
 """
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,12 +102,12 @@ class Observation:
 
 
 # ---------------------------------------------------------------------------
-# Timestamp helpers — canonical UTC ISO-8601 (lexicographically chronological)
+# Timestamp helpers -- canonical UTC ISO-8601 (lexicographically chronological)
 # ---------------------------------------------------------------------------
 
 
 def _to_utc(dt: datetime) -> datetime:
-    """Normalise *dt* to a timezone-aware UTC datetime (naive ⇒ assumed UTC)."""
+    """Normalise *dt* to a timezone-aware UTC datetime (naive -> assumed UTC)."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -131,12 +131,28 @@ def utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+def _prepare_store_path(path: Path, *, private_parent: bool) -> None:
+    if private_parent:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with suppress(OSError):
+            path.parent.chmod(0o700)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _chmod_private_file(path: Path) -> None:
+    with suppress(OSError):
+        path.chmod(0o600)
+
+
 @contextmanager
 def _connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     """Open the store, ensuring the parent dir and schema exist."""
-    path = Path(db_path) if db_path is not None else default_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    use_default = db_path is None
+    path = default_db_path() if use_default else Path(db_path)
+    _prepare_store_path(path, private_parent=use_default)
     conn = sqlite3.connect(str(path))
+    _chmod_private_file(path)
     try:
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
@@ -153,7 +169,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "source" not in cols:
         # Stores created before the source column gain it with the default.
         conn.execute(
-            f"ALTER TABLE {_TABLE} "  # noqa: S608 — fixed identifiers
+            f"ALTER TABLE {_TABLE} "  # noqa: S608 -- fixed identifiers
             f"ADD COLUMN source TEXT NOT NULL DEFAULT '{_DEFAULT_SOURCE}'"
         )
 
@@ -175,7 +191,7 @@ def record_observation(obs: Observation, db_path: Path | None = None) -> int:
     obs.validate()
     with _connect(db_path) as conn:
         cur = conn.execute(
-            f"INSERT INTO {_TABLE} "  # noqa: S608 — fixed identifiers, params bound
+            f"INSERT INTO {_TABLE} "  # noqa: S608 -- fixed identifiers, params bound
             "(timestamp, rps, avg_latency_ms, p99_latency_ms, throughput, layer, "
             "replicas, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -206,10 +222,10 @@ def record(
     """
     Convenience: build, persist, and return an Observation in one call.
 
-    ``timestamp`` defaults to now (UTC) — callers replaying historical data
+    ``timestamp`` defaults to now (UTC) -- callers replaying historical data
     (e.g. a Prometheus range query) should pass the measurement's own time.
     ``source`` records where the measurement came from (``manual`` / ``demo`` /
-    ``prometheus`` / …); it defaults to ``manual``.
+    ``prometheus`` / ...); it defaults to ``manual``.
     """
     obs = Observation(
         timestamp=timestamp if timestamp is not None else utcnow(),
@@ -254,7 +270,7 @@ def load_observations(
     Return observations in chronological order (oldest first).
 
     ``layer`` filters to one layer; ``source`` filters to one origin
-    (``manual`` / ``demo`` / ``prometheus`` / …); ``since`` keeps only rows
+    (``manual`` / ``demo`` / ``prometheus`` / ...); ``since`` keeps only rows
     at/after a time; ``limit`` caps to the most recent N (still oldest-first).
     """
     clauses: list[str] = []

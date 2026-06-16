@@ -35,17 +35,6 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   file stays backward-compatible: a pre-v0.9.0 file with no `layers` key resolves
   exactly as before. Delivers the per-layer fitting half of design decision D4
   (the Docker `--benchmark` mode remains deferred). (#37)
-- **Kubeconfig auth for `pat observe --prometheus` (v0.9.0 Phase 2).** When
-  `PAT_PROMETHEUS_TOKEN` is unset, the bearer token is now resolved from the
-  active kubeconfig context (`KUBECONFIG`, first entry, or `~/.kube/config`),
-  enabling clusters that front Prometheus behind the kube-apiserver proxy.
-  Resolution order is env var → kubeconfig → unauthenticated, and is fully
-  automatic — no new CLI flags. `PAT_KUBECONFIG_CONTEXT` overrides which context
-  is read without editing the kubeconfig. The kubeconfig is parsed with a
-  minimal, dependency-free YAML-subset reader (no `pyyaml`); a missing,
-  unreadable, or token-less kubeconfig degrades silently to an unauthenticated
-  request rather than erroring. The token is never logged and is sent only as
-  `Authorization: Bearer …`. Completes the D3 follow-on auth work.
 - **Configurable ARIMA order bounds for `pat optimize` (v0.9.0 Phase 3).** The
   AIC order grid is no longer hard-coded: `--max-p`, `--max-d` and `--max-q`
   set the upper bounds of the `p`/`d`/`q` sweep (defaults `3`/`2`/`3`, exactly
@@ -54,6 +43,32 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   variance heuristic — raw vs. first- vs. second-difference variance — which
   shrinks the search and side-steps guessing `d`; the heuristic's choice is
   capped at `--max-d`. All flags are optional and only affect `--model arima`.
+
+### Security
+
+- **Prometheus bearer auth hardened.** `pat observe --prometheus` no longer reads
+  kubeconfig bearer tokens automatically. Bearer auth is now env-only via
+  `PAT_PROMETHEUS_TOKEN`, token use requires an HTTPS Prometheus URL, and
+  Prometheus URLs/query strings reject control characters.
+- **Daemon unit generation hardened.** `pat observe daemon install` validates
+  scheduler inputs, rejects control characters, quotes systemd `ExecStart=`
+  arguments, escapes systemd `%` specifiers, and writes generated unit files
+  owner-only where supported.
+- **Demo isolation tightened.** `pat demo` publishes Docker ports to
+  `127.0.0.1` only. The embedded workload image now runs as an unprivileged user
+  and includes a healthcheck.
+- **Local store permissions tightened.** Default observation and calibrated
+  model stores create `~/.pat` owner-only and chmod store files to `0o600` where
+  supported.
+- **Security policy refreshed.** `SECURITY.md` now records current supported
+  versions, security features, known limitations, and the 2026-06-16 audit
+  report.
+
+### Fixed
+
+- **AWS cloud demo pricing result handling.** `pat demo --cloud aws` now handles
+  both flat and tiered pricing results and uses the on-demand tier for demo cost
+  parameters.
 
 ## [0.8.0] - 2026-06-10
 
