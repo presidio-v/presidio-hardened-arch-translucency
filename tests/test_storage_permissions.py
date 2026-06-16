@@ -6,8 +6,8 @@ import stat
 
 from presidio_arch_translucency.calibrate import (
     CalibrationResult,
-    Observation as CalibrationObservation,
     global_model_path,
+    Observation as CalibrationObservation,
     write_model_file,
 )
 from presidio_arch_translucency.observe import default_db_path, init_store
