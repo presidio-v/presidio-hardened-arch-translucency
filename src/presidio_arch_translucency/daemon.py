@@ -26,6 +26,7 @@ import shutil
 import subprocess  # noqa: S404 -- used only with fixed argv lists, never shell=True
 import sys
 import urllib.parse
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -265,10 +266,8 @@ class InstallResult:
 
 def _write_private_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
-    try:
+    with suppress(OSError):
         path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def install(
