@@ -1,30 +1,31 @@
 """
-`pat observe daemon` — continuous observation scheduling (v0.9.0).
+`pat observe daemon` -- continuous observation scheduling (v0.9.0).
 
 Wraps the single-shot ``pat observe`` in a platform-native scheduler so users get
 continuous collection without hand-writing a cron / launchd / systemd unit. This
-does **not** turn ``observe`` into a long-running process — decision D2 stands:
+does **not** turn ``observe`` into a long-running process -- decision D2 stands:
 the scheduler fires ``pat observe`` single-shot every ``--interval`` seconds.
 Daemon mode is an opt-in convenience layered on top of cron/launchd, not a
 replacement for the single-shot model.
 
 Platforms (detected via ``sys.platform``):
-  - ``darwin`` → a launchd LaunchAgent plist in ``~/Library/LaunchAgents``
-  - ``linux``  → a systemd ``--user`` ``.service`` + ``.timer`` in
+  - ``darwin`` -> a launchd LaunchAgent plist in ``~/Library/LaunchAgents``
+  - ``linux``  -> a systemd ``--user`` ``.service`` + ``.timer`` in
     ``~/.config/systemd/user``
-  - anything else → :class:`DaemonError`
+  - anything else -> :class:`DaemonError`
 
-No new dependencies: only :mod:`subprocess`, :mod:`pathlib`, :mod:`shutil`,
-:mod:`sys`. The command the scheduler runs is the resolved ``pat`` console script
-(or ``python -m presidio_arch_translucency`` as a fallback), so the agent records
-exactly what ``pat observe`` would record by hand.
+No new dependencies: only standard-library modules. The command the scheduler
+runs is the resolved ``pat`` console script (or ``python -m
+presidio_arch_translucency`` as a fallback), so the agent records exactly what
+``pat observe`` would record by hand.
 """
 
 from __future__ import annotations
 
 import shutil
-import subprocess  # noqa: S404 — used only with fixed argv lists, never shell=True
+import subprocess  # noqa: S404 -- used only with fixed argv lists, never shell=True
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,8 @@ SYSTEMD_UNIT = "pat-observe"
 
 #: Default scrape cadence in seconds.
 DEFAULT_INTERVAL_S = 60
+
+_VALID_LAYERS = {"container", "pod", "deployment", "node"}
 
 
 class DaemonError(RuntimeError):
@@ -82,8 +85,50 @@ def systemd_timer_path(home: Path | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Command construction
+# Command construction / validation
 # ---------------------------------------------------------------------------
+
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _reject_control_chars(value: str, field: str) -> None:
+    if _has_control_chars(value):
+        raise DaemonError(f"{field} must not contain control characters")
+
+
+def _validate_prometheus_url(prometheus: str | None) -> str | None:
+    if prometheus is None:
+        return None
+    value = prometheus.strip()
+    if not value:
+        raise DaemonError("--prometheus must not be empty")
+    _reject_control_chars(value, "--prometheus")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise DaemonError("--prometheus must be an http(s) URL with a host")
+    return value
+
+
+def _validate_layer(layer: str | None) -> str | None:
+    if layer is None:
+        return None
+    value = layer.strip().lower()
+    if not value:
+        raise DaemonError("--layer must not be empty")
+    _reject_control_chars(value, "--layer")
+    if value not in _VALID_LAYERS:
+        valid = ", ".join(sorted(_VALID_LAYERS))
+        raise DaemonError(f"--layer must be one of: {valid}")
+    return value
+
+
+def validate_schedule_inputs(
+    prometheus: str | None, layer: str | None
+) -> tuple[str | None, str | None]:
+    """Validate daemon inputs before they are rendered into scheduler files."""
+    return _validate_prometheus_url(prometheus), _validate_layer(layer)
 
 
 def resolve_pat_command() -> list[str]:
@@ -113,16 +158,24 @@ def observe_argv(
 
 
 def _full_command(prometheus: str | None, layer: str | None) -> list[str]:
+    prometheus, layer = validate_schedule_inputs(prometheus, layer)
     return resolve_pat_command() + observe_argv(prometheus=prometheus, layer=layer)
 
 
 # ---------------------------------------------------------------------------
-# Unit-file rendering (pure — no filesystem access, for easy testing)
+# Unit-file rendering (pure -- no filesystem access, for easy testing)
 # ---------------------------------------------------------------------------
 
 
 def _xml_escape(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    _reject_control_chars(value, "ProgramArguments value")
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def render_launchd_plist(command: list[str], interval: int) -> str:
@@ -155,12 +208,23 @@ def render_launchd_plist(command: list[str], interval: int) -> str:
     )
 
 
+def _systemd_quote_arg(arg: str) -> str:
+    _reject_control_chars(arg, "ExecStart argument")
+    escaped = arg.replace("%", "%%")
+    if escaped == "":
+        return '""'
+    if all(ch not in ' "\\' for ch in escaped):
+        return escaped
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def render_systemd_service(command: list[str]) -> str:
     """Render the systemd ``oneshot`` service that runs ``pat observe`` once."""
-    exec_start = " ".join(command)
+    exec_start = " ".join(_systemd_quote_arg(arg) for arg in command)
     return (
         "[Unit]\n"
-        "Description=Presidio pat observe — single-shot workload measurement\n"
+        "Description=Presidio pat observe -- single-shot workload measurement\n"
         "\n"
         "[Service]\n"
         "Type=oneshot\n"
@@ -199,6 +263,14 @@ class InstallResult:
     reload_hint: str | None
 
 
+def _write_private_text(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def install(
     *,
     prometheus: str | None = None,
@@ -212,18 +284,18 @@ def install(
 
     if platform == "darwin":
         path = launchd_plist_path(home)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_launchd_plist(command, interval), encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _write_private_text(path, render_launchd_plist(command, interval))
         hint = f"launchctl bootstrap gui/$(id -u) {path}"
         return InstallResult(platform=platform, paths=[path], reload_hint=hint)
 
     # linux
     unit_dir = systemd_unit_dir(home)
-    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     service = systemd_service_path(home)
     timer = systemd_timer_path(home)
-    service.write_text(render_systemd_service(command), encoding="utf-8")
-    timer.write_text(render_systemd_timer(interval), encoding="utf-8")
+    _write_private_text(service, render_systemd_service(command))
+    _write_private_text(timer, render_systemd_timer(interval))
     hint = (
         "systemctl --user daemon-reload && "
         f"systemctl --user enable --now {SYSTEMD_UNIT}.timer"
@@ -235,7 +307,7 @@ def uninstall(home: Path | None = None) -> list[Path]:
     """
     Remove the daemon's unit file(s). Returns the paths that existed and were
     removed. A missing file is a graceful no-op. On macOS, also attempts a
-    ``launchctl bootout`` (errors swallowed — the agent may not be loaded).
+    ``launchctl bootout`` (errors swallowed -- the agent may not be loaded).
     """
     platform = current_platform()
     removed: list[Path] = []
@@ -243,15 +315,15 @@ def uninstall(home: Path | None = None) -> list[Path]:
     if platform == "darwin":
         path = launchd_plist_path(home)
         # Best-effort unload first; the agent may not be loaded (nonzero exit) and
-        # launchctl may even be absent — swallow both, removal is what matters.
+        # launchctl may even be absent -- swallow both, removal is what matters.
         try:
-            subprocess.run(  # noqa: S603 — fixed argv, no shell
+            subprocess.run(  # noqa: S603 -- fixed argv, no shell
                 ["launchctl", "bootout", f"gui/{_uid()}/{LAUNCHD_LABEL}"],  # noqa: S607
                 capture_output=True,
                 check=False,
             )
         except OSError:
-            # launchctl missing or not executable — nothing to unload; file
+            # launchctl missing or not executable -- nothing to unload; file
             # removal below is the operation that actually matters.
             pass
         if path.exists():
@@ -269,7 +341,7 @@ def uninstall(home: Path | None = None) -> list[Path]:
 
 def _uid() -> int:
     """Current user id (``os.getuid`` is POSIX-only; daemon is POSIX-only too)."""
-    import os  # noqa: PLC0415 — local import keeps the module import-clean on import
+    import os  # noqa: PLC0415 -- local import keeps module import-clean
 
     return os.getuid()
 
@@ -292,7 +364,7 @@ def status(home: Path | None = None) -> StatusResult:
         path = launchd_plist_path(home)
         if not path.exists():
             return StatusResult(platform, False, False, "not installed")
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+        proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell
             ["launchctl", "list"],  # noqa: S607
             capture_output=True,
             text=True,
@@ -306,7 +378,7 @@ def status(home: Path | None = None) -> StatusResult:
     timer = systemd_timer_path(home)
     if not timer.exists():
         return StatusResult(platform, False, False, "not installed")
-    proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+    proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell
         ["systemctl", "--user", "is-active", f"{SYSTEMD_UNIT}.timer"],  # noqa: S607
         capture_output=True,
         text=True,
