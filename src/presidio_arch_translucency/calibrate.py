@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -184,24 +185,20 @@ def _read_existing_model(path: Path) -> dict:
             if isinstance(data, dict):
                 return data
     except (OSError, ValueError):
-        pass
+        return {}
     return {}
 
 
 def _prepare_model_path(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
+    with suppress(OSError):
         path.parent.chmod(0o700)
-    except OSError:
-        pass
 
 
 def _write_private_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    try:
+    with suppress(OSError):
         path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def write_model_file(result: CalibrationResult, layer: str | None = None) -> Path:
