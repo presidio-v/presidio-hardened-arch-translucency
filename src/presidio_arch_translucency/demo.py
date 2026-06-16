@@ -219,12 +219,23 @@ def translucency_insight(results: list[VariantResult]) -> str:
 
 def _on_demand_pricing(pricing: object) -> tuple[object, str]:
     """Return CostParams and source text from flat or tiered pricing results."""
-    selected = getattr(pricing, "on_demand", pricing)
-    params = getattr(selected, "params")
-    source = str(getattr(selected, "source_description"))
-    if bool(getattr(selected, "from_cache")):
+    from presidio_arch_translucency.cloud import (  # noqa: PLC0415
+        CloudPricingResult,
+        TieredPricingResult,
+    )
+
+    if isinstance(pricing, TieredPricingResult):
+        selected = pricing.on_demand
+    elif isinstance(pricing, CloudPricingResult):
+        selected = pricing
+    else:
+        msg = f"Unsupported pricing result: {type(pricing).__name__}"
+        raise TypeError(msg)
+
+    source = selected.source_description
+    if selected.from_cache:
         source += " (cached)"
-    return params, source
+    return selected.params, source
 
 
 # -- matplotlib plot (uses Agg backend -- safe in headless environments) --------
