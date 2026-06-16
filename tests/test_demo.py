@@ -7,18 +7,21 @@ from pathlib import Path
 
 from rich.console import Console
 
-from presidio_arch_translucency.cloud import CloudPricingResult, TieredPricingResult
+from presidio_arch_translucency.cloud import (
+    CloudPricingResult,
+    TieredPricingResult,
+)
 from presidio_arch_translucency.cost import CostParams
 from presidio_arch_translucency.demo import (
     CONTAINER_PREFIX,
-    VariantResult,
     _DOCKERFILE,
     _HEALTHCHECK_PY,
+    VariantResult,
     _localhost_port,
+    nginx_conf,
     _on_demand_pricing,
     _render_cost_section,
     _render_hpa_section,
-    nginx_conf,
     save_plot,
     translucency_insight,
 )
