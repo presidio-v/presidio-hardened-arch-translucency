@@ -193,10 +193,14 @@ class TestAuth:
     def test_resolve_token_returns_none_without_env(self, monkeypatch, tmp_path):
         monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
         monkeypatch.setenv("KUBECONFIG", str(tmp_path / "kubeconfig"))
-        (tmp_path / "kubeconfig").write_text(
-            "current-context: prod\nusers:\n- name: prod\n  user:\n    token: kube-token\n",
-            encoding="utf-8",
+        kubeconfig = (
+            "current-context: prod\n"
+            "users:\n"
+            "- name: prod\n"
+            "  user:\n"
+            "    token: kube-token\n"
         )
+        (tmp_path / "kubeconfig").write_text(kubeconfig, encoding="utf-8")
         assert _resolve_token(_URL) is None
 
     def test_env_token_requires_https(self, monkeypatch):
