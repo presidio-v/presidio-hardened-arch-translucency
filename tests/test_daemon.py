@@ -1,13 +1,14 @@
 """
-Tests for `pat observe daemon` — launchd (macOS) / systemd (Linux) scheduling.
+Tests for `pat observe daemon` -- launchd (macOS) / systemd (Linux) scheduling.
 
-Platform is forced via ``monkeypatch.setattr(daemon.sys, "platform", …)`` so both
-the macOS and Linux code paths run regardless of the host OS. Subprocess calls
-(``launchctl`` / ``systemctl``) are stubbed — no real units are loaded.
+Platform is forced via ``monkeypatch.setattr(daemon.sys, "platform", ...)`` so
+both the macOS and Linux code paths run regardless of the host OS. Subprocess
+calls (``launchctl`` / ``systemctl``) are stubbed -- no real units are loaded.
 """
 
 from __future__ import annotations
 
+import stat
 from dataclasses import dataclass
 
 import pytest
@@ -84,6 +85,21 @@ class TestCommand:
     def test_observe_argv_layer_only(self):
         assert daemon.observe_argv(layer="node") == ["observe", "--layer", "node"]
 
+    def test_validate_normalizes_layer(self):
+        prometheus, layer = daemon.validate_schedule_inputs("https://p:9090", "Pod")
+        assert prometheus == "https://p:9090"
+        assert layer == "pod"
+
+    @pytest.mark.parametrize("url", ["file:///tmp/x", "prom:9090", ""])
+    def test_validate_rejects_invalid_prometheus_url(self, url):
+        with pytest.raises(daemon.DaemonError, match="prometheus"):
+            daemon.validate_schedule_inputs(url, "pod")
+
+    @pytest.mark.parametrize("layer", ["", "api", "pod\nEnvironment=X"])
+    def test_validate_rejects_invalid_layer(self, layer):
+        with pytest.raises(daemon.DaemonError, match="layer"):
+            daemon.validate_schedule_inputs("https://p:9090", layer)
+
 
 # ---------------------------------------------------------------------------
 # Unit-file rendering (pure)
@@ -110,12 +126,31 @@ class TestRenderLaunchd:
         assert "&lt;x&gt;" in plist
         assert "<x>" not in plist.split("ProgramArguments")[1]
 
+    def test_rejects_control_chars(self):
+        with pytest.raises(daemon.DaemonError, match="control"):
+            daemon.render_launchd_plist(["/bin/pat", "observe\nmalicious"], 60)
+
 
 class TestRenderSystemd:
     def test_service(self):
         svc = daemon.render_systemd_service(["/bin/pat", "observe", "--layer", "pod"])
         assert "Type=oneshot" in svc
         assert "ExecStart=/bin/pat observe --layer pod" in svc
+
+    def test_service_quotes_spaces_and_escapes_percent(self):
+        svc = daemon.render_systemd_service(
+            [
+                "/bin/pat",
+                "observe",
+                "--prometheus",
+                "https://prom.example/query path?x=100%25",
+            ]
+        )
+        assert '"https://prom.example/query path?x=100%%25"' in svc
+
+    def test_service_rejects_control_chars(self):
+        with pytest.raises(daemon.DaemonError, match="control"):
+            daemon.render_systemd_service(["/bin/pat", "observe\nEnvironment=X"])
 
     def test_timer(self):
         timer = daemon.render_systemd_timer(90)
@@ -142,6 +177,7 @@ class TestInstall:
         content = path.read_text()
         assert "<integer>30</integer>" in content
         assert "<string>http://p:9090</string>" in content
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "bootstrap" in res.reload_hint
 
     def test_linux_writes_service_and_timer(self, linux, tmp_path, monkeypatch):
@@ -154,8 +190,32 @@ class TestInstall:
         assert svc.exists() and timer.exists()
         assert "ExecStart=/opt/pat observe" in svc.read_text()
         assert "OnCalendar=*:*:00/120" in timer.read_text()
+        assert stat.S_IMODE(svc.stat().st_mode) == 0o600
+        assert stat.S_IMODE(timer.stat().st_mode) == 0o600
         assert "daemon-reload" in res.reload_hint
         assert "enable --now" in res.reload_hint
+
+    def test_linux_normalizes_layer(self, linux, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon.shutil, "which", lambda _: "/opt/pat")
+        daemon.install(prometheus="https://p:9090", layer="Pod", home=tmp_path)
+        svc = daemon.systemd_service_path(tmp_path).read_text()
+        assert "--layer pod" in svc
+
+    def test_rejects_control_chars_before_write(self, linux, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon.shutil, "which", lambda _: "/opt/pat")
+        with pytest.raises(daemon.DaemonError, match="control"):
+            daemon.install(
+                prometheus="https://p:9090\nEnvironment=X=Y",
+                layer="pod",
+                home=tmp_path,
+            )
+        assert not daemon.systemd_service_path(tmp_path).exists()
+
+    def test_rejects_invalid_layer_before_write(self, linux, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon.shutil, "which", lambda _: "/opt/pat")
+        with pytest.raises(daemon.DaemonError, match="layer"):
+            daemon.install(prometheus="https://p:9090", layer="api", home=tmp_path)
+        assert not daemon.systemd_service_path(tmp_path).exists()
 
     def test_unsupported_platform_raises(self, monkeypatch, tmp_path):
         monkeypatch.setattr(daemon.sys, "platform", "win32")
@@ -181,7 +241,6 @@ class TestUninstall:
         removed = daemon.uninstall(home=tmp_path)
         assert removed == [daemon.launchd_plist_path(tmp_path)]
         assert not daemon.launchd_plist_path(tmp_path).exists()
-        # bootout was attempted
         assert any("bootout" in c for c in calls)
 
     def test_macos_missing_file_is_noop(self, mac, tmp_path, monkeypatch):
@@ -193,7 +252,6 @@ class TestUninstall:
             raise FileNotFoundError("launchctl missing")
 
         monkeypatch.setattr(daemon.subprocess, "run", boom)
-        # A missing/failing launchctl must be swallowed — removal still proceeds.
         assert daemon.uninstall(home=tmp_path) == []
 
     def test_linux_removes_both(self, linux, tmp_path, monkeypatch):
@@ -293,15 +351,13 @@ class TestDaemonCLI:
         result = daemon.InstallResult(
             platform="darwin",
             paths=[plist],
-            reload_hint="launchctl bootstrap …",
+            reload_hint="launchctl bootstrap ...",
         )
         monkeypatch.setattr(daemon, "install", lambda **k: result)
         out = _invoke("install", "--interval", "30")
         assert out.exit_code == 0
         assert "Installed" in out.output
         assert "every 30s" in out.output
-        # Rich soft-wraps the long path at 80 cols (inserting newlines mid-token),
-        # so collapse whitespace before checking the filename is present.
         collapsed = "".join(out.output.split())
         assert plist.name in collapsed
         assert "bootstrap" in out.output
