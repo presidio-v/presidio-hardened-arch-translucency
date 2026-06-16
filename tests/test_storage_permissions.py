@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import stat
 
-from presidio_arch_translucency.calibrate import (
-    CalibrationResult,
-    global_model_path,
-    Observation as CalibrationObservation,
-    write_model_file,
-)
+import presidio_arch_translucency.calibrate as calibrate
 from presidio_arch_translucency.observe import default_db_path, init_store
 
 
@@ -30,19 +25,19 @@ def test_default_observation_store_is_private(tmp_path, monkeypatch) -> None:
 
 def test_default_model_store_is_private(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    result = CalibrationResult(
+    result = calibrate.CalibrationResult(
         concurrency=8.0,
         overhead_beta=0.02,
         r_squared=1.0,
         rmse=0.0,
-        observations=[CalibrationObservation(rps=100.0, latency_ms=50.0, replicas=2)],
+        observations=[calibrate.Observation(rps=100.0, latency_ms=50.0, replicas=2)],
         predictions=[100.0],
         residuals=[0.0],
     )
 
-    path = write_model_file(result)
+    path = calibrate.write_model_file(result)
 
-    assert path == global_model_path()
+    assert path == calibrate.global_model_path()
     assert path.is_file()
     assert _mode(path.parent) == 0o700
     assert _mode(path) == 0o600
