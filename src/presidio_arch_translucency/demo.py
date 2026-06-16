@@ -1,16 +1,16 @@
 """
-pat demo — Live architectural translucency demonstrator.
+pat demo -- Live architectural translucency demonstrator.
 
-Runs a Monte Carlo π workload across three replication variants on the
+Runs a Monte Carlo pi workload across three replication variants on the
 local Docker daemon and measures throughput, latency, and CPU usage.
 Demonstrates the core architectural-translucency insight: the same
 replication measure has different performance implications at different layers.
 
 Variants
 --------
-1 — Single container         (baseline, no replication)
-2 — N independent containers (manual container-level replication, round-robin LB)
-3 — N workers + nginx        (simulated Deployment-style replication with an LB)
+1 -- Single container         (baseline, no replication)
+2 -- N independent containers (manual container-level replication, round-robin LB)
+3 -- N workers + nginx        (simulated Deployment-style replication with an LB)
 """
 
 from __future__ import annotations
@@ -38,26 +38,36 @@ from rich.table import Table
 
 from presidio_arch_translucency.security import log_security_event
 
-# ── constants ─────────────────────────────────────────────────────────────────
+# -- constants ----------------------------------------------------------------
 
 IMAGE_NAME = "pat-demo-workload"
 IMAGE_TAG = "0.1.0"
 FULL_IMAGE = f"{IMAGE_NAME}:{IMAGE_TAG}"
 NETWORK_NAME = "pat-demo-net"
+LOCALHOST = "127.0.0.1"
 V1_PORT = 18080
 V2_BASE_PORT = 18081
 V3_LB_PORT = 18090
 CONTAINER_PREFIX = "pat-demo"
 
-# ── embedded workload assets (written to tmpdir at build time) ─────────────────
+# -- embedded workload assets (written to tmpdir at build time) ----------------
 
 _DOCKERFILE = """\
 FROM python:3.12-slim
 LABEL description="Monte Carlo pi workload for pat demo"
 WORKDIR /app
-COPY app.py .
+COPY app.py healthcheck.py ./
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["python", "healthcheck.py"]
 CMD ["python", "-u", "app.py"]
+"""
+
+_HEALTHCHECK_PY = """\
+import urllib.request
+
+urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()
 """
 
 _APP_PY = """\
@@ -100,7 +110,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(('0.0.0.0', int(os.environ.get('PORT','8080'))), H).serve_forever()
 """
 
-# ── data model ────────────────────────────────────────────────────────────────
+# -- data model ----------------------------------------------------------------
 
 
 @dataclass
@@ -116,7 +126,12 @@ class VariantResult:
     errors: int
 
 
-# ── pure helpers (fully testable without Docker) ──────────────────────────────
+# -- pure helpers (fully testable without Docker) ------------------------------
+
+
+def _localhost_port(port: int) -> tuple[str, int]:
+    """Docker SDK port binding that publishes to loopback only."""
+    return (LOCALHOST, int(port))
 
 
 def nginx_conf(n: int) -> str:
@@ -171,7 +186,7 @@ def translucency_insight(results: list[VariantResult]) -> str:
         f"({best.throughput_rps:.1f} req/s, {best.avg_latency_ms:.0f} ms avg)",
         f"Baseline   : {worst.name} "
         f"({worst.throughput_rps:.1f} req/s, {worst.avg_latency_ms:.0f} ms avg)",
-        f"Speedup    : {speedup:.2f}× throughput,  "
+        f"Speedup    : {speedup:.2f}x throughput,  "
         f"{lat_improvement:.0f}% latency reduction",
         "",
         "Architectural translucency insight:",
@@ -181,16 +196,16 @@ def translucency_insight(results: list[VariantResult]) -> str:
         lines.append(
             "  Manual container replication minimises coordination overhead."
             " Each replica handles an independent slice of the request stream"
-            " with no shared routing state — the load is partitioned at the"
+            " with no shared routing state -- the load is partitioned at the"
             " lowest possible layer, matching the theoretical optimum of"
-            " ω(δ) = min(δ × base_capacity × efficiency(δ), demand)."
+            " omega(delta) = min(delta x base_capacity x efficiency(delta), demand)."
         )
     elif best.name.startswith("3"):
         lines.append(
             "  The nginx load-balancer layer adds a thin routing tier but"
-            " enables a single stable endpoint — closer to a Kubernetes"
-            " Service/Deployment model. The scheduling overhead (β·ln δ)"
-            " is offset by better connection reuse across replicas."
+            " enables a single stable endpoint -- closer to a Kubernetes"
+            " Service/Deployment model. The scheduling overhead is offset by"
+            " better connection reuse across replicas."
         )
     else:
         lines.append(
@@ -202,7 +217,17 @@ def translucency_insight(results: list[VariantResult]) -> str:
     return "\n".join(lines)
 
 
-# ── matplotlib plot (uses Agg backend — safe in headless environments) ─────────
+def _on_demand_pricing(pricing: object) -> tuple[object, str]:
+    """Return CostParams and source text from flat or tiered pricing results."""
+    selected = getattr(pricing, "on_demand", pricing)
+    params = getattr(selected, "params")
+    source = str(getattr(selected, "source_description"))
+    if bool(getattr(selected, "from_cache")):
+        source += " (cached)"
+    return params, source
+
+
+# -- matplotlib plot (uses Agg backend -- safe in headless environments) --------
 
 
 def save_plot(results: list[VariantResult], output: Path) -> None:
@@ -221,30 +246,27 @@ def save_plot(results: list[VariantResult], output: Path) -> None:
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.suptitle(
-        "Architectural Translucency — Live Demo Results",
+        "Architectural Translucency -- Live Demo Results",
         fontsize=13,
         fontweight="bold",
     )
 
-    # panel 0 — throughput
     bars = axes[0].bar(
         names, [r.throughput_rps for r in results], color=colours, edgecolor="white"
     )
     bars[best_tp_idx].set_edgecolor("gold")
     bars[best_tp_idx].set_linewidth(2.5)
-    axes[0].set_title("Throughput (req/s)  ↑ higher is better")
+    axes[0].set_title("Throughput (req/s)  higher is better")
     axes[0].set_ylabel("req / s")
 
-    # panel 1 — avg latency
     bars2 = axes[1].bar(
         names, [r.avg_latency_ms for r in results], color=colours, edgecolor="white"
     )
     bars2[best_lat_idx].set_edgecolor("gold")
     bars2[best_lat_idx].set_linewidth(2.5)
-    axes[1].set_title("Avg Latency (ms)  ↓ lower is better")
+    axes[1].set_title("Avg Latency (ms)  lower is better")
     axes[1].set_ylabel("ms")
 
-    # panel 2 — CPU
     axes[2].bar(names, [r.cpu_pct for r in results], color=colours, edgecolor="white")
     axes[2].set_title("Total CPU (%)  across all containers")
     axes[2].set_ylabel("%")
@@ -258,7 +280,7 @@ def save_plot(results: list[VariantResult], output: Path) -> None:
     plt.close(fig)
 
 
-# ── Docker helpers ─────────────────────────────────────────────────────────────
+# -- Docker helpers ------------------------------------------------------------
 
 
 def _cleanup(client: object) -> None:  # type: ignore[type-arg]
@@ -288,16 +310,17 @@ def _build_image(client: object, console: Console, force: bool = False) -> None:
         try:
             client.images.get(FULL_IMAGE)  # type: ignore[union-attr]
             console.print(
-                f"[dim]Image {FULL_IMAGE} already present — skipping build.[/]"
+                f"[dim]Image {FULL_IMAGE} already present -- skipping build.[/]"
             )
             return
         except docker.errors.ImageNotFound:
             pass
 
-    console.print(f"[cyan]Building {FULL_IMAGE} …[/]")
+    console.print(f"[cyan]Building {FULL_IMAGE} ...[/]")
     tmpdir = Path(tempfile.mkdtemp(prefix="pat-demo-build-"))
     try:
         (tmpdir / "app.py").write_text(_APP_PY)
+        (tmpdir / "healthcheck.py").write_text(_HEALTHCHECK_PY)
         (tmpdir / "Dockerfile").write_text(_DOCKERFILE)
         client.images.build(  # type: ignore[union-attr]
             path=str(tmpdir), tag=FULL_IMAGE, rm=True, quiet=False
@@ -436,7 +459,7 @@ def _upload_nginx_conf(container: object, conf_text: str) -> None:
     container.exec_run(["nginx", "-s", "reload"])  # type: ignore[union-attr]
 
 
-# ── per-variant runners ────────────────────────────────────────────────────────
+# -- per-variant runners -------------------------------------------------------
 
 
 def _run_variant(
@@ -470,13 +493,13 @@ def _run_variant(
     )
 
 
-# ── result rendering ──────────────────────────────────────────────────────────
+# -- result rendering ----------------------------------------------------------
 
 
 def _render_table(results: list[VariantResult], console: Console) -> None:
     best_idx = max(range(len(results)), key=lambda i: results[i].throughput_rps)
     table = Table(
-        title="Architectural Translucency — Measured Results",
+        title="Architectural Translucency -- Measured Results",
         box=box.ROUNDED,
         show_lines=True,
     )
@@ -500,14 +523,14 @@ def _render_table(results: list[VariantResult], console: Console) -> None:
             f"{r.p95_latency_ms:.0f}",
             f"{r.cpu_pct:.0f}",
             str(r.errors),
-            "[bold green]✓[/]" if is_best else "",
+            "[bold green]yes[/]" if is_best else "",
         )
 
     console.print()
     console.print(table)
 
 
-# ── Cost analysis ────────────────────────────────────────────────────────────
+# -- Cost analysis -------------------------------------------------------------
 
 
 def _render_cost_section(
@@ -519,11 +542,7 @@ def _render_cost_section(
 ) -> None:
     """
     Show cost/req for each measured variant and the analytical cost recommendation.
-    Uses measured throughput — so actual Docker numbers feed the cost model.
-
-    If *cost_params* (a CostParams instance) is provided it is used directly
-    (v0.5.0 cloud pricing path).  Otherwise costs are derived from the uniform
-    *cost_per_container_hour* scalar (manual / default path).
+    Uses measured throughput -- so actual Docker numbers feed the cost model.
     """
     from presidio_arch_translucency.cost import (  # noqa: PLC0415
         CostParams,
@@ -539,7 +558,6 @@ def _render_cost_section(
     if best.throughput_rps <= 0 or best.avg_latency_ms <= 0:
         return
 
-    # Resolve the per-layer CostParams to use for the analytical section
     if cost_params is not None and isinstance(cost_params, CostParams):
         cp = cost_params
         container_cost = cp.cost_per_container_hour
@@ -552,9 +570,8 @@ def _render_cost_section(
             cost_per_node_hour=container_cost * 25.0,
         )
 
-    # ── Measured cost per variant ──────────────────────────────────────────────
     table = Table(
-        title="Cost Efficiency — Measured Variants",
+        title="Cost Efficiency -- Measured Variants",
         box=box.ROUNDED,
         show_lines=True,
     )
@@ -583,13 +600,12 @@ def _render_cost_section(
             f"{r.throughput_rps:.1f}",
             f"${hc:.4f}",
             cpr_str,
-            "[bold green]✓[/]" if is_best else "",
+            "[bold green]yes[/]" if is_best else "",
         )
 
     console.print()
     console.print(table)
 
-    # ── Analytical layer recommendation ────────────────────────────────────────
     analysis = analyze(
         best.throughput_rps, best.avg_latency_ms, ReplicationLayer.CONTAINER
     )
@@ -607,13 +623,13 @@ def _render_cost_section(
     body = (
         source_line + "[bold]Best measured variant:[/]  "
         f"[cyan]{cost_rows[best_roi_idx][0].name}[/]\n"
-        f"  Cost/req  {format_cost_per_request(cpr_measured)}  ·  "
+        f"  Cost/req  {format_cost_per_request(cpr_measured)}  .  "
         f"Cost/hr  ${hc_measured:.4f}\n\n"
         f"[bold]Analytical best-ROI layer:[/]  [cyan]{best_analytical.layer.value}[/]\n"
-        f"  Replicas  {best_analytical.replicas}  ·  "
+        f"  Replicas  {best_analytical.replicas}  .  "
         f"Throughput gain  {best_analytical.throughput_gain_pct:+.1f}%\n"
         f"  Cost/req  {format_cost_per_request(best_analytical.cost_per_request_usd)}"
-        f"  ·  Cost/hr  ${best_analytical.hourly_cost_usd:.4f}\n"
+        f"  .  Cost/hr  ${best_analytical.hourly_cost_usd:.4f}\n"
         f"  ROI score  {best_analytical.roi_score:.1f}\n\n"
         "[dim]Run [bold]pat cost --cloud aws[/] with your region and instance type"
         " for a live-priced full breakdown.[/]"
@@ -627,7 +643,7 @@ def _render_cost_section(
     )
 
 
-# ── HPA lag projection ────────────────────────────────────────────────────────
+# -- HPA lag projection --------------------------------------------------------
 
 
 def _render_hpa_section(
@@ -649,7 +665,7 @@ def _render_hpa_section(
     best = max(results, key=lambda r: r.throughput_rps)
 
     if best.throughput_rps <= 0 or best.avg_latency_ms <= 0:
-        return  # measurement too noisy to project
+        return
 
     spike_rps = best.throughput_rps * spike_multiplier
     hpa_result = simulate_scale_event(
@@ -663,11 +679,11 @@ def _render_hpa_section(
     trough_color = "red" if hpa_result.trough_throughput_pct < 50 else "yellow"
     body = (
         f"[dim]Measured baseline:[/]  {best.name}\n"
-        f"  {best.throughput_rps:.1f} req/s  ·  "
+        f"  {best.throughput_rps:.1f} req/s  .  "
         f"{best.avg_latency_ms:.0f} ms avg latency\n\n"
-        f"[dim]Hypothetical spike:[/]  {spike_multiplier:.0f}× "
-        f"→ {spike_rps:.1f} req/s\n\n"
-        f"[bold red]TROUGH[/]  (0 s – {hpa_result.trough_duration_s:.0f} s"
+        f"[dim]Hypothetical spike:[/]  {spike_multiplier:.0f}x "
+        f"-> {spike_rps:.1f} req/s\n\n"
+        f"[bold red]TROUGH[/]  (0 s - {hpa_result.trough_duration_s:.0f} s"
         f"  =  HPA poll 15 s  +  pod startup 30 s)\n"
         f"  Throughput    [{trough_color}]"
         f"{hpa_result.trough_throughput_rps:.1f} req/s"
@@ -675,10 +691,10 @@ def _render_hpa_section(
         f"  p99 latency   {hpa_result.trough_p99_latency_ms:,.0f} ms\n"
         f"  Missed reqs   ~{hpa_result.missed_requests:,}\n\n"
         f"[bold green]STEADY STATE[/]  (after {hpa_result.trough_duration_s:.0f} s"
-        f"  —  {hpa_result.replicas_after} replicas)\n"
+        f"  --  {hpa_result.replicas_after} replicas)\n"
         f"  Throughput    {hpa_result.steady_throughput_rps:.1f} req/s\n"
         f"  p99 latency   {hpa_result.steady_p99_latency_ms:,.0f} ms\n\n"
-        f"[dim]→ Set [bold]HPA minReplicas = {hpa_result.replicas_after}[/]"
+        f"[dim]-> Set [bold]HPA minReplicas = {hpa_result.replicas_after}[/]"
         f"[dim] to pre-provision and eliminate the trough.[/]"
     )
 
@@ -687,7 +703,7 @@ def _render_hpa_section(
             body,
             title=(
                 f"[bold magenta]HPA Lag Projection"
-                f" (if load spikes {spike_multiplier:.0f}×)[/]"
+                f" (if load spikes {spike_multiplier:.0f}x)[/]"
             ),
             border_style="magenta",
         )
@@ -695,10 +711,10 @@ def _render_hpa_section(
 
     hpa_output = output.parent / (output.stem + "-hpa" + output.suffix)
     save_hpa_plot(hpa_result, hpa_output)
-    console.print(f"[green]HPA plot saved →[/] {hpa_output}\n")
+    console.print(f"[green]HPA plot saved ->[/] {hpa_output}\n")
 
 
-# ── Typer command ─────────────────────────────────────────────────────────────
+# -- Typer command -------------------------------------------------------------
 
 
 def demo_command(
@@ -734,7 +750,6 @@ def demo_command(
         "--cost-per-container-hour",
         help="USD per container per hour (fallback when --cloud is not set).",
     ),
-    # ── v0.5.0: live AWS pricing ───────────────────────────────────────────────
     cloud: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--cloud",
@@ -776,7 +791,7 @@ def demo_command(
     """
     Live architectural translucency demonstrator.
 
-    Builds a Monte Carlo π workload container and runs it in three
+    Builds a Monte Carlo pi workload container and runs it in three
     replication variants to show how throughput and latency change
     depending on where replication is applied.
 
@@ -791,7 +806,6 @@ def demo_command(
     console = Console()
     log_security_event("DEMO_INVOCATION", {"replicas": replicas})
 
-    # ── v0.5.0: resolve cloud pricing before touching Docker ───────────────────
     resolved_cost_params = None
     resolved_pricing_source: Optional[str] = None  # noqa: UP045
 
@@ -819,7 +833,7 @@ def demo_command(
         try:
             with console.status(
                 "[dim]Fetching AWS on-demand pricing "
-                "(first run may take 30–60 s, cached for 24 h)…[/dim]"
+                "(first run may take 30-60 s, cached for 24 h)...[/dim]"
             ):
                 pricing = build_cost_params_from_aws(
                     region=region,
@@ -829,15 +843,12 @@ def demo_command(
                     memory_gb=memory_gb,
                     no_cache=no_cache,
                 )
-            resolved_cost_params = pricing.params
-            cache_tag = " (cached)" if pricing.from_cache else ""
-            resolved_pricing_source = pricing.source_description + cache_tag
+            resolved_cost_params, resolved_pricing_source = _on_demand_pricing(pricing)
             console.print(f"[green]Pricing fetched:[/] {resolved_pricing_source}")
         except PricingError as exc:
             console.print(f"[bold red]Cloud pricing error:[/] {exc}")
             raise typer.Exit(1) from exc
 
-    # ── connect to Docker ──────────────────────────────────────────────────────
     try:
         client = docker.from_env()
         client.ping()
@@ -851,15 +862,12 @@ def demo_command(
             f"[bold]Requests:[/] {requests}  "
             f"[bold]Concurrency:[/] {concurrency}  "
             f"[bold]Iterations/req:[/] {iterations:,}",
-            title="[bold blue]Presidio Architectural Translucency — Live Demo[/]",
+            title="[bold blue]Presidio Architectural Translucency -- Live Demo[/]",
             border_style="blue",
         )
     )
 
-    # ── clean up any leftover containers from a previous run ──────────────────
     _cleanup(client)
-
-    # ── build image ───────────────────────────────────────────────────────────
     _build_image(client, console, force=force_rebuild)
     _ensure_network(client)
 
@@ -872,23 +880,22 @@ def demo_command(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        # ── Variant 1: single container ────────────────────────────────────
-        console.print("\n[bold]Variant 1[/] — Single container")
+        console.print("\n[bold]Variant 1[/] -- Single container")
         c1 = client.containers.run(
             FULL_IMAGE,
             name=f"{CONTAINER_PREFIX}-v1-0",
-            ports={"8080/tcp": V1_PORT},
+            ports={"8080/tcp": _localhost_port(V1_PORT)},
             detach=True,
             network=NETWORK_NAME,
         )
         try:
-            if not _wait_url(f"http://localhost:{V1_PORT}/health"):
+            if not _wait_url(f"http://{LOCALHOST}:{V1_PORT}/health"):
                 console.print("[red]Variant 1 container failed to start.[/]")
                 raise typer.Exit(1)
             r1 = _run_variant(
-                "1 — Single container",
+                "1 -- Single container",
                 "Baseline: one container handles all traffic",
-                [f"http://localhost:{V1_PORT}"],
+                [f"http://{LOCALHOST}:{V1_PORT}"],
                 [c1.id],
                 n_workers=1,
                 n_lb=0,
@@ -904,8 +911,7 @@ def demo_command(
             c1.stop(timeout=5)
             c1.remove(force=True)
 
-        # ── Variant 2: N independent containers, round-robin ───────────────
-        console.print(f"\n[bold]Variant 2[/] — {replicas} independent containers")
+        console.print(f"\n[bold]Variant 2[/] -- {replicas} independent containers")
         v2_containers = []
         v2_urls = []
         for i in range(replicas):
@@ -913,19 +919,19 @@ def demo_command(
             c = client.containers.run(
                 FULL_IMAGE,
                 name=f"{CONTAINER_PREFIX}-v2-{i}",
-                ports={"8080/tcp": port},
+                ports={"8080/tcp": _localhost_port(port)},
                 detach=True,
                 network=NETWORK_NAME,
             )
             v2_containers.append(c)
-            v2_urls.append(f"http://localhost:{port}")
+            v2_urls.append(f"http://{LOCALHOST}:{port}")
         try:
             for url in v2_urls:
                 if not _wait_url(f"{url}/health"):
                     console.print(f"[red]Container at {url} failed health check.[/]")
                     raise typer.Exit(1)
             r2 = _run_variant(
-                f"2 — {replicas} containers (round-robin)",
+                f"2 -- {replicas} containers (round-robin)",
                 f"{replicas} independent containers, client-side round-robin LB",
                 v2_urls,
                 [c.id for c in v2_containers],
@@ -944,9 +950,8 @@ def demo_command(
                 c.stop(timeout=5)
                 c.remove(force=True)
 
-        # ── Variant 3: N workers + nginx (simulated K8s Deployment) ────────
         console.print(
-            f"\n[bold]Variant 3[/] — {replicas} workers + nginx load balancer"
+            f"\n[bold]Variant 3[/] -- {replicas} workers + nginx load balancer"
         )
         v3_workers: list[object] = []
         nginx_c = None
@@ -960,26 +965,25 @@ def demo_command(
                 )
                 v3_workers.append(c)
 
-            # Start nginx, then inject config and reload
             nginx_c = client.containers.run(
                 "nginx:1.27-alpine",
                 name=f"{CONTAINER_PREFIX}-v3-nginx",
-                ports={"80/tcp": V3_LB_PORT},
+                ports={"80/tcp": _localhost_port(V3_LB_PORT)},
                 detach=True,
                 network=NETWORK_NAME,
             )
-            time.sleep(1)  # let nginx initialise default config
+            time.sleep(1)
             _upload_nginx_conf(nginx_c, nginx_conf(replicas))
 
-            if not _wait_url(f"http://localhost:{V3_LB_PORT}/health"):
+            if not _wait_url(f"http://{LOCALHOST}:{V3_LB_PORT}/health"):
                 console.print("[red]nginx failed to start for variant 3.[/]")
                 raise typer.Exit(1)
 
             all_ids = [c.id for c in v3_workers] + [nginx_c.id]  # type: ignore[union-attr]
             r3 = _run_variant(
-                f"3 — nginx LB ({replicas} workers)",
+                f"3 -- nginx LB ({replicas} workers)",
                 f"{replicas} workers behind nginx reverse proxy (K8s-style)",
-                [f"http://localhost:{V3_LB_PORT}"],
+                [f"http://{LOCALHOST}:{V3_LB_PORT}"],
                 all_ids,
                 n_workers=replicas,
                 n_lb=1,
@@ -1005,13 +1009,11 @@ def demo_command(
                 except Exception:  # noqa: BLE001, S110
                     pass
 
-    # ── cleanup network ────────────────────────────────────────────────────────
     try:
         client.networks.get(NETWORK_NAME).remove()
     except Exception:  # noqa: BLE001, S110
         pass
 
-    # ── output ────────────────────────────────────────────────────────────────
     _render_table(results, console)
 
     insight = translucency_insight(results)
@@ -1025,12 +1027,10 @@ def demo_command(
     )
 
     save_plot(results, output)
-    console.print(f"\n[green]Plot saved →[/] {output}\n")
+    console.print(f"\n[green]Plot saved ->[/] {output}\n")
 
-    # ── HPA lag projection using measured results ──────────────────────────────
     _render_hpa_section(results, output, spike_multiplier, console)
 
-    # ── Cost analysis using measured results (v0.5.0) ─────────────────────────
     _render_cost_section(
         results,
         cost_per_container_hour,
