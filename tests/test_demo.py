@@ -7,30 +7,15 @@ from pathlib import Path
 
 from rich.console import Console
 
-from presidio_arch_translucency.cloud import (
-    CloudPricingResult,
-    TieredPricingResult,
-)
+import presidio_arch_translucency.demo as demo
+from presidio_arch_translucency.cloud import CloudPricingResult, TieredPricingResult
 from presidio_arch_translucency.cost import CostParams
-from presidio_arch_translucency.demo import (
-    CONTAINER_PREFIX,
-    _DOCKERFILE,
-    _HEALTHCHECK_PY,
-    VariantResult,
-    _localhost_port,
-    nginx_conf,
-    _on_demand_pricing,
-    _render_cost_section,
-    _render_hpa_section,
-    save_plot,
-    translucency_insight,
-)
 
 # -- VariantResult -------------------------------------------------------------
 
 
-def _vr(name: str, tp: float, lat: float, cpu: float = 50.0) -> VariantResult:
-    return VariantResult(
+def _vr(name: str, tp: float, lat: float, cpu: float = 50.0) -> demo.VariantResult:
+    return demo.VariantResult(
         name=name,
         description="",
         n_workers=1,
@@ -52,27 +37,27 @@ def test_variant_result_fields() -> None:
 
 
 def test_embedded_dockerfile_runs_non_root_and_has_healthcheck() -> None:
-    assert "USER appuser" in _DOCKERFILE
-    assert "HEALTHCHECK" in _DOCKERFILE
-    assert "healthcheck.py" in _DOCKERFILE
-    assert "127.0.0.1:8080/health" in _HEALTHCHECK_PY
+    assert "USER appuser" in demo._DOCKERFILE
+    assert "HEALTHCHECK" in demo._DOCKERFILE
+    assert "healthcheck.py" in demo._DOCKERFILE
+    assert "127.0.0.1:8080/health" in demo._HEALTHCHECK_PY
 
 
 def test_localhost_port_binding() -> None:
-    assert _localhost_port(18080) == ("127.0.0.1", 18080)
+    assert demo._localhost_port(18080) == ("127.0.0.1", 18080)
 
 
 # -- nginx_conf ----------------------------------------------------------------
 
 
 def test_nginx_conf_contains_all_servers() -> None:
-    conf = nginx_conf(4)
+    conf = demo.nginx_conf(4)
     for i in range(4):
-        assert f"{CONTAINER_PREFIX}-v3-{i}:8080" in conf
+        assert f"{demo.CONTAINER_PREFIX}-v3-{i}:8080" in conf
 
 
 def test_nginx_conf_structure() -> None:
-    conf = nginx_conf(2)
+    conf = demo.nginx_conf(2)
     assert "upstream workload" in conf
     assert "proxy_pass http://workload" in conf
     assert "listen 80" in conf
@@ -80,24 +65,24 @@ def test_nginx_conf_structure() -> None:
 
 
 def test_nginx_conf_single_worker() -> None:
-    conf = nginx_conf(1)
-    assert f"{CONTAINER_PREFIX}-v3-0:8080" in conf
-    assert f"{CONTAINER_PREFIX}-v3-1:8080" not in conf
+    conf = demo.nginx_conf(1)
+    assert f"{demo.CONTAINER_PREFIX}-v3-0:8080" in conf
+    assert f"{demo.CONTAINER_PREFIX}-v3-1:8080" not in conf
 
 
 def test_nginx_conf_returns_string() -> None:
-    assert isinstance(nginx_conf(3), str)
+    assert isinstance(demo.nginx_conf(3), str)
 
 
 # -- translucency_insight ------------------------------------------------------
 
 
 def test_translucency_insight_empty() -> None:
-    assert translucency_insight([]) == "No results to analyse."
+    assert demo.translucency_insight([]) == "No results to analyse."
 
 
 def test_translucency_insight_single() -> None:
-    insight = translucency_insight([_vr("1 -- Single container", 10.0, 500.0)])
+    insight = demo.translucency_insight([_vr("1 -- Single container", 10.0, 500.0)])
     assert "Best layer" in insight
     assert "1 -- Single container" in insight
 
@@ -108,7 +93,7 @@ def test_translucency_insight_best_is_variant2() -> None:
         _vr("2 -- 4 containers (round-robin)", 35.0, 120.0),
         _vr("3 -- nginx LB (4 workers)", 28.0, 160.0),
     ]
-    insight = translucency_insight(results)
+    insight = demo.translucency_insight(results)
     assert "2" in insight
     assert "Speedup" in insight
     assert "Architectural translucency insight" in insight
@@ -121,7 +106,7 @@ def test_translucency_insight_best_is_variant3() -> None:
         _vr("2 -- 4 containers (round-robin)", 28.0, 160.0),
         _vr("3 -- nginx LB (4 workers)", 35.0, 120.0),
     ]
-    insight = translucency_insight(results)
+    insight = demo.translucency_insight(results)
     assert "nginx" in insight or "3" in insight
 
 
@@ -130,7 +115,7 @@ def test_translucency_insight_baseline_wins() -> None:
         _vr("1 -- Single container", 35.0, 50.0),
         _vr("2 -- 4 containers (round-robin)", 10.0, 500.0),
     ]
-    insight = translucency_insight(results)
+    insight = demo.translucency_insight(results)
     assert "single container" in insight.lower() or "Adding" in insight
 
 
@@ -139,7 +124,7 @@ def test_translucency_insight_speedup_ratio() -> None:
         _vr("1 -- Single container", 10.0, 400.0),
         _vr("2 -- 4 containers (round-robin)", 40.0, 100.0),
     ]
-    insight = translucency_insight(results)
+    insight = demo.translucency_insight(results)
     assert "4.00x" in insight
 
 
@@ -153,7 +138,7 @@ def test_save_plot_creates_file(tmp_path: Path) -> None:
         _vr("3 -- nginx LB (4 workers)", 28.0, 160.0, 70.0),
     ]
     out = tmp_path / "results.png"
-    save_plot(results, out)
+    demo.save_plot(results, out)
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -164,17 +149,17 @@ def test_save_plot_two_variants(tmp_path: Path) -> None:
         _vr("2 -- 4 containers", 30.0, 150.0),
     ]
     out = tmp_path / "two.png"
-    save_plot(results, out)
+    demo.save_plot(results, out)
     assert out.exists()
 
 
 # -- _render_hpa_section -------------------------------------------------------
 
 
-def _demo_results() -> list[VariantResult]:
+def _demo_results() -> list[demo.VariantResult]:
     return [
         _vr("1 -- Single container", 10.0, 500.0, 30.0),
-        VariantResult(
+        demo.VariantResult(
             "2 -- 4 containers (round-robin)", "", 4, 0, 35.0, 120.0, 180.0, 80.0, 0
         ),
         _vr("3 -- nginx LB (4 workers)", 28.0, 160.0, 70.0),
@@ -184,7 +169,7 @@ def _demo_results() -> list[VariantResult]:
 def test_render_hpa_section_creates_plot(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    _render_hpa_section(_demo_results(), out, 3.0, console)
+    demo._render_hpa_section(_demo_results(), out, 3.0, console)
     hpa_out = tmp_path / "demo-results-hpa.png"
     assert hpa_out.exists()
     assert hpa_out.stat().st_size > 0
@@ -194,7 +179,7 @@ def test_render_hpa_section_skips_zero_throughput(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
     bad = [_vr("1 -- Single container", 0.0, 0.0)]
-    _render_hpa_section(bad, out, 3.0, console)
+    demo._render_hpa_section(bad, out, 3.0, console)
     assert not (tmp_path / "demo-results-hpa.png").exists()
 
 
@@ -213,14 +198,16 @@ def test_on_demand_pricing_handles_tiered_result() -> None:
         from_cache=True,
         source_description="AWS EC2 on-demand test",
     )
-    resolved_params, source = _on_demand_pricing(TieredPricingResult(on_demand=flat))
+    resolved_params, source = demo._on_demand_pricing(
+        TieredPricingResult(on_demand=flat)
+    )
     assert resolved_params is params
     assert source == "AWS EC2 on-demand test (cached)"
 
 
 def test_render_cost_section_basic(tmp_path: Path) -> None:
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    _render_cost_section(_demo_results(), 0.02, console)
+    demo._render_cost_section(_demo_results(), 0.02, console)
     out = (tmp_path / "out.txt").read_text()
     assert "Cost" in out or "cost" in out.lower() or "$" in out
 
@@ -228,12 +215,12 @@ def test_render_cost_section_basic(tmp_path: Path) -> None:
 def test_render_cost_section_skips_zero_throughput(tmp_path: Path) -> None:
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
     bad = [_vr("1 -- Single container", 0.0, 0.0)]
-    _render_cost_section(bad, 0.02, console)
+    demo._render_cost_section(bad, 0.02, console)
 
 
 def test_render_cost_section_custom_cost(tmp_path: Path) -> None:
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    _render_cost_section(_demo_results(), 0.10, console)
+    demo._render_cost_section(_demo_results(), 0.10, console)
     out = (tmp_path / "out.txt").read_text()
     assert "0.10" in out or "0.1000" in out
 
@@ -241,5 +228,5 @@ def test_render_cost_section_custom_cost(tmp_path: Path) -> None:
 def test_render_hpa_section_custom_multiplier(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
     console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    _render_hpa_section(_demo_results(), out, 5.0, console)
+    demo._render_hpa_section(_demo_results(), out, 5.0, console)
     assert (tmp_path / "demo-results-hpa.png").exists()
