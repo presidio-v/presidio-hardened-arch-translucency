@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,19 +134,15 @@ def utcnow() -> datetime:
 def _prepare_store_path(path: Path, *, private_parent: bool) -> None:
     if private_parent:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
+        with suppress(OSError):
             path.parent.chmod(0o700)
-        except OSError:
-            pass
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _chmod_private_file(path: Path) -> None:
-    try:
+    with suppress(OSError):
         path.chmod(0o600)
-    except OSError:
-        pass
 
 
 @contextmanager
