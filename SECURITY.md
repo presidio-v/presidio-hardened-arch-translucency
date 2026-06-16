@@ -4,15 +4,16 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
+| main / 0.9.0 prerelease | :white_check_mark: |
+| 0.8.x   | :white_check_mark: |
+| 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
-| 0.5.x   | :white_check_mark: |
-| 0.4.x   | :white_check_mark: |
-| < 0.4   | :x:                |
+| < 0.6   | :x:                |
 
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities by opening a private GitHub Security Advisory
-(via the "Security" tab → "Report a vulnerability") rather than a public issue.
+(via the "Security" tab -> "Report a vulnerability") rather than a public issue.
 
 Include:
 
@@ -30,7 +31,10 @@ This toolkit ships with the following Presidio security hardening:
 
 | Feature | Description |
 |---|---|
-| **Input sanitization** | All CLI parameters are bounds-checked and type-validated before use |
+| **Input sanitization** | CLI parameters and scheduler inputs are bounds-checked and type-validated before use |
+| **Prometheus token handling** | `PAT_PROMETHEUS_TOKEN` is env-only, never logged, and requires an HTTPS Prometheus URL |
+| **Private local stores** | Default pricing cache, observation store, calibrated model file, and daemon unit files are owner-only where the platform supports chmod |
+| **Demo isolation** | `pat demo` publishes Docker ports to `127.0.0.1` only and runs the embedded workload as an unprivileged user |
 | **Secure logging** | Recommendations logged without sensitive data; user input never echoed raw |
 | **CVE/dependency audit** | `pip-audit` check runs on every invocation (skippable via `--skip-audit`) |
 | **Security event logging** | Structured audit log entry emitted for every recommendation |
@@ -40,26 +44,33 @@ This toolkit ships with the following Presidio security hardening:
 
 ## Dependency Security
 
-Dependencies are pinned in `pyproject.toml` and monitored via:
+Dependencies are pinned in `uv.lock` and monitored via:
+
 - GitHub Dependabot (automated PRs for updates)
 - `pip-audit` on every CLI run
 - CodeQL static analysis on every push and weekly schedule
+- `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Known Limitations (v0.6.0)
+## Known Limitations (main / v0.8.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
 - GCP pricing is sourced from an unofficial third-party pricelist endpoint and
   should be treated as a best-effort estimate.
-- The demo workload server (`demo/app.py`) is for local demonstration only and
-  must not be exposed to untrusted networks.
+- `pat demo` is for local demonstration only. It binds published ports to
+  loopback, but the workload is CPU-bound and must not be exposed through a
+  reverse proxy or public Docker host.
+- Docker image base-tag digest pinning remains a separate supply-chain task that
+  requires selecting and maintaining verified upstream digests.
 
-A full manual security audit and its remediation status are tracked in
-[`SECURITY-AUDIT.md`](SECURITY-AUDIT.md).
+Manual security audit history:
+
+- [`SECURITY-AUDIT-2026-06-16.md`](SECURITY-AUDIT-2026-06-16.md) -- current audit and remediation status.
+- [`SECURITY-AUDIT.md`](SECURITY-AUDIT.md) -- 2026-06-03 audit and remediation status.
 
 ## Software Development Lifecycle
 
 This repository is developed under the Presidio hardened-family SDLC. The public report
-— scope, standards mapping, threat-model gates, and supply-chain controls — is at
+-- scope, standards mapping, threat-model gates, and supply-chain controls -- is at
 <https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md>.
