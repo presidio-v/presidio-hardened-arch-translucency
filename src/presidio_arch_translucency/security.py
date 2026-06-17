@@ -161,7 +161,7 @@ def run_dependency_audit(skip_on_error: bool = True) -> bool:
     """
     try:
         result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "pip_audit", "--progress-spinner=off", "-q"],
+            [sys.executable, "-m", "pip_audit", "--progress-spinner=off"],
             capture_output=True,
             text=True,
             timeout=60,
