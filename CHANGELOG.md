@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-17
+
 ### Added
 
 - **`pat export --otlp` — vendor-neutral OTLP push (v0.13.0, "Speak OTLP").**
@@ -54,6 +56,10 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   double-quoted/escaped, so the rule file is always valid and cannot smuggle
   content. No new dependencies (hand-rolled YAML, like `hpa_patch`). Second step
   of the monitoring-integration arc.
+
+### Security
+
+- Grafana, OTLP, and Prometheus env bearer tokens now reject control characters before constructing Authorization headers, closing header-injection edge cases while preserving env-only token handling.
 
 ## [0.10.0] - 2026-06-17
 
@@ -265,7 +271,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...v0.13.0
 [0.10.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.9.0
 [0.8.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.8.0

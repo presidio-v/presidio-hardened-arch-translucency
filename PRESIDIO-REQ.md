@@ -59,11 +59,11 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
-| v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
-| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Complete (unreleased) |
-| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Complete (unreleased) |
-| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Complete (unreleased) |
-| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Complete (unreleased) |
+| v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Released |
+| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Released |
+| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Released in v0.13.0 |
+| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Released in v0.13.0 |
+| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Released |
 | v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
 | v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
 | v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |

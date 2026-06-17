@@ -190,6 +190,11 @@ class TestAuth:
         monkeypatch.setenv("PAT_PROMETHEUS_TOKEN", "envtoken")  # noqa: S105
         assert _resolve_token(_URL) == "envtoken"
 
+    def test_resolve_token_rejects_control_chars(self, monkeypatch):
+        monkeypatch.setenv("PAT_PROMETHEUS_TOKEN", "tok\nInjected: x")  # noqa: S105
+        with pytest.raises(PrometheusError, match="control characters"):
+            _resolve_token(_URL)
+
     def test_resolve_token_returns_none_without_env(self, monkeypatch, tmp_path):
         monkeypatch.delenv("PAT_PROMETHEUS_TOKEN", raising=False)
         monkeypatch.setenv("KUBECONFIG", str(tmp_path / "kubeconfig"))

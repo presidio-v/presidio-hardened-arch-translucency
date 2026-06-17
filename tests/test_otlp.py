@@ -116,6 +116,12 @@ def test_resolve_token_https_ok(monkeypatch) -> None:
     assert resolve_token("https://c") == "tok"
 
 
+def test_resolve_token_rejects_control_chars(monkeypatch) -> None:
+    monkeypatch.setenv("PAT_OTLP_TOKEN", "tok\rInjected: x")
+    with pytest.raises(OtlpError, match="control characters"):
+        resolve_token("https://c")
+
+
 def test_resolve_token_insecure_allows_http(monkeypatch) -> None:
     monkeypatch.setenv("PAT_OTLP_TOKEN", "tok")
     assert resolve_token("http://c", insecure_http=True) == "tok"
