@@ -59,7 +59,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
-| v0.9.0 | Per-layer calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
+| v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
 | v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Deliberated |
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
@@ -468,18 +468,22 @@ backfill, and a full security-audit hardening pass.
    surface for the hardened posture. Net v0.9.0 state matches the original v0.8.0
    **D3** decision (env-token-only). The roadmap-summary one-liner deliberately
    omits "kubeconfig auth" for this reason.
-2. **D4 only half-delivered (as planned for this slice).** Per-layer α/β fitting
-   shipped (#37); the **Docker `--benchmark` mode** (controlled replica sweeps)
-   remains deferred. D4 is now fully discharged on the fitting axis but still
-   open on the benchmark axis.
+2. **D4 fully delivered.** Per-layer α/β fitting shipped first (#37); the
+   **Docker `--benchmark` mode** (controlled replica sweeps that measure the
+   operating points and fit from them) landed subsequently in a new `benchmark`
+   module that reuses the `demo` Docker harness and feeds the existing analytical
+   fitter. Both axes of D4 — per-layer fitting and Docker benchmark — are now
+   discharged. (`calibrate` stays Docker-free; all Docker orchestration lives in
+   `benchmark`.)
 3. **Not formally released.** Work is merged under `[Unreleased]`; cutting a
    tagged v0.9.0 release is outstanding.
 
 ### Carried forward
 
-- **Docker `--benchmark` calibrate mode** — the last unshipped piece of D4.
 - **Cut a tagged v0.9.0 release** — move `[Unreleased]` entries under a dated
-  `[0.9.0]` heading and tag.
+  `[0.9.0]` heading and tag. (Now the only open item for this cycle: with the
+  Docker `--benchmark` calibrate mode delivered, every locked decision from the
+  v0.8.0/v0.9.0 cycles is discharged.)
 
 ---
 

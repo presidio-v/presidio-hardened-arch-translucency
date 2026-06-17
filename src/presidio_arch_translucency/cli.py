@@ -753,13 +753,14 @@ def cost_cmd(
 
 @app.command("calibrate")
 def calibrate_cmd(
-    observations: list[str] = typer.Option(  # noqa: B008
-        ...,
+    observations: Optional[list[str]] = typer.Option(  # noqa: B008, UP045
+        None,
         "--observation",
         "-o",
         help=(
             "Measured operating point as 'rps:latency_ms:replicas' "
-            "(e.g. 300:80:5). Repeat for multiple points; >=2 recommended."
+            "(e.g. 300:80:5). Repeat for multiple points; >=2 recommended. "
+            "Omit when using --benchmark."
         ),
     ),
     layer: str = typer.Option(
@@ -778,23 +779,54 @@ def calibrate_cmd(
         "--show-global",
         help="Also show the global (pooled) fit alongside a per-layer fit.",
     ),
+    benchmark: bool = typer.Option(
+        False,
+        "--benchmark",
+        help=(
+            "Docker mode: sweep --replicas, measure throughput/latency at each "
+            "count, and fit from the measured points instead of --observation. "
+            "Requires a running Docker daemon."
+        ),
+    ),
+    replicas: Optional[list[int]] = typer.Option(  # noqa: B008, UP045
+        None,
+        "--replicas",
+        help=(
+            "Replica counts to sweep in --benchmark mode (repeat the flag, "
+            "e.g. --replicas 1 --replicas 2 --replicas 4). Default: 1 2 4."
+        ),
+    ),
+    requests: int = typer.Option(
+        40, "--requests", help="HTTP requests per replica count (--benchmark).", min=10
+    ),
+    concurrency: int = typer.Option(
+        8, "--concurrency", help="Concurrent request threads (--benchmark).", min=1
+    ),
+    iterations: int = typer.Option(
+        200_000,
+        "--iterations",
+        help="Monte Carlo iterations per request (--benchmark).",
+    ),
 ) -> None:
     """
-    Fit the translucency model to measured workload points (analytical mode).
+    Fit the translucency model to measured workload points.
 
-    Supply one or more observed `rps:latency_ms:replicas` triples from your APM,
-    load tests, or prior `pat demo` output. The model's per-replica capacity
-    (concurrency) and coordination overhead are fitted with
-    scipy.optimize.curve_fit and written to ~/.pat/model.json, after which
-    `pat analyze` uses your calibrated parameters and stops warning. No Docker
-    required.
+    Analytical mode (default, no Docker): supply one or more observed
+    `rps:latency_ms:replicas` triples from your APM, load tests, or prior
+    `pat demo` output. Benchmark mode (`--benchmark`, Docker required): sweep
+    `--replicas`, measure throughput/latency at each replica count on the local
+    Docker daemon, and fit from those measurements.
 
-    Tag observations with --layer to fit per-layer parameters; `pat analyze`,
-    `what-if`, `slo`, and `optimize` then select them with their own --layer.
+    Either way the fitted per-replica capacity (concurrency) and coordination
+    overhead are written to ~/.pat/model.json, after which `pat analyze` uses
+    your calibrated parameters and stops warning. Tag the fit with --layer to
+    write per-layer parameters; `pat analyze`, `what-if`, `slo`, and `optimize`
+    then select them with their own --layer.
 
     \b
       pat calibrate --observation 100:50:2 --observation 300:80:5
       pat calibrate --layer api --observation 200:40:3 --observation 600:55:8
+      pat calibrate --benchmark --layer container --replicas 1 --replicas 2 --replicas 4
     """
     from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
         CalibrationError,
@@ -805,18 +837,59 @@ def calibrate_cmd(
 
     layer_name = layer.strip() or DEFAULT_LAYER_NAME
     is_named_layer = layer_name != DEFAULT_LAYER_NAME
+    observations = observations or []
 
-    try:
-        parsed = [parse_observation(raw) for raw in observations]
-        result = fit_calibration(parsed)
-    except CalibrationError as exc:
-        err_console.print(f"[bold red]Calibration error:[/] {exc}")
-        raise typer.Exit(code=2) from exc
+    if benchmark:
+        from presidio_arch_translucency.benchmark import (  # noqa: PLC0415
+            BenchmarkError,
+            parse_replica_sweep,
+        )
+
+        if observations:
+            err_console.print(
+                "[bold red]Calibration error:[/] --benchmark measures its own "
+                "observations; drop --observation (or omit --benchmark)."
+            )
+            raise typer.Exit(code=2)
+        try:
+            sweep = parse_replica_sweep(replicas or [1, 2, 4])
+        except BenchmarkError as exc:
+            err_console.print(f"[bold red]Calibration error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        try:
+            result = _run_benchmark_calibration(
+                sweep,
+                requests=requests,
+                concurrency=concurrency,
+                iterations=iterations,
+            )
+        except BenchmarkError as exc:
+            err_console.print(f"[bold red]Benchmark error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+        n_points = len(result.observations)
+    else:
+        if not observations:
+            err_console.print(
+                "[bold red]Calibration error:[/] supply at least one "
+                "--observation, or use --benchmark to measure points with Docker."
+            )
+            raise typer.Exit(code=2)
+        try:
+            parsed = [parse_observation(raw) for raw in observations]
+            result = fit_calibration(parsed)
+        except CalibrationError as exc:
+            err_console.print(f"[bold red]Calibration error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        n_points = len(parsed)
 
     path = write_model_file(result, layer=layer_name if is_named_layer else None)
     log_security_event(
         "CALIBRATE_INVOCATION",
-        {"observations": len(parsed), "layer": layer_name},
+        {
+            "observations": n_points,
+            "layer": layer_name,
+            "mode": "benchmark" if benchmark else "analytical",
+        },
     )
 
     global_record = None
@@ -1407,6 +1480,60 @@ def _render_observations(rows: list, total: int) -> None:
     console.print()
     console.print(table)
     console.print()
+
+
+def _render_benchmark_points(points: object) -> None:
+    """Render the measured replica-sweep points before the fit."""
+    from presidio_arch_translucency.benchmark import BenchmarkPoint  # noqa: PLC0415
+
+    assert all(isinstance(p, BenchmarkPoint) for p in points)  # noqa: S101
+
+    table = Table(
+        title="Benchmark sweep — measured operating points",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Replicas", justify="right")
+    table.add_column("Throughput\n(req/s)", justify="right")
+    table.add_column("Avg latency\n(ms)", justify="right")
+    table.add_column("p95 latency\n(ms)", justify="right")
+    table.add_column("Errors", justify="right")
+    for p in points:
+        err_color = "green" if p.errors == 0 else "yellow"
+        table.add_row(
+            str(p.replicas),
+            f"{p.throughput_rps:.1f}",
+            f"{p.avg_latency_ms:.0f}",
+            f"{p.p95_latency_ms:.0f}",
+            f"[{err_color}]{p.errors}[/]",
+        )
+    console.print()
+    console.print(table)
+
+
+def _run_benchmark_calibration(
+    sweep: list[int],
+    *,
+    requests: int,
+    concurrency: int,
+    iterations: int,
+) -> object:
+    """Run the Docker replica sweep, show the points, and fit the model."""
+    from presidio_arch_translucency.benchmark import (  # noqa: PLC0415
+        points_to_observations,
+        run_benchmark_sweep,
+    )
+    from presidio_arch_translucency.calibrate import fit_calibration  # noqa: PLC0415
+
+    points = run_benchmark_sweep(
+        sweep,
+        requests=requests,
+        concurrency=concurrency,
+        iterations=iterations,
+        console=console,
+    )
+    _render_benchmark_points(points)
+    return fit_calibration(points_to_observations(points))
 
 
 def _render_calibration(

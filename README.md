@@ -344,6 +344,27 @@ pat calibrate --observation 100:50:2 --observation 300:80:5
 
 Prints a per-observation prediction/residual table plus overall R² and RMSE.
 
+#### `pat calibrate --benchmark` — measure the points with Docker (v0.9.0)
+
+Don't have measured points to hand? Let `pat` measure them. Benchmark mode sweeps
+a set of replica counts on the local Docker daemon — starting that many copies of
+the same Monte Carlo workload `pat demo` uses, load-testing each — then fits the
+model to the measured throughput/latency at every count. Requires a running
+Docker daemon; the workload containers are published to `127.0.0.1` only.
+
+```bash
+# Sweep 1, 2, 4 replicas, measure each, and fit (defaults to 1 2 4)
+pat calibrate --benchmark --layer container \
+  --replicas 1 --replicas 2 --replicas 4
+
+# Tune the load applied at each replica count
+pat calibrate --benchmark --requests 80 --concurrency 16 --iterations 200000
+```
+
+At least two distinct replica counts are required (one point cannot constrain
+both parameters). Pass `--layer` to write per-layer parameters, exactly as in
+analytical mode. `--observation` and `--benchmark` are mutually exclusive.
+
 ### `pat observe` — record a rolling measurement history (v0.8.0)
 
 Records a single workload observation into the SQLite store, or lists recent

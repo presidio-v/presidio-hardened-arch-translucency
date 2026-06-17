@@ -33,8 +33,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   `slo`, and `optimize` accept `--layer` to select the calibrated per-layer
   capacity, falling back to the global fit then the built-in default. The model
   file stays backward-compatible: a pre-v0.9.0 file with no `layers` key resolves
-  exactly as before. Delivers the per-layer fitting half of design decision D4
-  (the Docker `--benchmark` mode remains deferred). (#37)
+  exactly as before. Delivers the per-layer fitting half of design decision D4. (#37)
+- **Docker benchmark mode for `pat calibrate` (v0.9.0).** `pat calibrate
+  --benchmark` sweeps a set of replica counts (`--replicas`, default `1 2 4`) on
+  the local Docker daemon, load-testing each count with the same Monte Carlo
+  workload as `pat demo`, then fits the model to the measured throughput/latency
+  instead of user-supplied `--observation` points. `--requests`, `--concurrency`,
+  and `--iterations` tune the load; `--layer` writes per-layer parameters as in
+  analytical mode. At least two distinct replica counts are required, and
+  `--benchmark` is mutually exclusive with `--observation`. Workload containers
+  are published to `127.0.0.1` only. Completes the remaining (benchmark) half of
+  design decision D4 — no new dependencies (reuses the `demo` Docker harness).
 - **Configurable ARIMA order bounds for `pat optimize` (v0.9.0 Phase 3).** The
   AIC order grid is no longer hard-coded: `--max-p`, `--max-d` and `--max-q`
   set the upper bounds of the `p`/`d`/`q` sweep (defaults `3`/`2`/`3`, exactly
