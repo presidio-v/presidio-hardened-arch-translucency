@@ -63,7 +63,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Complete (unreleased) |
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Complete (unreleased) |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Complete (unreleased) |
-| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
+| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Complete (unreleased) |
 | v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
 | v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
 | v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
@@ -780,6 +780,46 @@ authoring three. Splitting into separate boards remains an easy drop-in later
 (the provider loads every dashboard JSON in the mounted directory).
 
 **Next on the arc:** v0.13.0 — Speak OTLP (vendor-neutral `pat export --otlp`).
+
+---
+
+## v0.13.0 — Speak OTLP (delivered 2026-06-17)
+
+Fourth step of the monitoring-integration arc — vendor-neutrality. The exporter
+can now **push** its metrics over OTLP to an OpenTelemetry Collector, which fans
+out to any vendor (Datadog / New Relic / Honeycomb / Grafana Cloud), so pat data
+reaches them **without Prometheus**.
+
+### What shipped
+
+- **`pat export --otlp <endpoint>`** — a new `otlp` module + an OTLP push mode on
+  the export command. Single-shot: builds the metric set (including `--predict`
+  forecasts and `--cost-per-replica-hour` cost gauges), encodes it as an OTLP
+  `ExportMetricsServiceRequest` (JSON), and POSTs it to `<endpoint>/v1/metrics`,
+  then exits — schedule externally (cron) for recurring push, consistent with
+  the single-shot ethos (D2). `--service-name` sets the OTLP `service.name`.
+
+### Transport decision — see ADR-0006
+
+Per **[ADR-0006](../docs/adr/0006-otlp-export-transport.md)** the transport is
+**hand-rolled OTLP/HTTP+JSON, Collector-targeted** — no `opentelemetry` SDK, no
+`protobuf`, no `grpcio`. This preserves the zero-client-dependency hardened
+posture (the fifth wire format `pat` emits by hand, after Prometheus text, rules
+YAML, HPA YAML, and Grafana JSON). Bounded trade-off: JSON/HTTP-only, no
+vendor-direct protobuf/gRPC — that remains a future opt-in `[otlp]` extra (the
+ADR's revisit trigger).
+
+### Security
+
+Mirrors the Prometheus source / annotate writer: optional bearer token from
+`PAT_OTLP_TOKEN` only (collectors are usually unauthenticated in-cluster), HTTPS
+required when a token is sent (unless `--insecure-http`, warned), URL +
+`service.name` reject control characters, non-finite samples dropped (no
+OTLP/JSON form), `urllib` only. End-to-end validated against a real local HTTP
+listener (valid OTLP/JSON received at `/v1/metrics`).
+
+**Next on the arc:** v0.14.0 — Reach ephemeral contexts (Prometheus remote-write
++ Pushgateway targets).
 
 ---
 

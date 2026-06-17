@@ -530,6 +530,24 @@ pat export -r 500 -l 80 -c container --cost-per-replica-hour 0.02
 (For live cloud pricing across AWS/GCP/Azure, use `pat cost` — the exporter
 keeps a single uniform rate to stay scrape-cheap and network-free.)
 
+### Vendor-neutral push over OTLP (`--otlp`, v0.13.0)
+
+Instead of being scraped, the exporter can **push** its metrics once over
+OTLP/HTTP+JSON to an OpenTelemetry Collector, which fans out to Datadog, New
+Relic, Honeycomb, Grafana Cloud, etc. — so you get pat metrics **without
+Prometheus**:
+
+```bash
+# One-shot push to a collector (schedule via cron for recurring push)
+pat export --otlp http://collector:4318 -r 500 -l 80 -c container --predict
+```
+
+Per [ADR-0006](docs/adr/0006-otlp-export-transport.md) this is hand-rolled
+OTLP/HTTP+JSON (no `opentelemetry` SDK, no gRPC) — point it at an OTel Collector
+(or any OTLP/HTTP endpoint that accepts JSON). An optional bearer token is read
+from `PAT_OTLP_TOKEN` only (HTTPS required unless `--insecure-http`);
+`--service-name` sets the OTLP `service.name`.
+
 ### Official Grafana dashboard
 
 A ready-to-import dashboard lives at [`grafana/pat-dashboard.json`](grafana/pat-dashboard.json).
@@ -765,7 +783,8 @@ pytest
 | v0.9.0 | Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit |
 | v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) + Grafana dashboard |
 | v0.11.0 | Alerting — `pat rules` emits Prometheus recording + alerting rules |
-| **v0.12.0** | **Visualize & Annotate — Grafana provisioning + `pat annotate`** *(in progress)* |
+| v0.12.0 | Visualize & Annotate — Grafana provisioning + `pat annotate` |
+| **v0.13.0** | **Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006)** *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 
