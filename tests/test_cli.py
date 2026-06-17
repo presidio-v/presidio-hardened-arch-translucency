@@ -63,6 +63,18 @@ class TestVersionAndHelp:
         assert "requests-per-sec" in clean  # always fits before truncation
         assert "-r" in clean  # short alias for --requests-per-second
 
+    def test_command_help_skips_dependency_audit(self, monkeypatch):
+        def fail_audit(*args, **kwargs):
+            raise AssertionError("dependency audit should not run for help")
+
+        monkeypatch.setattr(
+            "presidio_arch_translucency.cli.run_dependency_audit", fail_audit
+        )
+        monkeypatch.setattr("sys.argv", ["pat", "export", "--help"])
+        result = runner.invoke(app, ["export", "--help"])
+        assert result.exit_code == 0
+        assert "metrics" in strip_ansi(result.output).lower()
+
 
 # ---------------------------------------------------------------------------
 # Successful analyze invocations

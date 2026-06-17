@@ -7,6 +7,7 @@ Usage:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -90,6 +91,11 @@ def _warn_if_uncalibrated() -> None:
         warn_console.print(_envelope_warning_text())
 
 
+def _is_help_invocation() -> bool:
+    """Return True when Typer is rendering help without executing a command."""
+    return any(arg in {"--help", "-h"} for arg in sys.argv[1:])
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"pat version {__version__}")
@@ -118,7 +124,7 @@ def main(
     """Presidio Architectural Translucency CLI."""
     configure_logging(verbose=verbose)
     log_security_event("CLI_INVOCATION", {"version": __version__})
-    if not skip_audit:
+    if not skip_audit and not _is_help_invocation():
         run_dependency_audit(skip_on_error=True)
 
 
