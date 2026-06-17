@@ -475,6 +475,29 @@ Exposed gauges (per `layer` where applicable): `pat_recommended_replicas`,
 `pat_estimated_throughput_rps`, `pat_response_time_ms`, `pat_throughput_gain_ratio`,
 `pat_layer_recommended`, plus `pat_workload_*` inputs and `pat_build_info`.
 
+### Forecast metrics from the observation store (`--predict`)
+
+With `--predict`, the exporter *also* runs an `optimize` pass over your
+observation store (`pat observe`) on every scrape and exposes the live forecast —
+turning the exporter from a static view into the moving front of the
+observe → predict → visualize loop:
+
+```bash
+# Expose forecast metrics alongside the analysis (SMA by default)
+pat export -r 500 -l 80 -c container --predict
+
+# Use ARIMA (refits each scrape — prefer SMA for frequent intervals)
+pat export -r 500 -l 80 -c container --predict --model arima --horizon-minutes 15
+```
+
+Adds `pat_predicted_rps{model}`, `pat_predicted_recommended_replicas{layer}`,
+`pat_observed_rps`/`pat_observed_latency_ms`, `pat_optimize_trend_ratio`,
+`pat_optimize_horizon_minutes`, and `pat_optimize_samples` (reads `0` on an empty
+store). With `--model arima` it also exposes 95% CI bounds
+(`pat_predicted_rps_lower`/`_upper` and the matching replica bounds). `--window`,
+`--predict-layer`, and `--db` tune the SMA window, the observation layer, and the
+store path.
+
 Scrape it from Prometheus:
 
 ```yaml

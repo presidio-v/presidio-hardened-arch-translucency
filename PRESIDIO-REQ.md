@@ -660,13 +660,27 @@ Shipped the read-only Prometheus exporter foundation:
   hand-rolled (text format 0.0.4) — no new dependencies, consistent with the
   hardened posture.
 
+### Delivery — Phase 2 (2026-06-17)
+
+Shipped the prediction metrics, making the exporter reflect the live
+observe→predict loop:
+
+- **`pat export --predict`** runs an `optimize` pass over the observation store
+  on every scrape and exposes `pat_predicted_rps{model}`,
+  `pat_predicted_recommended_replicas{layer}`, `pat_observed_rps`,
+  `pat_observed_latency_ms`, `pat_optimize_trend_ratio`,
+  `pat_optimize_horizon_minutes`, and `pat_optimize_samples` (reads `0` on an
+  empty store). `--model arima` adds 95% CI bounds. `--window`,
+  `--horizon-minutes`, `--predict-layer`, and `--db` tune the pass.
+- A pure `prediction_metrics_from_result` (testable with a fabricated result,
+  no model fit) is split from the store-reading `build_prediction_metrics`.
+- SMA is the cheap default; ARIMA refits each scrape (warned at startup).
+
 **Remaining for v0.10.0:**
 
-- **Phase 2 — prediction metrics from the observation store.** Expose
-  `optimize`-derived `pat_predicted_rps{model}` (+ CI bounds) and cost metrics,
-  so the exporter reflects the live observe→predict loop rather than only the
-  static analysis. (The arc's `pat_predicted_rps` / `pat_cost_per_request`
-  metrics.)
+- **Cost metrics** — `pat_cost_per_request{layer,cloud,region}` (the arc's cost
+  metric), driven by a cost flag / cloud pricing. Deferred from Phase 2 to keep
+  it focused; fold into Phase 3 or a Phase 2b.
 - **Phase 3 — the official Grafana dashboard JSON** built on these metrics,
   committed to the repo, plus README wiring.
 

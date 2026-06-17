@@ -25,6 +25,18 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   Metric names are fixed and label values escaped. Exposition text is generated
   by hand (Prometheus text format 0.0.4); no new dependencies. First step of the
   monitoring-integration arc ("The Translucency Control Plane").
+- **`pat export --predict` — forecast metrics from the observation store
+  (v0.10.0 Phase 2).** When `--predict` is set, the exporter also runs an
+  `optimize` pass over `~/.pat/observations.db` on every scrape and exposes the
+  live forecast: `pat_predicted_rps{model}`,
+  `pat_predicted_recommended_replicas{layer}`, `pat_observed_rps`,
+  `pat_observed_latency_ms`, `pat_optimize_trend_ratio`,
+  `pat_optimize_horizon_minutes`, and `pat_optimize_samples` (reads `0` on an
+  empty store). `--model arima` adds 95% CI bounds (`pat_predicted_rps_lower`/
+  `_upper` and matching replica bounds); `--window`, `--horizon-minutes`,
+  `--predict-layer`, and `--db` tune the pass. SMA is the default (cheap); ARIMA
+  refits on each scrape. Turns the exporter into the moving front of the
+  observe → predict → visualize loop.
 
 ## [0.9.0] - 2026-06-17
 

@@ -36,6 +36,7 @@ METRICS_PATH = "/metrics"
 HEALTH_PATHS = ("/health", "/healthz")
 DEFAULT_PORT = 9847
 LOOPBACK_HOST = "127.0.0.1"
+DEFAULT_HORIZON_MINUTES = 10.0
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,135 @@ def build_metrics(
             recommended,
         ),
     ]
+
+
+# -- prediction metrics (from the observation store, v0.10.0 Phase 2) ----------
+
+
+def _samples_metric(n: int) -> Metric:
+    return Metric(
+        "pat_optimize_samples",
+        "Number of observations used for the latest demand prediction.",
+        [Sample({}, float(n))],
+    )
+
+
+def prediction_metrics_from_result(result: object) -> list[Metric]:
+    """
+    Build the forecast metric set from an ``optimize.OptimizeResult``.
+
+    Pure: takes an already-computed result so the CI-band branch is testable
+    without fitting a model. ``result.model`` (``sma``/``arima``) labels the
+    forecast; CI-bound metrics are emitted only when the result carries an
+    interval (ARIMA).
+    """
+    model_label = {"model": result.model}  # type: ignore[attr-defined]
+    layer_label = {"layer": result.layer}  # type: ignore[attr-defined]
+    metrics = [
+        _samples_metric(result.samples),  # type: ignore[attr-defined]
+        Metric(
+            "pat_observed_rps",
+            "Smoothed current demand (req/s) over the observation window.",
+            [Sample(layer_label, result.sma_rps)],  # type: ignore[attr-defined]
+        ),
+        Metric(
+            "pat_observed_latency_ms",
+            "Smoothed current latency (ms) over the observation window.",
+            [Sample(layer_label, result.sma_latency_ms)],  # type: ignore[attr-defined]
+        ),
+        Metric(
+            "pat_predicted_rps",
+            "Forecast demand (req/s) at the optimization horizon.",
+            [Sample(model_label, result.predicted_rps)],  # type: ignore[attr-defined]
+        ),
+        Metric(
+            "pat_predicted_recommended_replicas",
+            "Replicas recommended to serve the forecast demand at the observed layer.",
+            [Sample(layer_label, float(result.recommended_replicas))],  # type: ignore[attr-defined]
+        ),
+        Metric(
+            "pat_optimize_trend_ratio",
+            "Demand trend across the window as a ratio (0.10 == +10%).",
+            [Sample(layer_label, result.trend_pct / 100.0)],  # type: ignore[attr-defined]
+        ),
+        Metric(
+            "pat_optimize_horizon_minutes",
+            "Forecast horizon in minutes.",
+            [Sample({}, result.horizon_minutes)],  # type: ignore[attr-defined]
+        ),
+    ]
+    if result.has_interval:  # type: ignore[attr-defined]
+        metrics.append(
+            Metric(
+                "pat_predicted_rps_lower",
+                "Lower bound (95% CI) of forecast demand (req/s).",
+                [Sample(model_label, result.predicted_rps_lower)],  # type: ignore[attr-defined]
+            )
+        )
+        metrics.append(
+            Metric(
+                "pat_predicted_rps_upper",
+                "Upper bound (95% CI) of forecast demand (req/s).",
+                [Sample(model_label, result.predicted_rps_upper)],  # type: ignore[attr-defined]
+            )
+        )
+        lower = result.recommended_replicas_lower  # type: ignore[attr-defined]
+        upper = result.recommended_replicas_upper  # type: ignore[attr-defined]
+        if lower is not None and upper is not None:
+            metrics.append(
+                Metric(
+                    "pat_predicted_recommended_replicas_lower",
+                    "Lower bound of recommended replicas for the forecast CI.",
+                    [Sample(layer_label, float(lower))],
+                )
+            )
+            metrics.append(
+                Metric(
+                    "pat_predicted_recommended_replicas_upper",
+                    "Upper bound of recommended replicas for the forecast CI.",
+                    [Sample(layer_label, float(upper))],
+                )
+            )
+    return metrics
+
+
+def build_prediction_metrics(
+    observations: object,
+    *,
+    model: str = "sma",
+    horizon_minutes: float = DEFAULT_HORIZON_MINUTES,
+    concurrency: float | None = None,
+) -> list[Metric]:
+    """
+    Run an optimization pass over *observations* and return forecast metrics.
+
+    Reads nothing itself -- the caller supplies the observation window (e.g. from
+    ``observe.latest_observations``). With no observations, or when optimization
+    cannot run, only ``pat_optimize_samples`` is emitted so the series still
+    exists (and reads 0) on an empty store. ``model`` selects ``sma`` (cheap,
+    default) or ``arima`` (heavier; recomputed each scrape).
+    """
+    from presidio_arch_translucency.optimize import (  # noqa: PLC0415
+        OptimizeError,
+        optimize_arima,
+        optimize_sma,
+    )
+
+    obs = list(observations)  # type: ignore[arg-type]
+    if not obs:
+        return [_samples_metric(0)]
+    try:
+        if model == "arima":
+            result = optimize_arima(
+                obs, horizon_minutes=horizon_minutes, concurrency=concurrency
+            )
+        else:
+            result = optimize_sma(
+                obs, horizon_minutes=horizon_minutes, concurrency=concurrency
+            )
+    except OptimizeError:
+        return [_samples_metric(len(obs))]
+    return prediction_metrics_from_result(result)
 
 
 # -- HTTP serving --------------------------------------------------------------
