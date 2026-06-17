@@ -17,17 +17,26 @@ import sys
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Secure logger — never logs raw user-supplied strings at WARNING+ level
+# Secure logger -- never logs raw user-supplied strings at WARNING+ level
 # ---------------------------------------------------------------------------
 
 _SECURITY_LOGGER = logging.getLogger("presidio.arch_translucency.security")
 _AUDIT_LOGGER = logging.getLogger("presidio.arch_translucency.audit")
+_SENSITIVE_CONTEXT_KEY_PARTS = (
+    "auth",
+    "credential",
+    "key",
+    "password",
+    "secret",
+    "token",
+)
+_REDACTED = "[REDACTED]"
 
 
 def configure_logging(verbose: bool = False) -> None:
     """Configure secure structured logging for the tool."""
     level = logging.DEBUG if verbose else logging.INFO
-    fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+    fmt = "%(asctime)s [%(levelname)s] %(name)s -- %(message)s"
     logging.basicConfig(format=fmt, level=level, stream=sys.stderr)
     # Ensure audit logger always emits at INFO+
     _AUDIT_LOGGER.setLevel(logging.INFO)
@@ -63,13 +72,20 @@ def log_recommendation(
     )
 
 
+def _is_sensitive_context_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _SENSITIVE_CONTEXT_KEY_PARTS)
+
+
 def _sanitize_log_context(ctx: dict[str, Any]) -> dict[str, Any]:
     """Strip any context values that look like secrets or are non-scalar."""
     safe: dict[str, Any] = {}
     for k, v in ctx.items():
-        # Only allow str, int, float, bool in log context
-        if isinstance(v, (str, int, float, bool)):
-            safe[str(k)[:64]] = v
+        key = str(k)[:64]
+        if _is_sensitive_context_key(key):
+            safe[key] = _REDACTED
+        elif isinstance(v, (str, int, float, bool)):
+            safe[key] = v
     return safe
 
 
@@ -145,7 +161,7 @@ def run_dependency_audit(skip_on_error: bool = True) -> bool:
     """
     try:
         result = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "pip_audit", "--progress-spinner=off", "-q"],
+            [sys.executable, "-m", "pip_audit", "--progress-spinner=off"],
             capture_output=True,
             text=True,
             timeout=60,
