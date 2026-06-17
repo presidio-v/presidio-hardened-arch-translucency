@@ -60,7 +60,13 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
 | v0.9.0 | Per-layer calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
-| v0.10.0 | Monitoring integration — Prometheus exporter + official Grafana dashboard | Deliberated |
+| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Deliberated |
+| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
+| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
+| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
+| v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
+| v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
+| v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
 
 ---
 
@@ -474,6 +480,79 @@ backfill, and a full security-audit hardening pass.
 - **Docker `--benchmark` calibrate mode** — the last unshipped piece of D4.
 - **Cut a tagged v0.9.0 release** — move `[Unreleased]` entries under a dated
   `[0.9.0]` heading and tag.
+
+---
+
+## Monitoring Integration Arc (v0.10.0 → v0.16.0) — "The Translucency Control Plane"
+
+**Deliberated:** 2026-06-17
+
+The monitoring-integration direction chosen for v0.10.0 is the first step of a
+deliberate seven-version arc. `pat` graduates from a CLI advisor into a
+monitoring-native control plane: it publishes its model as metrics, alerts on
+translucency mismatches, visualizes them, speaks every monitoring dialect, and
+ultimately feeds autoscaling — without ever mutating infrastructure directly.
+
+This arc is **directional, not a rigid commitment.** Each version still gets its
+own dated deliberation entry (and may re-scope) when it is built. Recorded here
+so the through-line is legible and individual versions don't drift.
+
+### Governing invariant (locked 2026-06-17)
+
+**`pat` emits, it never applies.** Across the entire arc, `pat` only *exposes*
+metrics and *emits* declarative artifacts (rules, dashboards, scaler configs). It
+**never holds write credentials to the cluster and never applies changes
+itself** — humans / GitOps / operators apply what it emits. This extends the
+existing v0.8 HPA-emitter pattern (`pat optimize --emit-hpa-patch | kubectl
+apply`) and is the security spine that keeps "monitoring integration" from
+becoming "a daemon with cluster admin." Any future proposal to let `pat` apply
+directly must reopen this decision explicitly.
+
+### The seven steps
+
+| Ver | Title | Deliverable | Security step |
+|---|---|---|---|
+| v0.10.0 | **Expose** | Read-only Prometheus exporter (`pat export` → `/metrics`) + official Grafana dashboard JSON | localhost-default bind, read-only, no new surface |
+| v0.11.0 | **Alert** | `pat rules --emit prometheus` → recording + alerting rules from the model (predicted demand > capacity within horizon; cost/req > budget; layer translucency mismatch); Alertmanager routing docs | Declarative YAML, still read-only |
+| v0.12.0 | **Visualize & Annotate** | Grafana provisioning bundle (datasource + dashboard provisioning), per-concern dashboard library (forecast / cost / per-layer), and `pat annotate --grafana <url>` pushing annotations when a recommendation fires | *First outbound write* — env token only, HTTPS-only, explicit opt-in |
+| v0.13.0 | **Speak OTLP** | `pat export --otlp <endpoint>` — vendor-neutral exposition so Datadog / New Relic / Honeycomb / Grafana Cloud ingest `pat` data without Prometheus | OTLP auth headers from env only |
+| v0.14.0 | **Reach ephemeral contexts** | Prometheus remote-write + Pushgateway targets so single-shot `observe`/`optimize` runs in cron / CI / CronJob can land metrics where no scrape endpoint exists | Complements D2 single-shot model; env-only auth |
+| v0.15.0 | **Close the loop (emit, don't apply)** | `pat optimize --emit-keda-scaledobject` / `--emit-prometheus-adapter` so HPA scales on `pat`'s predicted-demand metric (exposed since v0.10) instead of lagging CPU | Emit-only, sanitized YAML; GitOps applies |
+| v0.16.0 | **Package & operate** | `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor for Prometheus Operator; rules + dashboards as ConfigMaps via Grafana sidecar); optional small Grafana panel plugin rendering the layer recommendation natively | Least-privilege RBAC + NetworkPolicy; exporter read-only |
+
+### Three movements
+
+1. **Expose & Alert** (v0.10–v0.11) — publish the model, make it actionable in
+   the existing alerting pipeline. Purely declarative; no outbound writes yet.
+2. **Visualize & Generalize** (v0.12–v0.14) — richer Grafana surface, the first
+   (gated) outbound write, then vendor-neutral and ephemeral-context reach.
+3. **Control & Package** (v0.15–v0.16) — feed autoscaling from the predicted
+   metric, then ship the whole thing as a cluster-native bundle.
+
+### Ordering rationale
+
+- **Metrics before everything** (v0.10) — every later step consumes the exposed
+  model.
+- **Alerts before dashboards-at-scale** (v0.11 before v0.12) — alerting is higher
+  operational value and stays declarative, so the first write-path (annotations)
+  is deferred until v0.12 where there is a concrete payoff.
+- **OTLP before remote-write** (v0.13 before v0.14) — vendor-neutrality is more
+  broadly useful than the ephemeral-context niche; remote-write/pushgateway is a
+  targeted complement to the single-shot model.
+- **Control last** (v0.15) — closing the loop only makes sense once the
+  predicted-demand metric has existed long enough to trust; packaging (v0.16)
+  then caps the arc with cluster-native deployment.
+
+### Decisions (locked 2026-06-17)
+
+- **A1 — Emit-only invariant.** As above; the security spine of the arc.
+- **A2 — Seven-version arc.** Full arc retained rather than the 6-version
+  compression (folding remote-write into OTLP). Ephemeral-context support earns
+  its own version (v0.14) because the single-shot model (D2) is a first-class
+  constraint worth a dedicated, well-tested target.
+- **A3 — Closed-loop autoscaling is in scope (v0.15)** — but strictly as
+  *emit-only* KEDA / Prometheus-Adapter config, consistent with A1. `pat` never
+  calls the Kubernetes API to scale.
 
 ---
 
