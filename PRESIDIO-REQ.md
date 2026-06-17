@@ -62,7 +62,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
 | v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Complete (unreleased) |
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Complete (unreleased) |
-| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
+| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Complete (unreleased) |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
 | v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
 | v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
@@ -736,6 +736,50 @@ introduced then.)
 
 **Next on the arc:** v0.12.0 — Visualize & Annotate (Grafana provisioning +
 `pat annotate`).
+
+---
+
+## v0.12.0 — Visualize & Annotate (delivered 2026-06-17)
+
+Third step of the monitoring-integration arc, and the point where the arc takes
+its **first outbound write** — gated and security-hardened.
+
+### What shipped
+
+- **Grafana provisioning bundle** — `grafana/provisioning/datasources/` and
+  `grafana/provisioning/dashboards/` configs so `grafana/pat-dashboard.json`
+  loads automatically (datasource URL honours `PROMETHEUS_URL`). `grafana/README.md`
+  documents the mount paths + a docker example. The existing multi-panel
+  dashboard already covers the forecast / cost / per-layer concerns, so it is
+  loaded as-is rather than split into separate boards.
+- **`pat annotate`** — new `annotate` module + CLI command. Runs the analysis and
+  posts an annotation to Grafana's `/api/annotations` marking the recommendation.
+
+### First-outbound-write security (the notable part)
+
+This is the only place `pat` writes outward. It mirrors the Prometheus source
+hardening (decision D3) and the export exposure guard:
+
+- **Informational only.** It posts a Grafana annotation (a dashboard marker),
+  never an infrastructure change — arc invariant A1 holds (`pat` informs/emits,
+  it does not mutate infra).
+- **Token from `PAT_GRAFANA_TOKEN` only** — required, never a CLI arg, never
+  logged. The security event logs the Grafana host, not the URL or token.
+- **HTTPS required** when sending the token; `--insecure-http` is an explicit,
+  warned opt-out for localhost.
+- URL + tags reject control characters; the annotation text is pat-generated.
+- `--dry-run` previews the payload with no token and no network.
+- `urllib` only — no new dependency.
+
+### Deviation from the arc sketch
+
+The arc mentioned a "per-concern dashboard library (forecast / cost / per-layer)".
+The shipped `pat-dashboard.json` already presents those three concerns as panel
+groups in one board, so v0.12.0 provisions that single board rather than
+authoring three. Splitting into separate boards remains an easy drop-in later
+(the provider loads every dashboard JSON in the mounted directory).
+
+**Next on the arc:** v0.13.0 — Speak OTLP (vendor-neutral `pat export --otlp`).
 
 ---
 

@@ -7,6 +7,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -507,6 +508,143 @@ def rules_cmd(
         },
     )
     typer.echo(render_rules_yaml(groups), nl=False)
+
+
+@app.command("annotate")
+def annotate_cmd(
+    requests_per_second: float = typer.Option(
+        ...,
+        "--requests-per-second",
+        "-r",
+        help="Observed workload in requests per second.",
+        min=0.01,
+    ),
+    avg_latency_ms: float = typer.Option(
+        ...,
+        "--avg-latency-ms",
+        "-l",
+        help="Current average response latency in milliseconds.",
+        min=0.1,
+    ),
+    current_layer: str = typer.Option(
+        ...,
+        "--current-layer",
+        "-c",
+        help=f"Current replication layer. One of: {', '.join(VALID_LAYERS)}",
+    ),
+    grafana: str = typer.Option(
+        ...,
+        "--grafana",
+        help="Grafana base URL (https). Posts to <url>/api/annotations.",
+    ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help="Service-layer label whose calibrated parameters to use.",
+    ),
+    dashboard_uid: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--dashboard-uid",
+        help="Attach the annotation to a specific dashboard (UID). Default: org-wide.",
+    ),
+    tags: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--tag",
+        help="Extra annotation tag (repeatable).",
+    ),
+    insecure_http: bool = typer.Option(
+        False,
+        "--insecure-http",
+        help="Allow posting the token over cleartext HTTP (localhost dev only).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the annotation payload and exit without posting (no token).",
+    ),
+    timeout: float = typer.Option(
+        10.0, "--timeout", help="HTTP timeout in seconds.", min=0.1
+    ),
+) -> None:
+    """
+    Post the current recommendation to Grafana as an annotation.
+
+    Runs the architectural-translucency analysis and posts a marker to Grafana's
+    annotations API so the recommendation appears on your dashboards. This is
+    pat's one outbound write — an informational annotation, never an
+    infrastructure change. The Grafana token is read from PAT_GRAFANA_TOKEN only
+    (never a flag); HTTPS is required unless --insecure-http. Use --dry-run to
+    preview the payload without posting.
+    """
+    from presidio_arch_translucency.annotate import (  # noqa: PLC0415
+        AnnotateError,
+        build_annotation,
+        post_annotation,
+        resolve_token,
+    )
+
+    try:
+        rps = sanitize_requests_per_second(requests_per_second)
+        lat = sanitize_latency_ms(avg_latency_ms)
+        layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    current = ReplicationLayer(layer_str)
+    result = analyze(
+        requests_per_second=rps,
+        avg_latency_ms=lat,
+        current_layer=current,
+        layer=model_layer,
+    )
+
+    try:
+        annotation = build_annotation(
+            result, extra_tags=tuple(tags or ()), dashboard_uid=dashboard_uid
+        )
+    except AnnotateError as exc:
+        err_console.print(f"[bold red]Annotation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if dry_run:
+        log_security_event("ANNOTATE_DRYRUN", {"layer": result.recommended_layer.value})
+        typer.echo(json.dumps(annotation.payload(), indent=2))
+        return
+
+    try:
+        token = resolve_token()
+        if insecure_http:
+            warn_console.print(
+                "[yellow]⚠ --insecure-http: sending the Grafana token over "
+                "cleartext HTTP. Use only for localhost development.[/]"
+            )
+        response = post_annotation(
+            grafana,
+            annotation,
+            token=token,
+            timeout=timeout,
+            insecure_http=insecure_http,
+        )
+    except AnnotateError as exc:
+        err_console.print(f"[bold red]Annotation error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    host = grafana.split("://", 1)[-1].split("/", 1)[0]
+    log_security_event(
+        "ANNOTATE_POST",
+        {
+            "grafana_host": host,
+            "dashboard_scoped": dashboard_uid is not None,
+            "layer": result.recommended_layer.value,
+        },
+    )
+    ann_id = response.get("id")
+    console.print(
+        f"[green]Annotation posted[/] to {host}"
+        + (f" (id {ann_id})" if ann_id is not None else "")
+    )
 
 
 def _render_results(
