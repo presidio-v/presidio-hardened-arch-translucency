@@ -95,6 +95,12 @@ def test_token_from_env_blank_is_none(monkeypatch) -> None:
     assert token_from_env() is None
 
 
+def test_token_from_env_rejects_control_chars(monkeypatch) -> None:
+    monkeypatch.setenv("PAT_GRAFANA_TOKEN", "tok\nInjected: x")
+    with pytest.raises(AnnotateError, match="control characters"):
+        token_from_env()
+
+
 def test_resolve_token_missing_raises(monkeypatch) -> None:
     monkeypatch.delenv("PAT_GRAFANA_TOKEN", raising=False)
     with pytest.raises(AnnotateError, match="PAT_GRAFANA_TOKEN"):

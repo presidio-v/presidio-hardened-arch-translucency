@@ -73,7 +73,11 @@ def _sanitize_tag(tag: str) -> str:
 def token_from_env() -> str | None:
     """Bearer token from ``PAT_GRAFANA_TOKEN`` (never a CLI arg)."""
     token = os.environ.get(TOKEN_ENV)
-    return token.strip() if token and token.strip() else None
+    if not token or not token.strip():
+        return None
+    cleaned = token.strip()
+    _reject_control_chars(cleaned, "token")
+    return cleaned
 
 
 def resolve_token() -> str:

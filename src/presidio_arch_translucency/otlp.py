@@ -156,7 +156,11 @@ def build_otlp_payload(
 
 def _token_from_env() -> str | None:
     token = os.environ.get(TOKEN_ENV)
-    return token.strip() if token and token.strip() else None
+    if not token or not token.strip():
+        return None
+    cleaned = token.strip()
+    _reject_control_chars(cleaned, "token")
+    return cleaned
 
 
 def resolve_token(endpoint: str, insecure_http: bool = False) -> str | None:
