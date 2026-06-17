@@ -31,6 +31,7 @@ at it. Do not rewrite history.
 | [0004](0004-calibrate-global-analytical-fit.md) | `pat calibrate` fits global κ+β analytically | Accepted — extended by v0.9.0 per-layer fitting |
 | [0005](0005-model-file-location-project-overrides-global.md) | Model file at `~/.pat/model.json`; project-local `.pat-model.json` overrides global | Accepted |
 | [0006](0006-otlp-export-transport.md) | OTLP export via hand-rolled OTLP/HTTP+JSON (Collector-targeted), not the OpenTelemetry SDK | Accepted — governs v0.13.0 |
+| [0007](0007-prometheus-remote-write.md) | Prometheus remote-write via hand-rolled v1 (protobuf + literals-only snappy), zero deps | Accepted |
 
 ADRs 0001–0005 (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
 "autoresearch" release and are backfilled here for traceability. The canonical
