@@ -37,6 +37,16 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   `--predict-layer`, and `--db` tune the pass. SMA is the default (cheap); ARIMA
   refits on each scrape. Turns the exporter into the moving front of the
   observe → predict → visualize loop.
+- **`pat export --cost-per-replica-hour` — cost metrics (v0.10.0).** Adds
+  per-layer `pat_cost_per_request` and `pat_hourly_cost_usd` gauges from a
+  uniform replica cost. (Live cloud pricing stays in `pat cost`; the exporter
+  keeps one uniform rate to remain scrape-cheap and network-free.)
+- **Official Grafana dashboard (`grafana/pat-dashboard.json`, v0.10.0).** A
+  ready-to-import dashboard visualising observed-vs-predicted demand (with the
+  ARIMA CI band), recommended replicas per layer, response time, throughput
+  gain, and cost-per-request. A test keeps every metric the dashboard queries in
+  sync with what the exporter actually emits. Completes the v0.10.0
+  monitoring-integration scope (Expose → predict → visualize).
 
 ## [0.9.0] - 2026-06-17
 

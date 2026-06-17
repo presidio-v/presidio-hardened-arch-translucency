@@ -112,6 +112,7 @@ def build_metrics(
     avg_latency_ms: float,
     current_layer: ReplicationLayer,
     layer: str | None = None,
+    cost_per_replica_hour: float | None = None,
 ) -> list[Metric]:
     """
     Build the exporter's metric set from a single architectural-translucency
@@ -119,7 +120,9 @@ def build_metrics(
 
     All metrics are gauges. Per-layer metrics carry a ``layer`` label
     (container/pod/deployment/node); the recommendation is marked by
-    ``pat_layer_recommended``.
+    ``pat_layer_recommended``. When *cost_per_replica_hour* is given, per-layer
+    cost gauges (``pat_cost_per_request``, ``pat_hourly_cost_usd``) are added
+    using that uniform replica cost.
     """
     result = analyze(
         requests_per_second=requests_per_second,
@@ -143,7 +146,7 @@ def build_metrics(
             Sample(labels, 1.0 if lr.layer == result.recommended_layer else 0.0)
         )
 
-    return [
+    metrics = [
         Metric(
             "pat_build_info",
             "Build information for the running pat exporter (constant 1).",
@@ -184,6 +187,56 @@ def build_metrics(
             "pat_layer_recommended",
             "1 for the cross-layer recommended layer, 0 otherwise.",
             recommended,
+        ),
+    ]
+
+    if cost_per_replica_hour is not None:
+        metrics.extend(_cost_metrics(result, cost_per_replica_hour))
+
+    return metrics
+
+
+def _cost_metrics(result: object, cost_per_replica_hour: float) -> list[Metric]:
+    """Per-layer cost gauges from a uniform replica cost (USD/replica/hour)."""
+    from presidio_arch_translucency.cost import (  # noqa: PLC0415
+        CostParams,
+        cost_per_request,
+        hourly_cost,
+    )
+
+    params = CostParams(
+        cost_per_container_hour=cost_per_replica_hour,
+        cost_per_pod_hour=cost_per_replica_hour,
+        cost_per_deployment_hour=cost_per_replica_hour,
+        cost_per_node_hour=cost_per_replica_hour,
+    )
+    cpr: list[Sample] = []
+    hourly: list[Sample] = []
+    for lr in result.layers:  # type: ignore[attr-defined]
+        labels = {"layer": lr.layer.value}
+        cpr.append(
+            Sample(
+                labels,
+                cost_per_request(
+                    lr.layer, lr.optimal_replicas, lr.estimated_throughput_rps, params
+                ),
+            )
+        )
+        hourly.append(
+            Sample(labels, hourly_cost(lr.layer, lr.optimal_replicas, params))
+        )
+    return [
+        Metric(
+            "pat_cost_per_request",
+            "USD per request served at the recommended replica count per layer "
+            "(uniform --cost-per-replica-hour).",
+            cpr,
+        ),
+        Metric(
+            "pat_hourly_cost_usd",
+            "USD per hour at the recommended replica count per layer "
+            "(uniform --cost-per-replica-hour).",
+            hourly,
         ),
     ]
 

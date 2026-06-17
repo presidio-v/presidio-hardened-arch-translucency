@@ -294,6 +294,15 @@ def export_cmd(
         "--db",
         help="Observation store path (--predict). Defaults to ~/.pat/observations.db.",
     ),
+    cost_per_replica_hour: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--cost-per-replica-hour",
+        help=(
+            "Uniform replica cost (USD/replica/hour). Adds per-layer "
+            "pat_cost_per_request and pat_hourly_cost_usd gauges."
+        ),
+        min=0.0,
+    ),
 ) -> None:
     """
     Serve architectural-translucency metrics on a read-only Prometheus endpoint.
@@ -361,7 +370,13 @@ def export_cmd(
         )
 
     def _provider() -> str:
-        metrics = build_metrics(rps, lat, current, layer=model_layer)
+        metrics = build_metrics(
+            rps,
+            lat,
+            current,
+            layer=model_layer,
+            cost_per_replica_hour=cost_per_replica_hour,
+        )
         if predict:
             metrics = metrics + _prediction_metrics()
         return render_exposition(metrics)
