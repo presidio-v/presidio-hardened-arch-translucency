@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-17
+
 ### Added
 
 - **`pat observe daemon` — continuous collection (v0.9.0).** `pat observe daemon
@@ -63,6 +65,9 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   scheduler inputs, rejects control characters, quotes systemd `ExecStart=`
   arguments, escapes systemd `%` specifiers, and writes generated unit files
   owner-only where supported.
+- **Audit log context redaction tightened.** Security log context now redacts
+  scalar values whose keys look credential-bearing (`token`, `secret`,
+  `password`, `key`, `credential`, or `auth`) instead of passing them through.
 - **Demo isolation tightened.** `pat demo` publishes Docker ports to
   `127.0.0.1` only. The embedded workload image now runs as an unprivileged user
   and includes a healthcheck.
@@ -70,14 +75,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   model stores create `~/.pat` owner-only and chmod store files to `0o600` where
   supported.
 - **Security policy refreshed.** `SECURITY.md` now records current supported
-  versions, security features, known limitations, and the 2026-06-16 audit
-  report.
+  versions, security features, known limitations, and the 2026-06-16 and
+  2026-06-17 audit reports.
 
 ### Fixed
 
 - **AWS cloud demo pricing result handling.** `pat demo --cloud aws` now handles
   both flat and tiered pricing results and uses the on-demand tier for demo cost
   parameters.
+- **Linux observe-daemon timer cadence.** The systemd `--user` timer now uses
+  elapsed scheduling (`OnBootSec` / `OnUnitActiveSec`) rather than an invalid
+  seconds-field `OnCalendar` expression for default and custom second intervals.
 
 ## [0.8.0] - 2026-06-10
 
@@ -166,6 +174,7 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.9.0
 [0.8.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.8.0
 [0.7.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.7.0
