@@ -10,6 +10,22 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **`pat export` — read-only Prometheus exporter (v0.10.0).** Publishes the
+  architectural-translucency model's per-layer recommendations for a workload as
+  Prometheus gauges on a read-only `GET /metrics` endpoint, for scraping into
+  Prometheus/Grafana. Exposes `pat_recommended_replicas`,
+  `pat_estimated_throughput_rps`, `pat_response_time_ms`,
+  `pat_throughput_gain_ratio`, and `pat_layer_recommended` (per `layer`), plus
+  `pat_workload_*` inputs and `pat_build_info`. `--once` prints the exposition
+  and exits instead of serving. The server is read-only (only `GET` is
+  implemented; other methods return `501`) and binds `127.0.0.1` by default —
+  binding a routable interface requires the explicit `--listen-public` opt-in.
+  Metric names are fixed and label values escaped. Exposition text is generated
+  by hand (Prometheus text format 0.0.4); no new dependencies. First step of the
+  monitoring-integration arc ("The Translucency Control Plane").
+
 ## [0.9.0] - 2026-06-17
 
 ### Added
