@@ -61,7 +61,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
 | v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
 | v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Complete (unreleased) |
-| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
+| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Complete (unreleased) |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
 | v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
@@ -693,6 +693,49 @@ observe→predict loop:
 With Expose (Phase 1), predict (Phase 2), cost, and the dashboard shipped, the
 **v0.10.0 "Expose" milestone of the monitoring-integration arc is complete.**
 Next on the arc: v0.11.0 — Alert (`pat rules` recording + alerting rules).
+
+---
+
+## v0.11.0 — Alert: `pat rules` (delivered 2026-06-17)
+
+Second step of the monitoring-integration arc. `pat rules` emits a Prometheus
+rule file (recording + alerting rules) derived from the v0.10.0 exporter's
+metrics, so the model's signals become actionable inside the existing
+Prometheus / Alertmanager pipeline. **Emit-only** (arc invariant A1): `pat`
+produces declarative YAML and never loads, applies, or reloads anything.
+
+### What shipped
+
+- **`pat rules`** — new `rules` module + CLI command, emits to stdout.
+- **Recording rules** (`pat.recording`): `pat:predicted_rps`, `pat:observed_rps`,
+  `pat:demand_growth_ratio` (predicted/observed, `clamp_min` guarded),
+  `pat:trend_ratio`.
+- **Alerting rules** (`pat.alerts`): `PatDemandSurgeForecast`,
+  `PatDemandTrendRising`, `PatExporterAbsent` (always); `PatLayerTranslucencyMismatch`
+  (when `--current-layer` given); `PatCostPerRequestOverBudget` (when
+  `--cost-budget` given — the cost metric exists only under the exporter's
+  `--cost-per-replica-hour`).
+- **Tuning flags:** `--demand-surge-ratio`, `--trend-threshold`, `--for`.
+
+### Security
+
+- Only validated values reach the YAML: layer (one of the four known layers),
+  numeric thresholds (rendered as numbers), and a `for:` duration validated
+  against `\d+[smhdw]`. Every string scalar is double-quoted with `\` and `"`
+  escaped, so the emitted rule file is always valid YAML and cannot smuggle
+  content. Hand-rolled (no PyYAML dependency), matching `hpa_patch`. Verified by
+  round-tripping the output through a YAML parser (escaped exprs parse back to
+  the exact PromQL).
+
+### Deviation from the arc sketch
+
+The arc listed `pat rules --emit prometheus`. Prometheus is the only target, so
+the redundant `--emit` flag was dropped — `pat rules` emits a Prometheus rule
+file directly. (If a second target is ever added, a `--format` flag can be
+introduced then.)
+
+**Next on the arc:** v0.12.0 — Visualize & Annotate (Grafana provisioning +
+`pat annotate`).
 
 ---
 
