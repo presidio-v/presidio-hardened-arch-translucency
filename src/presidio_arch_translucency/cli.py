@@ -310,17 +310,37 @@ def export_cmd(
         ),
         min=0.0,
     ),
+    otlp: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--otlp",
+        help=(
+            "Push metrics once over OTLP/HTTP+JSON to this collector endpoint "
+            "(e.g. http://collector:4318), then exit, instead of serving."
+        ),
+    ),
+    service_name: str = typer.Option(
+        "pat",
+        "--service-name",
+        help="OTLP resource service.name (--otlp).",
+    ),
+    insecure_http: bool = typer.Option(
+        False,
+        "--insecure-http",
+        help="Allow sending the OTLP token over cleartext HTTP (localhost dev).",
+    ),
+    timeout: float = typer.Option(
+        10.0, "--timeout", help="OTLP push HTTP timeout in seconds.", min=0.1
+    ),
 ) -> None:
     """
-    Serve architectural-translucency metrics on a read-only Prometheus endpoint.
+    Serve or push architectural-translucency metrics.
 
-    Exposes the per-layer recommendation (replicas, throughput gain, response
-    time) for the given workload as gauges on GET /metrics, ready to scrape into
-    Prometheus/Grafana. With --predict it also exposes forecast metrics from the
-    observation store (predicted demand + recommended replicas). The server is
-    read-only and binds 127.0.0.1 by default; pass --listen-public to bind a
-    routable interface. Use --once to print the exposition and exit instead of
-    serving.
+    Default: a read-only Prometheus endpoint exposing the per-layer
+    recommendation as gauges on GET /metrics (binds 127.0.0.1; --listen-public
+    for a routable interface). With --predict it also exposes forecast metrics
+    from the observation store. --once prints the exposition and exits. --otlp
+    pushes the metrics once over OTLP/HTTP+JSON to an OpenTelemetry collector
+    (vendor-neutral) and exits — schedule it externally for recurring push.
     """
     from presidio_arch_translucency.export import (  # noqa: PLC0415
         METRICS_PATH,
@@ -376,7 +396,7 @@ def export_cmd(
             observations, model=model_name, horizon_minutes=horizon_minutes
         )
 
-    def _provider() -> str:
+    def _build_all_metrics() -> list:
         metrics = build_metrics(
             rps,
             lat,
@@ -386,9 +406,54 @@ def export_cmd(
         )
         if predict:
             metrics = metrics + _prediction_metrics()
-        return render_exposition(metrics)
+        return metrics
+
+    def _provider() -> str:
+        return render_exposition(_build_all_metrics())
 
     predict_mode = model_name if predict else "off"
+
+    if otlp:
+        from presidio_arch_translucency.otlp import (  # noqa: PLC0415
+            OtlpError,
+            build_otlp_payload,
+            metrics_url,
+            post_otlp,
+            resolve_token,
+        )
+
+        try:
+            target = metrics_url(otlp)
+        except OtlpError as exc:
+            err_console.print(f"[bold red]OTLP error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+        payload = build_otlp_payload(_build_all_metrics(), service_name=service_name)
+        try:
+            token = resolve_token(otlp, insecure_http=insecure_http)
+            if insecure_http and token:
+                warn_console.print(
+                    "[yellow]⚠ --insecure-http: sending the OTLP token over "
+                    "cleartext HTTP. Use only for localhost development.[/]"
+                )
+            post_otlp(
+                otlp,
+                payload,
+                token=token,
+                timeout=timeout,
+                insecure_http=insecure_http,
+            )
+        except OtlpError as exc:
+            err_console.print(f"[bold red]OTLP error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        host = otlp.split("://", 1)[-1].split("/", 1)[0]
+        log_security_event(
+            "OTLP_PUSH",
+            {"otlp_host": host, "layer": layer_str, "predict": predict_mode},
+        )
+        console.print(f"[green]Pushed OTLP metrics[/] to {target}")
+        return
 
     if once:
         log_security_event(

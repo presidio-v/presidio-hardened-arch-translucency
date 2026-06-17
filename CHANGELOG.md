@@ -12,6 +12,19 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- **`pat export --otlp` — vendor-neutral OTLP push (v0.13.0, "Speak OTLP").**
+  Pushes the exporter's metrics once over OTLP/HTTP+JSON to an OpenTelemetry
+  Collector (which fans out to Datadog / New Relic / Honeycomb / Grafana Cloud),
+  so pat metrics reach any vendor **without Prometheus**. Single-shot — schedule
+  externally for recurring push. Per **ADR-0006** it is hand-rolled OTLP/HTTP+JSON
+  (no `opentelemetry` SDK, no `protobuf`, no `grpcio`) targeting a Collector;
+  vendor-direct protobuf/gRPC is a non-goal. An optional bearer token is read from
+  `PAT_OTLP_TOKEN` only (HTTPS required unless `--insecure-http`); `--service-name`
+  sets the OTLP `service.name`; non-finite samples are dropped (no OTLP/JSON
+  representation). No new dependencies (`urllib` + `json`). Works with `--predict`
+  and `--cost-per-replica-hour`. Third-from-last step of the
+  monitoring-integration arc.
+
 - **`pat annotate` — post recommendations to Grafana (v0.12.0, "Visualize &
   Annotate").** The arc's first **outbound write**: runs the analysis and posts
   an annotation to Grafana's `/api/annotations` so the recommendation shows up as

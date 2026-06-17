@@ -61,6 +61,9 @@ budget, exporter-absent) for `rule_files:` — emit-only, never applied. `pat
 annotate --grafana <url>` posts the recommendation to Grafana as an annotation
 (pat's one outbound write; token from `PAT_GRAFANA_TOKEN` env, HTTPS, `--dry-run`
 to preview). `grafana/provisioning/` auto-loads the datasource + dashboard.
+`pat export --otlp <collector>` pushes the metrics over OTLP/HTTP+JSON to an
+OpenTelemetry Collector (vendor-neutral; no Prometheus needed; hand-rolled per
+ADR-0006, optional token from `PAT_OTLP_TOKEN`).
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the
