@@ -59,6 +59,8 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
+| v0.9.0 | Per-layer calibrate, kubeconfig Prometheus auth, configurable ARIMA order | Released |
+| v0.10.0 | Monitoring integration — Prometheus exporter + official Grafana dashboard | Deliberated |
 
 ---
 
@@ -402,6 +404,92 @@ so PRs could merge.)
 
 ---
 
+## v0.10.0 — Monitoring Integration: Prometheus Exporter + Grafana Dashboard
+
+**Deliberated:** 2026-06-17
+
+### Roadmap fork considered
+
+Two future directions were weighed: **(a) adding a GUI** vs. **(b) integrating with
+standard monitoring tools (Grafana et al.)**. Direction (b) was chosen.
+
+### Rationale
+
+1. **Completes a half-built loop.** `pat` already *ingests* from Prometheus
+   (`pat observe --prometheus`) and *emits* Kubernetes-native artifacts
+   (`pat optimize --emit-hpa-patch`). Exposing its recommendations and
+   predictions *back* as scrapeable metrics closes the observe → predict →
+   visualize circuit using infrastructure teams already run.
+2. **It is the thesis.** Architectural translucency is "monitor and control
+   non-functional properties architecture-wide." Grafana is the surface where
+   that monitoring is consumed — this is the concept's natural home, not a
+   bolt-on.
+3. **Preserves the hardened posture.** A read-only Prometheus exporter adds no
+   auth system, no write paths, and no new injection surface. A standalone GUI
+   (web or desktop) would mean auth, sessions, CSRF/XSS surface, frontend CVE
+   exposure, and cross-OS packaging — the opposite of the Presidio security
+   mandate every prior version has guarded.
+4. **Near-false dichotomy.** A Grafana dashboard *is* the visual interface a
+   "GUI" would provide, but delivered through infra users already operate and
+   secure. It captures the bulk of the GUI value at a fraction of the cost and
+   zero new attack surface.
+5. **Small, shippable increment.** Reuses existing `model`/`cost`/`optimize`
+   code; the new code is metric exposition + a dashboard. Fits a single release.
+
+A dedicated GUI is **deferred** — revisit only if real users hit a wall the
+dashboard cannot cover, and even then prefer a thin read-only web view over a
+stateful app.
+
+### Scope decision
+
+Exposition model: **Prometheus exporter** (pull-based `/metrics` endpoint),
+chosen over a Grafana JSON datasource or a dashboard-only deliverable. Pull-based
+exposition is idiomatic for the cloud-native stack, stateless, and adds no write
+paths. An official Grafana dashboard JSON ships alongside it.
+
+### New CLI surface
+
+```bash
+# Expose pat's recommendations/predictions as Prometheus metrics
+pat export --port 9847 \
+    --requests-per-second 500 --avg-latency-ms 80 --current-layer container
+```
+
+### Proposed metrics (illustrative — finalize at build time)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `pat_recommended_replicas` | gauge | `layer` |
+| `pat_predicted_rps` | gauge | `model` (sma/arima) |
+| `pat_predicted_rps_upper` / `_lower` | gauge | `model` (CI bands) |
+| `pat_throughput_gain_ratio` | gauge | `layer` |
+| `pat_cost_per_request` | gauge | `layer`, `cloud`, `region` |
+| `pat_response_time_ms` | gauge | `layer` |
+
+### Deliverables
+
+- `pat export` command exposing the metrics above over HTTP `/metrics`.
+- Official Grafana dashboard JSON (committed to the repo, e.g. `grafana/`)
+  built on those metrics.
+- README section: wiring `pat export` into a Prometheus scrape config and
+  importing the dashboard.
+
+### Security
+
+- **Read-only.** The exporter serves metrics only — no mutation endpoints.
+- Bind to `127.0.0.1` by default; explicit opt-in flag required to bind a
+  routable interface.
+- No secrets, no raw user input, and no auth tokens in exposed metric labels or
+  values (output sanitization rules from prior versions carry over).
+- No new authenticated surface introduced in v0.10.0.
+
+### Deferred
+
+- Dedicated standalone GUI (web/desktop) — revisit only on demonstrated need.
+- Grafana JSON datasource and push/remote-write exposition models.
+
+---
+
 ## Cross-cutting decisions
 
 | Decision | Rationale |
@@ -412,6 +500,8 @@ so PRs could merge.)
 | SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
 | On-demand before reserved/spot | Universally available without credentials |
 | AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
+| Grafana integration before a dedicated GUI | A dashboard delivers the visual-interface value through infra users already run, at lower cost and zero new attack surface |
+| Read-only Prometheus exporter over a web app | Pull-based exposition is idiomatic and adds no auth/write surface, preserving the hardened posture |
 
 ## SDLC
 
