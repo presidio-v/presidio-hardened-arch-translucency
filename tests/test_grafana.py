@@ -97,3 +97,20 @@ def test_dashboard_covers_core_metrics() -> None:
         "pat_predicted_rps",
         "pat_cost_per_request",
     } <= referenced
+
+
+# ── provisioning bundle (v0.12.0) ─────────────────────────────────────────────
+
+_GRAFANA = DASHBOARD.parent
+
+
+def test_provisioning_datasource_present() -> None:
+    text = (_GRAFANA / "provisioning" / "datasources" / "datasource.yml").read_text()
+    assert "type: prometheus" in text
+    assert "uid: prometheus" in text
+
+
+def test_provisioning_dashboard_provider_present() -> None:
+    text = (_GRAFANA / "provisioning" / "dashboards" / "dashboards.yml").read_text()
+    assert "type: file" in text
+    assert "/var/lib/grafana/dashboards/pat" in text

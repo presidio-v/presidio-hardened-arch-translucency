@@ -566,6 +566,27 @@ Alerts: **PatDemandSurgeForecast** (forecast demand outruns observed),
 `--for`. Every emitted scalar is validated/escaped — the rule file can't smuggle
 arbitrary content.
 
+### Provisioning & annotations (v0.12.0)
+
+[`grafana/provisioning/`](grafana/provisioning/) holds Grafana file-provisioning
+configs (datasource + dashboard provider) so the dashboard loads automatically —
+mount it instead of importing by hand (see [`grafana/README.md`](grafana/README.md)).
+
+`pat annotate` posts the current recommendation to Grafana's annotation API so it
+shows up as a marker on your dashboards — `pat`'s one **outbound write**, and only
+ever an informational annotation, never an infrastructure change:
+
+```bash
+export PAT_GRAFANA_TOKEN=...   # editor token; env only, never a flag
+pat annotate -r 500 -l 80 -c container --grafana https://grafana.example.com
+pat annotate -r 500 -l 80 -c container --grafana https://g --dry-run   # preview only
+```
+
+The token is read from `PAT_GRAFANA_TOKEN` only (never a flag, never logged),
+HTTPS is required (use `--insecure-http` for localhost dev), and tags are
+sanitised. `--dry-run` prints the payload without posting; `--dashboard-uid`
+scopes the annotation to one dashboard; `--tag` adds extra tags.
+
 ---
 
 ## Live Demonstrator
@@ -743,7 +764,8 @@ pytest
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter |
 | v0.9.0 | Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit |
 | v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) + Grafana dashboard |
-| **v0.11.0** | **Alerting — `pat rules` emits Prometheus recording + alerting rules** *(in progress)* |
+| v0.11.0 | Alerting — `pat rules` emits Prometheus recording + alerting rules |
+| **v0.12.0** | **Visualize & Annotate — Grafana provisioning + `pat annotate`** *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

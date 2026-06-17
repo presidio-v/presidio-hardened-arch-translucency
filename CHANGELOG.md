@@ -12,6 +12,20 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- **`pat annotate` — post recommendations to Grafana (v0.12.0, "Visualize &
+  Annotate").** The arc's first **outbound write**: runs the analysis and posts
+  an annotation to Grafana's `/api/annotations` so the recommendation shows up as
+  a marker on dashboards. Still emit-only in spirit — it writes an informational
+  annotation, never infrastructure. The token is read from `PAT_GRAFANA_TOKEN`
+  only (never a flag, never logged), HTTPS is required unless `--insecure-http`
+  (warned), tags are sanitised, and `--dry-run` previews the payload without
+  posting. `--dashboard-uid` scopes to one dashboard; `--tag` adds tags. `urllib`
+  only — no new dependency.
+- **Grafana provisioning bundle (v0.12.0).** `grafana/provisioning/` adds
+  datasource + dashboard-provider configs so `grafana/pat-dashboard.json` loads
+  automatically on startup (mount instead of importing by hand). See
+  `grafana/README.md`.
+
 - **`pat rules` — Prometheus recording + alerting rules (v0.11.0, "Alert").**
   Emits a declarative Prometheus rule file (YAML) built from the exporter's
   metrics, so the model's signals fire through the existing Prometheus /

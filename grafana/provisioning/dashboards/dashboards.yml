@@ -1,0 +1,17 @@
+# Grafana dashboard provisioning for the pat dashboard (v0.12.0).
+# Mount this directory at /etc/grafana/provisioning/dashboards/ and mount the
+# repo's grafana/ dashboards into /var/lib/grafana/dashboards/pat/.
+apiVersion: 1
+
+providers:
+  - name: pat
+    orgId: 1
+    folder: pat
+    folderUid: pat
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/pat
+      foldersFromFilesStructure: false
