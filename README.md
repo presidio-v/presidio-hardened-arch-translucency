@@ -548,6 +548,23 @@ OTLP/HTTP+JSON (no `opentelemetry` SDK, no gRPC) — point it at an OTel Collect
 from `PAT_OTLP_TOKEN` only (HTTPS required unless `--insecure-http`);
 `--service-name` sets the OTLP `service.name`.
 
+### Ephemeral contexts: Pushgateway (`--pushgateway`, v0.14.0)
+
+Cron jobs, CI, and Kubernetes `Job`/`CronJob`s have no scrape endpoint. Push the
+metrics once to a Prometheus **Pushgateway** instead, then exit — Prometheus
+scrapes the gateway:
+
+```bash
+pat export --pushgateway http://pushgateway:9091 --job pat \
+  --grouping instance=ci-7 -r 500 -l 80 -c container
+```
+
+This reuses the exporter's Prometheus text output verbatim (zero new
+dependencies). `--job` sets the job (default `pat`); repeat `--grouping key=value`
+for grouping labels (validated + percent-encoded). An optional token is read from
+`PAT_PUSHGATEWAY_TOKEN` only (HTTPS required unless `--insecure-http`). `--otlp`
+and `--pushgateway` are mutually exclusive.
+
 ### Official Grafana dashboard
 
 A ready-to-import dashboard lives at [`grafana/pat-dashboard.json`](grafana/pat-dashboard.json).
@@ -784,7 +801,8 @@ pytest
 | v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) + Grafana dashboard |
 | v0.11.0 | Alerting — `pat rules` emits Prometheus recording + alerting rules |
 | v0.12.0 | Visualize & Annotate — Grafana provisioning + `pat annotate` |
-| **v0.13.0** | **Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006)** |
+| v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
+| **v0.14.0** | **Reach ephemeral contexts — `pat export --pushgateway`** *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

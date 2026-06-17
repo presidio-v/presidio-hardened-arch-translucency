@@ -10,6 +10,21 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **`pat export --pushgateway` — Prometheus Pushgateway target (v0.14.0, "Reach
+  ephemeral contexts").** Pushes the exporter's metric set once to a Prometheus
+  Pushgateway (Prometheus text format) and exits — for cron / CI / Kubernetes
+  `Job`/`CronJob` contexts that have no scrape endpoint. `--job` sets the job
+  (default `pat`); repeat `--grouping key=value` for grouping labels (validated +
+  percent-encoded). Reuses the exporter's existing exposition output verbatim —
+  no new dependencies (`urllib` only). Optional bearer token from
+  `PAT_PUSHGATEWAY_TOKEN` only (HTTPS required unless `--insecure-http`, control
+  characters rejected). `--otlp` and `--pushgateway` are mutually exclusive.
+  Prometheus **remote-write** is intentionally deferred (its protobuf + snappy
+  wire format would breach the zero-dependency posture — the same tension
+  ADR-0006 resolved; Pushgateway already covers the ephemeral-job use case).
+
 ## [0.13.0] - 2026-06-17
 
 ### Added
