@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.8.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.9.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -455,6 +455,48 @@ useful from the very first observations.
 
 ---
 
+## Monitoring integration: Prometheus exporter (v0.10.0)
+
+The first step of the monitoring-integration arc ("The Translucency Control
+Plane"). `pat export` publishes the model's per-layer recommendations as
+Prometheus metrics on a **read-only** `/metrics` endpoint, so they can be scraped
+into Grafana alongside the metrics you already run — `pat` never mutates
+infrastructure, it only exposes.
+
+```bash
+# Serve metrics on http://127.0.0.1:9847/metrics (Ctrl-C to stop)
+pat export --requests-per-second 500 --avg-latency-ms 80 --current-layer container
+
+# Print the exposition once and exit (no server) — handy for CI / a quick look
+pat export -r 500 -l 80 -c container --once
+```
+
+Exposed gauges (per `layer` where applicable): `pat_recommended_replicas`,
+`pat_estimated_throughput_rps`, `pat_response_time_ms`, `pat_throughput_gain_ratio`,
+`pat_layer_recommended`, plus `pat_workload_*` inputs and `pat_build_info`.
+
+Scrape it from Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: pat
+    static_configs:
+      - targets: ["127.0.0.1:9847"]
+```
+
+**Security.** The server is read-only (only `GET` is implemented — any other
+method returns `501`) and binds `127.0.0.1` by default. Binding a routable
+interface requires an explicit opt-in:
+
+```bash
+pat export -r 500 -l 80 -c container --host 0.0.0.0 --listen-public
+```
+
+Metric names are fixed (never user input) and label values are escaped. Use
+`--layer` to expose a per-layer calibrated fit (see `pat calibrate --layer`).
+
+---
+
 ## Live Demonstrator
 
 `pat demo` spins up real Docker containers and measures throughput, latency,
@@ -627,7 +669,9 @@ pytest
 | v0.5.0 | Cloud billing integration — AWS on-demand pricing |
 | v0.6.0 | Cloud billing — AWS reserved/spot + GCP + Azure |
 | v0.7.0 | Autoresearch — `pat calibrate` + observation store + SMA predictions |
-| **v0.8.0** | **Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter** |
+| v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter |
+| **v0.9.0** | **Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit** |
+| v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

@@ -44,6 +44,12 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | User has measured rps/latency/replicas and the default model looks off | `pat calibrate` |
 | Recording a live measurement into the rolling store | `pat observe` |
 | User has observation history and wants a proactive (forward-looking) replica count | `pat optimize` |
+| User wants pat's recommendations in Prometheus/Grafana | `pat export` |
+
+`pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
+`127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
+print the exposition and exit). It exposes the analytical per-layer
+recommendation as gauges — `pat` never mutates infrastructure, it only exposes.
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the

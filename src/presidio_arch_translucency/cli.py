@@ -204,6 +204,125 @@ def analyze_cmd(
     _render_results(result, show_all=show_all, uniform_cost=cost_per_replica_hour)
 
 
+@app.command("export")
+def export_cmd(
+    requests_per_second: float = typer.Option(
+        ...,
+        "--requests-per-second",
+        "-r",
+        help="Observed workload in requests per second.",
+        min=0.01,
+    ),
+    avg_latency_ms: float = typer.Option(
+        ...,
+        "--avg-latency-ms",
+        "-l",
+        help="Current average response latency in milliseconds.",
+        min=0.1,
+    ),
+    current_layer: str = typer.Option(
+        ...,
+        "--current-layer",
+        "-c",
+        help=f"Current replication layer. One of: {', '.join(VALID_LAYERS)}",
+    ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label whose calibrated parameters to use "
+            "(see `pat calibrate --layer`). Falls back to the global fit."
+        ),
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help=(
+            "Address to bind. Defaults to loopback; a non-loopback host "
+            "requires --listen-public."
+        ),
+    ),
+    port: int = typer.Option(
+        9847, "--port", help="TCP port to serve /metrics on.", min=1, max=65535
+    ),
+    listen_public: bool = typer.Option(
+        False,
+        "--listen-public",
+        help="Explicitly allow binding a non-loopback (routable) host.",
+    ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Print the /metrics exposition once to stdout and exit (no server).",
+    ),
+) -> None:
+    """
+    Serve architectural-translucency metrics on a read-only Prometheus endpoint.
+
+    Exposes the per-layer recommendation (replicas, throughput gain, response
+    time) for the given workload as gauges on GET /metrics, ready to scrape into
+    Prometheus/Grafana. The server is read-only and binds 127.0.0.1 by default;
+    pass --listen-public to bind a routable interface. Use --once to print the
+    exposition and exit instead of serving.
+    """
+    from presidio_arch_translucency.export import (  # noqa: PLC0415
+        METRICS_PATH,
+        build_metrics,
+        build_server,
+        is_loopback_host,
+        render_exposition,
+    )
+
+    # --- Input sanitization (Presidio security extension) ---
+    try:
+        rps = sanitize_requests_per_second(requests_per_second)
+        lat = sanitize_latency_ms(avg_latency_ms)
+        layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    current = ReplicationLayer(layer_str)
+
+    # --- Exposure guard: loopback unless explicitly opted out ---
+    if not is_loopback_host(host) and not listen_public:
+        err_console.print(
+            f"[bold red]Refusing to bind non-loopback host {host!r} without "
+            "--listen-public.[/] The exporter is read-only, but its metrics "
+            "would be reachable off-host. Re-run with --listen-public to confirm."
+        )
+        raise typer.Exit(code=2)
+
+    _warn_if_uncalibrated()
+
+    def _provider() -> str:
+        return render_exposition(build_metrics(rps, lat, current, layer=model_layer))
+
+    if once:
+        log_security_event("EXPORT_RENDER", {"layer": layer_str, "mode": "once"})
+        typer.echo(_provider(), nl=False)
+        return
+
+    log_security_event("EXPORT_SERVE", {"host": host, "port": port, "layer": layer_str})
+    server = build_server(host, port, _provider)
+    if not is_loopback_host(host):
+        warn_console.print(
+            f"[yellow]⚠ Serving metrics on routable {host}:{port} — read-only, "
+            "no secrets exposed, but reachable off-host.[/]"
+        )
+    console.print(
+        f"[green]pat exporter[/] serving read-only metrics on "
+        f"http://{host}:{port}{METRICS_PATH}  (Ctrl-C to stop)"
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Shutting down exporter…[/]")
+    finally:
+        server.server_close()
+
+
 def _render_results(
     result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
     show_all: bool,

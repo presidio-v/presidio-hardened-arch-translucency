@@ -60,7 +60,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
 | v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
-| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Deliberated |
+| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | In progress (Phase 1 shipped) |
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
@@ -643,6 +643,32 @@ pat export --port 9847 \
 
 - Dedicated standalone GUI (web/desktop) — revisit only on demonstrated need.
 - Grafana JSON datasource and push/remote-write exposition models.
+
+### Delivery — Phase 1 (2026-06-17)
+
+Shipped the read-only Prometheus exporter foundation:
+
+- **`pat export`** — new `export` module + CLI command. Serves the analytical
+  per-layer recommendation for a workload as Prometheus gauges on `GET /metrics`
+  (`pat_recommended_replicas`, `pat_estimated_throughput_rps`,
+  `pat_response_time_ms`, `pat_throughput_gain_ratio`, `pat_layer_recommended`,
+  plus `pat_workload_*` and `pat_build_info`). `--once` renders the exposition
+  and exits.
+- **Security per the exposition decision:** read-only (only `GET`; other methods
+  → `501`), binds `127.0.0.1` by default, `--listen-public` required to bind a
+  routable host, fixed metric names, escaped label values. Exposition text
+  hand-rolled (text format 0.0.4) — no new dependencies, consistent with the
+  hardened posture.
+
+**Remaining for v0.10.0:**
+
+- **Phase 2 — prediction metrics from the observation store.** Expose
+  `optimize`-derived `pat_predicted_rps{model}` (+ CI bounds) and cost metrics,
+  so the exporter reflects the live observe→predict loop rather than only the
+  static analysis. (The arc's `pat_predicted_rps` / `pat_cost_per_request`
+  metrics.)
+- **Phase 3 — the official Grafana dashboard JSON** built on these metrics,
+  committed to the repo, plus README wiring.
 
 ---
 
