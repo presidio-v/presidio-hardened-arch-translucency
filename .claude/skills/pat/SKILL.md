@@ -45,6 +45,7 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | Recording a live measurement into the rolling store | `pat observe` |
 | User has observation history and wants a proactive (forward-looking) replica count | `pat optimize` |
 | User wants pat's recommendations in Prometheus/Grafana | `pat export` |
+| User wants pat to alert through Prometheus/Alertmanager | `pat rules` |
 
 `pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
@@ -53,7 +54,9 @@ recommendation as gauges — `pat` never mutates infrastructure, it only exposes
 Add `--predict` to also expose forecast metrics from the observation store
 (`pat_predicted_rps`, recommended replicas, trend), `--model arima` for CI bounds,
 and `--cost-per-replica-hour` for per-layer cost gauges. An importable Grafana
-dashboard ships at `grafana/pat-dashboard.json`.
+dashboard ships at `grafana/pat-dashboard.json`. `pat rules` emits a Prometheus
+rule file (recording + alerting rules: demand surge/trend, layer mismatch, cost
+budget, exporter-absent) for `rule_files:` — emit-only, never applied.
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the

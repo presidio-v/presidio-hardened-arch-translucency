@@ -540,6 +540,32 @@ Import it via **Grafana → Dashboards → New → Import**, upload the JSON, an
 your Prometheus data source when prompted. Pair it with `pat export --predict`
 (and `--cost-per-replica-hour` for the cost panel) for the full picture.
 
+### Alerting rules (`pat rules`, v0.11.0)
+
+`pat rules` emits a Prometheus rule file (recording + alerting rules) built from
+the exporter's metrics, so the model's signals fire through your existing
+Alertmanager — `pat` only emits the YAML, it never loads or applies it.
+
+```bash
+# Emit recording + alerting rules
+pat rules --current-layer container --cost-budget 0.000001 > pat-rules.yml
+```
+
+Then reference it from `prometheus.yml` and reload Prometheus:
+
+```yaml
+rule_files:
+  - pat-rules.yml
+```
+
+Alerts: **PatDemandSurgeForecast** (forecast demand outruns observed),
+**PatDemandTrendRising** (demand trending up), **PatLayerTranslucencyMismatch**
+(running on a layer the model no longer recommends — needs `--current-layer`),
+**PatCostPerRequestOverBudget** (needs `--cost-budget`), and **PatExporterAbsent**
+(scrape health). Tune with `--demand-surge-ratio`, `--trend-threshold`, and
+`--for`. Every emitted scalar is validated/escaped — the rule file can't smuggle
+arbitrary content.
+
 ---
 
 ## Live Demonstrator
@@ -716,7 +742,8 @@ pytest
 | v0.7.0 | Autoresearch — `pat calibrate` + observation store + SMA predictions |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter |
 | v0.9.0 | Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit |
-| **v0.10.0** | **Monitoring integration — read-only Prometheus exporter (`pat export`)** |
+| v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) + Grafana dashboard |
+| **v0.11.0** | **Alerting — `pat rules` emits Prometheus recording + alerting rules** *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

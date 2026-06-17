@@ -10,6 +10,24 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **`pat rules` — Prometheus recording + alerting rules (v0.11.0, "Alert").**
+  Emits a declarative Prometheus rule file (YAML) built from the exporter's
+  metrics, so the model's signals fire through the existing Prometheus /
+  Alertmanager pipeline. Recording rules normalise the metrics
+  (`pat:predicted_rps`, `pat:observed_rps`, `pat:demand_growth_ratio`,
+  `pat:trend_ratio`); alerts are **PatDemandSurgeForecast**,
+  **PatDemandTrendRising**, **PatExporterAbsent** (always),
+  **PatLayerTranslucencyMismatch** (`--current-layer`), and
+  **PatCostPerRequestOverBudget** (`--cost-budget`). `--demand-surge-ratio`,
+  `--trend-threshold`, and `--for` tune the thresholds. Emit-only — `pat`
+  produces the YAML and never loads or applies it. The layer name, numeric
+  thresholds, and `for:` duration are validated, and every YAML scalar is
+  double-quoted/escaped, so the rule file is always valid and cannot smuggle
+  content. No new dependencies (hand-rolled YAML, like `hpa_patch`). Second step
+  of the monitoring-integration arc.
+
 ## [0.10.0] - 2026-06-17
 
 ### Added

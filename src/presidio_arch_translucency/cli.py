@@ -424,6 +424,91 @@ def export_cmd(
         server.server_close()
 
 
+@app.command("rules")
+def rules_cmd(
+    current_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--current-layer",
+        "-c",
+        help=(
+            "Layer you run, for the translucency-mismatch alert. "
+            f"One of: {', '.join(VALID_LAYERS)}. Omit to skip that alert."
+        ),
+    ),
+    cost_budget: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--cost-budget",
+        help=(
+            "USD/request budget for the cost alert (needs the exporter run with "
+            "--cost-per-replica-hour). Omit to skip the cost alert."
+        ),
+        min=0.0,
+    ),
+    surge_ratio: float = typer.Option(
+        1.2,
+        "--demand-surge-ratio",
+        help="Forecast/observed demand ratio that fires the surge alert.",
+        min=1.0,
+    ),
+    trend_threshold: float = typer.Option(
+        0.2,
+        "--trend-threshold",
+        help="Demand trend ratio that fires the trend alert (0.2 = +20%).",
+        min=0.0,
+    ),
+    for_duration: str = typer.Option(
+        "10m",
+        "--for",
+        help="Prometheus `for:` duration on the demand/cost/mismatch alerts.",
+    ),
+) -> None:
+    """
+    Emit Prometheus recording + alerting rules from the pat metrics.
+
+    Produces a declarative rule file (YAML) on stdout — reference it from
+    prometheus.yml `rule_files:` so the model's signals fire through your
+    existing Alertmanager. `pat` only emits; it never loads or applies anything.
+
+    \b
+      pat rules > pat-rules.yml
+      pat rules -c container --cost-budget 0.000001 > pat-rules.yml
+    """
+    from presidio_arch_translucency.rules import (  # noqa: PLC0415
+        RuleError,
+        build_rule_groups,
+        render_rules_yaml,
+    )
+
+    layer_str: Optional[str] = None  # noqa: UP045
+    if current_layer is not None:
+        try:
+            layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+        except InputValidationError as exc:
+            err_console.print(f"[bold red]Input validation error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+    try:
+        groups = build_rule_groups(
+            current_layer=layer_str,
+            cost_budget=cost_budget,
+            surge_ratio=surge_ratio,
+            trend_threshold=trend_threshold,
+            for_duration=for_duration,
+        )
+    except RuleError as exc:
+        err_console.print(f"[bold red]Rules error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "RULES_EMIT",
+        {
+            "layer": layer_str or "none",
+            "cost_alert": cost_budget is not None,
+        },
+    )
+    typer.echo(render_rules_yaml(groups), nl=False)
+
+
 def _render_results(
     result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
     show_all: bool,
