@@ -59,7 +59,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
-| v0.9.0 | Per-layer calibrate, kubeconfig Prometheus auth, configurable ARIMA order | Released |
+| v0.9.0 | Per-layer calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
 | v0.10.0 | Monitoring integration — Prometheus exporter + official Grafana dashboard | Deliberated |
 
 ---
@@ -404,6 +404,79 @@ so PRs could merge.)
 
 ---
 
+## v0.9.0 — Calibrate Depth, Prediction Tuning, Observe Daemon + Security Audit
+
+**Deliberated:** 2026-03-27 (carried from v0.8.0) · **Backfilled write-up:** 2026-06-17
+
+### Status
+
+Merged to the default branch but **not yet cut as a formal release** — the work
+sits under `[Unreleased]` in `CHANGELOG.md` with no `Release v0.9.0` commit or
+tag. This section is a backfilled delivery record reconstructed from the merged
+PRs (#37–#43) and the changelog, since no fuller v0.9.0 write-up existed at the
+time the v0.10.0 deliberation was logged.
+
+### Scope decision
+
+v0.9.0 picks up the locked-but-unshipped work carried out of the v0.8.0 cycle —
+the **D4 calibrate extension** and the **D3 follow-on (kubeconfig Prometheus
+auth)** — and adds prediction-model tuning, an opt-in observe scheduler, an ADR
+backfill, and a full security-audit hardening pass.
+
+### What shipped
+
+| Theme | Deliverable | PR | Notes |
+|---|---|---|---|
+| Calibrate (D4, per-layer half) | Per-layer `pat calibrate --layer <name>` | #37 | Fits per-layer params into `~/.pat/model.json` under `layers.<name>`, preserving the global pooled fit and other layers. `--show-global` prints both. `analyze`/`what-if`/`slo`/`optimize` take `--layer` (per-layer → global → built-in default). Model file stays backward-compatible (no `layers` key → resolves as before). |
+| Prometheus auth (D3 follow-on) | kubeconfig bearer-token auth for `pat observe` | #38 | **Subsequently reverted — see deviations.** |
+| Prediction tuning | Configurable ARIMA order bounds + `--auto-diff` | #39 | `--max-p/--max-d/--max-q` set the AIC sweep bounds (defaults 3/2/3 reproduce the prior 4×3×4 = 48-model search). `--auto-diff` replaces the `d` sweep with a dependency-free variance heuristic (raw vs. 1st- vs. 2nd-difference), capped at `--max-d`. Flags affect `--model arima` only. |
+| Observe scheduler (extends D2) | `pat observe daemon install/uninstall/status` | #40 | Writes a platform-native scheduler unit — launchd LaunchAgent on macOS, systemd `--user` `.service`+`.timer` on Linux; other platforms error. Accepts `--prometheus`, `--layer`, `--interval` (default 60 s). **Observe stays single-shot** — the scheduler invokes it; it does not become a daemon. No new dependencies. |
+| Documentation | Backfilled ADRs 0001–0005 | #41 | Records the v0.8.0 design decisions D1–D5 as ADRs under `docs/adr/`. |
+| Security | 2026-06-16 audit hardening pass | #43 | See Security below; documented in `SECURITY-AUDIT-2026-06-16.md`. |
+| CI | Bump `codecov/codecov-action` 4.6.0 → 7.0.0 | — | Routine maintenance. |
+
+### Security (audit hardening, #43)
+
+- **Prometheus bearer auth tightened to env-only.** `pat observe --prometheus`
+  no longer auto-reads kubeconfig tokens; bearer auth is env-only via
+  `PAT_PROMETHEUS_TOKEN`, token use requires an **HTTPS** Prometheus URL, and
+  URLs/query strings reject control characters.
+- **Daemon unit generation hardened.** Scheduler inputs validated, control
+  characters rejected, systemd `ExecStart=` arguments quoted and `%` specifiers
+  escaped, generated unit files written owner-only where supported.
+- **Demo isolation tightened.** `pat demo` publishes Docker ports to `127.0.0.1`
+  only; the embedded workload image runs as an unprivileged user with a
+  healthcheck.
+- **Local store permissions tightened.** `~/.pat` created owner-only;
+  observation and model store files chmod'd `0o600` where supported.
+- **Security policy refreshed.** `SECURITY.md` updated with supported versions,
+  features, known limitations, and a reference to the 2026-06-16 audit.
+
+### Deviations from plan
+
+1. **Kubeconfig Prometheus auth (D3 follow-on) was added then reverted — net
+   not delivered.** Phase 2 (#38) implemented kubeconfig bearer-token auth, but
+   the 2026-06-16 security audit (#43) reverted it: auth is now **env-only via
+   `PAT_PROMETHEUS_TOKEN`**, requires HTTPS, and rejects control characters.
+   Auto-reading tokens from kubeconfig was judged too broad an ambient-credential
+   surface for the hardened posture. Net v0.9.0 state matches the original v0.8.0
+   **D3** decision (env-token-only). The roadmap-summary one-liner deliberately
+   omits "kubeconfig auth" for this reason.
+2. **D4 only half-delivered (as planned for this slice).** Per-layer α/β fitting
+   shipped (#37); the **Docker `--benchmark` mode** (controlled replica sweeps)
+   remains deferred. D4 is now fully discharged on the fitting axis but still
+   open on the benchmark axis.
+3. **Not formally released.** Work is merged under `[Unreleased]`; cutting a
+   tagged v0.9.0 release is outstanding.
+
+### Carried forward
+
+- **Docker `--benchmark` calibrate mode** — the last unshipped piece of D4.
+- **Cut a tagged v0.9.0 release** — move `[Unreleased]` entries under a dated
+  `[0.9.0]` heading and tag.
+
+---
+
 ## v0.10.0 — Monitoring Integration: Prometheus Exporter + Grafana Dashboard
 
 **Deliberated:** 2026-06-17
@@ -500,7 +573,7 @@ pat export --port 9847 \
 | SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
 | On-demand before reserved/spot | Universally available without credentials |
 | AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
-| Grafana integration before a dedicated GUI | A dashboard delivers the visual-interface value through infra users already run, at lower cost and zero new attack surface |
+| Grafana instead of a dedicated GUI | A dashboard delivers the visual-interface value through infra users already run, at lower cost and zero new attack surface; a standalone GUI is deferred indefinitely, not merely sequenced later |
 | Read-only Prometheus exporter over a web app | Pull-based exposition is idiomatic and adds no auth/write surface, preserving the hardened posture |
 
 ## SDLC
