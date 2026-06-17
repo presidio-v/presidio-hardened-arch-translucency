@@ -63,7 +63,9 @@ annotate --grafana <url>` posts the recommendation to Grafana as an annotation
 to preview). `grafana/provisioning/` auto-loads the datasource + dashboard.
 `pat export --otlp <collector>` pushes the metrics over OTLP/HTTP+JSON to an
 OpenTelemetry Collector (vendor-neutral; no Prometheus needed; hand-rolled per
-ADR-0006, optional token from `PAT_OTLP_TOKEN`).
+ADR-0006, optional token from `PAT_OTLP_TOKEN`). `pat export --pushgateway <url>
+--job <job>` pushes once to a Prometheus Pushgateway for cron/CI/Job contexts
+(token from `PAT_PUSHGATEWAY_TOKEN`).
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the

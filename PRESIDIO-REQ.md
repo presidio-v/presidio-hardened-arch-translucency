@@ -64,7 +64,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Released in v0.13.0 |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Released in v0.13.0 |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Released |
-| v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
+| v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (unreleased) |
 | v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
 | v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
 
@@ -820,6 +820,42 @@ listener (valid OTLP/JSON received at `/v1/metrics`).
 
 **Next on the arc:** v0.14.0 — Reach ephemeral contexts (Prometheus remote-write
 + Pushgateway targets).
+
+---
+
+## v0.14.0 — Reach ephemeral contexts (delivered 2026-06-17)
+
+Fifth step of the monitoring-integration arc. Single-shot / batch jobs (cron, CI,
+Kubernetes `Job`/`CronJob`) have no scrape endpoint; this version lets them push.
+
+### What shipped
+
+- **`pat export --pushgateway <url> --job <job>`** — a new `pushgateway` module +
+  push mode on the export command. Builds the metric set (incl. `--predict` /
+  `--cost-per-replica-hour`), renders the **existing Prometheus text exposition**,
+  and PUTs it to `<url>/metrics/job/<job>{/<label>/<value>}`, then exits.
+  `--grouping key=value` (repeatable) adds grouping labels; `--otlp` and
+  `--pushgateway` are mutually exclusive.
+- Reuses the exporter's exposition output verbatim — **zero new dependencies**
+  (`urllib` only). Security mirrors `otlp.py`: optional bearer token from
+  `PAT_PUSHGATEWAY_TOKEN` only (HTTPS-when-token, control chars rejected on token,
+  URL, job, and labels; path segments percent-encoded). End-to-end validated
+  against a real local PUT listener.
+
+### Scope decision — remote-write deferred
+
+The arc sketched "remote-write **+** Pushgateway." Only **Pushgateway** shipped;
+**Prometheus remote-write is deferred**. Remote-write's wire format is protobuf
+encoded inside snappy compression — adding it means a `protobuf` dependency (and
+snappy), which is exactly the zero-client-dependency tension **ADR-0006** already
+resolved against for OTLP. Pushgateway is Prometheus's *native* answer for
+ephemeral/batch jobs and fully covers the version's "reach ephemeral contexts"
+goal, so it is sufficient on its own. Remote-write remains a future opt-in extra
+if a concrete need (e.g. Grafana Cloud / Mimir direct ingest without a gateway)
+arises — at which point it warrants its own ADR following the ADR-0006 pattern.
+
+**Next on the arc:** v0.15.0 — Close the loop (emit KEDA ScaledObject /
+Prometheus-Adapter configs, emit-only).
 
 ---
 

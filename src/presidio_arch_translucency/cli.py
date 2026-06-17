@@ -323,13 +323,29 @@ def export_cmd(
         "--service-name",
         help="OTLP resource service.name (--otlp).",
     ),
+    pushgateway: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--pushgateway",
+        help=(
+            "Push metrics once (Prometheus text) to this Pushgateway, then exit "
+            "(e.g. http://pushgateway:9091). For cron/CI/Job contexts."
+        ),
+    ),
+    job: str = typer.Option(
+        "pat", "--job", help="Pushgateway job name (--pushgateway)."
+    ),
+    grouping: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--grouping",
+        help="Pushgateway grouping label key=value (repeatable; --pushgateway).",
+    ),
     insecure_http: bool = typer.Option(
         False,
         "--insecure-http",
-        help="Allow sending the OTLP token over cleartext HTTP (localhost dev).",
+        help="Allow sending an OTLP/Pushgateway token over cleartext HTTP (dev).",
     ),
     timeout: float = typer.Option(
-        10.0, "--timeout", help="OTLP push HTTP timeout in seconds.", min=0.1
+        10.0, "--timeout", help="OTLP/Pushgateway push HTTP timeout (s).", min=0.1
     ),
 ) -> None:
     """
@@ -412,6 +428,59 @@ def export_cmd(
         return render_exposition(_build_all_metrics())
 
     predict_mode = model_name if predict else "off"
+
+    if otlp and pushgateway:
+        err_console.print(
+            "[bold red]--otlp and --pushgateway are mutually exclusive.[/]"
+        )
+        raise typer.Exit(code=2)
+
+    if pushgateway:
+        from presidio_arch_translucency.pushgateway import (  # noqa: PLC0415
+            PushgatewayError,
+            parse_grouping,
+            pushgateway_url,
+        )
+        from presidio_arch_translucency.pushgateway import (  # noqa: PLC0415
+            push as pg_push,
+        )
+        from presidio_arch_translucency.pushgateway import (
+            resolve_token as pg_resolve_token,
+        )
+
+        try:
+            grouping_map = parse_grouping(grouping or [])
+            target = pushgateway_url(pushgateway, job, grouping_map)
+        except PushgatewayError as exc:
+            err_console.print(f"[bold red]Pushgateway error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+        try:
+            pg_token = pg_resolve_token(pushgateway, insecure_http=insecure_http)
+            if insecure_http and pg_token:
+                warn_console.print(
+                    "[yellow]⚠ --insecure-http: sending the Pushgateway token over "
+                    "cleartext HTTP. Use only for localhost development.[/]"
+                )
+            pg_push(
+                pushgateway,
+                job,
+                _provider(),
+                grouping=grouping_map,
+                token=pg_token,
+                timeout=timeout,
+            )
+        except PushgatewayError as exc:
+            err_console.print(f"[bold red]Pushgateway error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        host = pushgateway.split("://", 1)[-1].split("/", 1)[0]
+        log_security_event(
+            "PUSHGATEWAY_PUSH",
+            {"pushgateway_host": host, "job": job, "predict": predict_mode},
+        )
+        console.print(f"[green]Pushed metrics[/] to {target}")
+        return
 
     if otlp:
         from presidio_arch_translucency.otlp import (  # noqa: PLC0415
