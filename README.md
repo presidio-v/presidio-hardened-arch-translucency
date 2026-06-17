@@ -518,6 +518,28 @@ pat export -r 500 -l 80 -c container --host 0.0.0.0 --listen-public
 Metric names are fixed (never user input) and label values are escaped. Use
 `--layer` to expose a per-layer calibrated fit (see `pat calibrate --layer`).
 
+### Cost metrics (`--cost-per-replica-hour`)
+
+Pass a uniform replica cost to add per-layer cost gauges
+(`pat_cost_per_request`, `pat_hourly_cost_usd`):
+
+```bash
+pat export -r 500 -l 80 -c container --cost-per-replica-hour 0.02
+```
+
+(For live cloud pricing across AWS/GCP/Azure, use `pat cost` — the exporter
+keeps a single uniform rate to stay scrape-cheap and network-free.)
+
+### Official Grafana dashboard
+
+A ready-to-import dashboard lives at [`grafana/pat-dashboard.json`](grafana/pat-dashboard.json).
+It visualises observed-vs-predicted demand (with the ARIMA CI band), recommended
+replicas per layer, response time, throughput gain, and cost-per-request.
+
+Import it via **Grafana → Dashboards → New → Import**, upload the JSON, and pick
+your Prometheus data source when prompted. Pair it with `pat export --predict`
+(and `--cost-per-replica-hour` for the cost panel) for the full picture.
+
 ---
 
 ## Live Demonstrator

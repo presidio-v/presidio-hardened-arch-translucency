@@ -101,6 +101,30 @@ def test_build_metrics_renders_end_to_end() -> None:
     assert "pat_build_info" in text
 
 
+def test_build_metrics_no_cost_by_default() -> None:
+    names = {m.name for m in build_metrics(500.0, 80.0, ReplicationLayer.CONTAINER)}
+    assert "pat_cost_per_request" not in names
+    assert "pat_hourly_cost_usd" not in names
+
+
+def test_build_metrics_cost_when_requested() -> None:
+    metrics = build_metrics(
+        500.0, 80.0, ReplicationLayer.CONTAINER, cost_per_replica_hour=0.02
+    )
+    names = {m.name for m in metrics}
+    assert {"pat_cost_per_request", "pat_hourly_cost_usd"} <= names
+    cpr = next(m for m in metrics if m.name == "pat_cost_per_request")
+    assert {s.labels["layer"] for s in cpr.samples} == {
+        "container",
+        "pod",
+        "deployment",
+        "node",
+    }
+    # Uniform cost: hourly = 0.02 × replicas for each layer.
+    hourly = next(m for m in metrics if m.name == "pat_hourly_cost_usd")
+    assert all(s.value > 0 for s in hourly.samples)
+
+
 # ── is_loopback_host ──────────────────────────────────────────────────────────
 
 
@@ -183,6 +207,25 @@ def test_export_once_prints_exposition(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert "# TYPE pat_recommended_replicas gauge" in result.output
     assert 'pat_recommended_replicas{layer="container"}' in result.output
+
+
+def test_export_once_cost_flag(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = invoke(
+        "export",
+        "--once",
+        "-r",
+        "500",
+        "-l",
+        "80",
+        "-c",
+        "container",
+        "--cost-per-replica-hour",
+        "0.02",
+    )
+    assert result.exit_code == 0, result.output
+    assert "pat_cost_per_request{" in result.output
+    assert "pat_hourly_cost_usd{" in result.output
 
 
 def test_export_rejects_non_loopback_without_flag(tmp_path, monkeypatch) -> None:

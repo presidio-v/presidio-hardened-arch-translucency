@@ -60,7 +60,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
 | v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
-| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | In progress (Phase 1 shipped) |
+| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Complete (unreleased) |
 | v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
@@ -676,13 +676,23 @@ observe→predict loop:
   no model fit) is split from the store-reading `build_prediction_metrics`.
 - SMA is the cheap default; ARIMA refits each scrape (warned at startup).
 
-**Remaining for v0.10.0:**
+### Delivery — Phase 3 + cost (2026-06-17): v0.10.0 scope complete
 
-- **Cost metrics** — `pat_cost_per_request{layer,cloud,region}` (the arc's cost
-  metric), driven by a cost flag / cloud pricing. Deferred from Phase 2 to keep
-  it focused; fold into Phase 3 or a Phase 2b.
-- **Phase 3 — the official Grafana dashboard JSON** built on these metrics,
-  committed to the repo, plus README wiring.
+- **Cost metrics.** `pat export --cost-per-replica-hour` adds per-layer
+  `pat_cost_per_request` and `pat_hourly_cost_usd` gauges from a uniform replica
+  cost. Live cloud pricing (AWS/GCP/Azure) stays in `pat cost` — the exporter
+  keeps one uniform rate to remain scrape-cheap and network-free. (The arc's
+  `cloud`/`region` labels are therefore deferred to a future cloud-priced
+  exporter mode if demanded; not blocking v0.10.0.)
+- **Official Grafana dashboard.** `grafana/pat-dashboard.json` — importable
+  (datasource template var), visualising observed-vs-predicted demand with the
+  ARIMA CI band, recommended replicas per layer, response time, throughput gain,
+  and cost-per-request. A test (`tests/test_grafana.py`) asserts every metric the
+  dashboard queries is one the exporter emits, so the two cannot drift.
+
+With Expose (Phase 1), predict (Phase 2), cost, and the dashboard shipped, the
+**v0.10.0 "Expose" milestone of the monitoring-integration arc is complete.**
+Next on the arc: v0.11.0 — Alert (`pat rules` recording + alerting rules).
 
 ---
 
