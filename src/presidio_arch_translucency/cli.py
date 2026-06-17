@@ -256,19 +256,60 @@ def export_cmd(
         "--once",
         help="Print the /metrics exposition once to stdout and exit (no server).",
     ),
+    predict: bool = typer.Option(
+        False,
+        "--predict",
+        help=(
+            "Also expose forecast metrics derived from the observation store "
+            "(`pat observe`): predicted demand and the replicas to serve it."
+        ),
+    ),
+    model: str = typer.Option(
+        "sma",
+        "--model",
+        help="Prediction model when --predict is set: 'sma' (cheap) or 'arima'.",
+    ),
+    window: int = typer.Option(
+        10,
+        "--window",
+        help="Observations to smooth for the SMA prediction (--predict).",
+        min=1,
+    ),
+    horizon_minutes: float = typer.Option(
+        10.0,
+        "--horizon-minutes",
+        help="Forecast horizon in minutes (--predict).",
+        min=0.0,
+    ),
+    predict_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--predict-layer",
+        help=(
+            "Observation layer to forecast from (--predict). "
+            "Defaults to --current-layer."
+        ),
+    ),
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--db",
+        help="Observation store path (--predict). Defaults to ~/.pat/observations.db.",
+    ),
 ) -> None:
     """
     Serve architectural-translucency metrics on a read-only Prometheus endpoint.
 
     Exposes the per-layer recommendation (replicas, throughput gain, response
     time) for the given workload as gauges on GET /metrics, ready to scrape into
-    Prometheus/Grafana. The server is read-only and binds 127.0.0.1 by default;
-    pass --listen-public to bind a routable interface. Use --once to print the
-    exposition and exit instead of serving.
+    Prometheus/Grafana. With --predict it also exposes forecast metrics from the
+    observation store (predicted demand + recommended replicas). The server is
+    read-only and binds 127.0.0.1 by default; pass --listen-public to bind a
+    routable interface. Use --once to print the exposition and exit instead of
+    serving.
     """
     from presidio_arch_translucency.export import (  # noqa: PLC0415
         METRICS_PATH,
         build_metrics,
+        build_prediction_metrics,
         build_server,
         is_loopback_host,
         render_exposition,
@@ -285,6 +326,13 @@ def export_cmd(
 
     current = ReplicationLayer(layer_str)
 
+    model_name = model.strip().lower()
+    if predict and model_name not in ("sma", "arima"):
+        err_console.print(
+            f"[bold red]Unknown --model {model!r}.[/] Use 'sma' or 'arima'."
+        )
+        raise typer.Exit(code=2)
+
     # --- Exposure guard: loopback unless explicitly opted out ---
     if not is_loopback_host(host) and not listen_public:
         err_console.print(
@@ -296,20 +344,52 @@ def export_cmd(
 
     _warn_if_uncalibrated()
 
+    obs_layer = (predict_layer or layer_str).strip()
+
+    def _prediction_metrics() -> list:
+        from presidio_arch_translucency.observe import (  # noqa: PLC0415
+            latest_observations,
+        )
+        from presidio_arch_translucency.optimize import (  # noqa: PLC0415
+            ARIMA_DEFAULT_HISTORY,
+        )
+
+        pull = ARIMA_DEFAULT_HISTORY if model_name == "arima" else window
+        observations = latest_observations(pull, db_path=db, layer=obs_layer)
+        return build_prediction_metrics(
+            observations, model=model_name, horizon_minutes=horizon_minutes
+        )
+
     def _provider() -> str:
-        return render_exposition(build_metrics(rps, lat, current, layer=model_layer))
+        metrics = build_metrics(rps, lat, current, layer=model_layer)
+        if predict:
+            metrics = metrics + _prediction_metrics()
+        return render_exposition(metrics)
+
+    predict_mode = model_name if predict else "off"
 
     if once:
-        log_security_event("EXPORT_RENDER", {"layer": layer_str, "mode": "once"})
+        log_security_event(
+            "EXPORT_RENDER",
+            {"layer": layer_str, "mode": "once", "predict": predict_mode},
+        )
         typer.echo(_provider(), nl=False)
         return
 
-    log_security_event("EXPORT_SERVE", {"host": host, "port": port, "layer": layer_str})
+    log_security_event(
+        "EXPORT_SERVE",
+        {"host": host, "port": port, "layer": layer_str, "predict": predict_mode},
+    )
     server = build_server(host, port, _provider)
     if not is_loopback_host(host):
         warn_console.print(
             f"[yellow]⚠ Serving metrics on routable {host}:{port} — read-only, "
             "no secrets exposed, but reachable off-host.[/]"
+        )
+    if predict and model_name == "arima":
+        warn_console.print(
+            "[yellow]⚠ --model arima refits on every scrape; for frequent "
+            "scrape intervals prefer --model sma.[/]"
         )
     console.print(
         f"[green]pat exporter[/] serving read-only metrics on "

@@ -12,9 +12,11 @@ from presidio_arch_translucency.export import (
     Metric,
     Sample,
     build_metrics,
+    build_prediction_metrics,
     build_server,
     handle_request,
     is_loopback_host,
+    prediction_metrics_from_result,
     render_exposition,
 )
 from presidio_arch_translucency.model import ReplicationLayer
@@ -205,6 +207,178 @@ def test_export_invalid_layer_exits_2(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     result = invoke("export", "--once", "-r", "500", "-l", "80", "-c", "bogus")
     assert result.exit_code == 2
+
+
+# ── prediction metrics (Phase 2) ──────────────────────────────────────────────
+
+
+def _result(**overrides):
+    """Build an optimize.OptimizeResult with sensible defaults for tests."""
+    from datetime import datetime, timezone
+
+    from presidio_arch_translucency.optimize import OptimizeResult
+
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    base = {
+        "layer": "container",
+        "samples": 12,
+        "window_minutes": 55.0,
+        "sma_rps": 480.0,
+        "sma_latency_ms": 78.0,
+        "trend_pct": 12.0,
+        "slope_rps_per_min": 4.0,
+        "horizon_minutes": 10.0,
+        "predicted_rps": 540.0,
+        "current_replicas": 4,
+        "recommended_replicas": 6,
+        "first_ts": now,
+        "last_ts": now,
+    }
+    base.update(overrides)
+    return OptimizeResult(**base)
+
+
+def test_prediction_metrics_sma_result() -> None:
+    metrics = prediction_metrics_from_result(_result(model="sma"))
+    names = {m.name for m in metrics}
+    assert {
+        "pat_optimize_samples",
+        "pat_observed_rps",
+        "pat_predicted_rps",
+        "pat_predicted_recommended_replicas",
+        "pat_optimize_trend_ratio",
+    } <= names
+    # No CI metrics for a plain SMA result.
+    assert "pat_predicted_rps_lower" not in names
+    predicted = next(m for m in metrics if m.name == "pat_predicted_rps")
+    assert predicted.samples[0].labels == {"model": "sma"}
+    assert predicted.samples[0].value == 540.0
+
+
+def test_prediction_metrics_arima_result_has_ci() -> None:
+    metrics = prediction_metrics_from_result(
+        _result(
+            model="arima",
+            predicted_rps_lower=500.0,
+            predicted_rps_upper=600.0,
+            recommended_replicas_lower=5,
+            recommended_replicas_upper=8,
+        )
+    )
+    names = {m.name for m in metrics}
+    assert {
+        "pat_predicted_rps_lower",
+        "pat_predicted_rps_upper",
+        "pat_predicted_recommended_replicas_lower",
+        "pat_predicted_recommended_replicas_upper",
+    } <= names
+
+
+def _obs(ts_minute: int, rps: float):
+    from datetime import datetime, timezone
+
+    from presidio_arch_translucency.observe import Observation
+
+    return Observation(
+        timestamp=datetime(2026, 6, 17, 12, ts_minute, tzinfo=timezone.utc),
+        rps=rps,
+        avg_latency_ms=80.0,
+        p99_latency_ms=160.0,
+        throughput=rps,
+        layer="container",
+        replicas=4,
+    )
+
+
+def test_build_prediction_metrics_empty_emits_zero_samples() -> None:
+    metrics = build_prediction_metrics([])
+    assert len(metrics) == 1
+    assert metrics[0].name == "pat_optimize_samples"
+    assert metrics[0].samples[0].value == 0.0
+
+
+def test_build_prediction_metrics_sma_over_observations() -> None:
+    obs = [_obs(m, 400.0 + 10.0 * m) for m in range(0, 20, 2)]
+    metrics = build_prediction_metrics(obs, model="sma", horizon_minutes=10.0)
+    names = {m.name for m in metrics}
+    assert "pat_predicted_rps" in names
+    samples = next(m for m in metrics if m.name == "pat_optimize_samples")
+    assert samples.samples[0].value == float(len(obs))
+    predicted = next(m for m in metrics if m.name == "pat_predicted_rps")
+    assert predicted.samples[0].labels == {"model": "sma"}
+
+
+# ── pat export --predict CLI ──────────────────────────────────────────────────
+
+
+def test_export_once_predict_with_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from presidio_arch_translucency import observe
+
+    db = tmp_path / "obs.db"
+    for m in range(0, 20, 2):
+        observe.record(
+            rps=400.0 + 10.0 * m,
+            avg_latency_ms=80.0,
+            p99_latency_ms=160.0,
+            throughput=400.0 + 10.0 * m,
+            layer="container",
+            replicas=4,
+            db_path=db,
+        )
+    result = invoke(
+        "export",
+        "--once",
+        "--predict",
+        "--db",
+        str(db),
+        "-r",
+        "500",
+        "-l",
+        "80",
+        "-c",
+        "container",
+    )
+    assert result.exit_code == 0, result.output
+    assert 'pat_predicted_rps{model="sma"}' in result.output
+    assert "pat_optimize_samples 10" in result.output
+
+
+def test_export_predict_empty_store_zero_samples(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = invoke(
+        "export",
+        "--once",
+        "--predict",
+        "-r",
+        "500",
+        "-l",
+        "80",
+        "-c",
+        "container",
+    )
+    assert result.exit_code == 0, result.output
+    assert "pat_optimize_samples 0" in result.output
+    assert "pat_predicted_rps{" not in result.output
+
+
+def test_export_predict_unknown_model_exits_2(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = invoke(
+        "export",
+        "--once",
+        "--predict",
+        "--model",
+        "bogus",
+        "-r",
+        "500",
+        "-l",
+        "80",
+        "-c",
+        "container",
+    )
+    assert result.exit_code == 2
+    assert "model" in result.output.lower()
 
 
 class _FakeServer:

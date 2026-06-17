@@ -50,6 +50,8 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
 print the exposition and exit). It exposes the analytical per-layer
 recommendation as gauges — `pat` never mutates infrastructure, it only exposes.
+Add `--predict` to also expose forecast metrics from the observation store
+(`pat_predicted_rps`, recommended replicas, trend), `--model arima` for CI bounds.
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the
