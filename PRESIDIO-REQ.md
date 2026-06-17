@@ -59,6 +59,14 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.6.0 | Cloud billing — reserved/spot + GCP + Azure | Released |
 | v0.7.0 | Autoresearch — `pat calibrate` + cost/α-β fixes | Released |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch | Released |
+| v0.9.0 | Per-layer + benchmark calibrate, ARIMA order bounds, observe daemon, security audit | Merged (unreleased) |
+| v0.10.0 | Monitoring arc · Expose — Prometheus exporter + official Grafana dashboard | Deliberated |
+| v0.11.0 | Monitoring arc · Alert — `pat rules` recording + alerting rules | Planned |
+| v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Planned |
+| v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Planned |
+| v0.14.0 | Monitoring arc · Reach ephemeral — remote-write + Pushgateway targets | Planned |
+| v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
+| v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
 
 ---
 
@@ -402,6 +410,242 @@ so PRs could merge.)
 
 ---
 
+## v0.9.0 — Calibrate Depth, Prediction Tuning, Observe Daemon + Security Audit
+
+**Deliberated:** 2026-03-27 (carried from v0.8.0) · **Backfilled write-up:** 2026-06-17
+
+### Status
+
+Merged to the default branch but **not yet cut as a formal release** — the work
+sits under `[Unreleased]` in `CHANGELOG.md` with no `Release v0.9.0` commit or
+tag. This section is a backfilled delivery record reconstructed from the merged
+PRs (#37–#43) and the changelog, since no fuller v0.9.0 write-up existed at the
+time the v0.10.0 deliberation was logged.
+
+### Scope decision
+
+v0.9.0 picks up the locked-but-unshipped work carried out of the v0.8.0 cycle —
+the **D4 calibrate extension** and the **D3 follow-on (kubeconfig Prometheus
+auth)** — and adds prediction-model tuning, an opt-in observe scheduler, an ADR
+backfill, and a full security-audit hardening pass.
+
+### What shipped
+
+| Theme | Deliverable | PR | Notes |
+|---|---|---|---|
+| Calibrate (D4, per-layer half) | Per-layer `pat calibrate --layer <name>` | #37 | Fits per-layer params into `~/.pat/model.json` under `layers.<name>`, preserving the global pooled fit and other layers. `--show-global` prints both. `analyze`/`what-if`/`slo`/`optimize` take `--layer` (per-layer → global → built-in default). Model file stays backward-compatible (no `layers` key → resolves as before). |
+| Prometheus auth (D3 follow-on) | kubeconfig bearer-token auth for `pat observe` | #38 | **Subsequently reverted — see deviations.** |
+| Prediction tuning | Configurable ARIMA order bounds + `--auto-diff` | #39 | `--max-p/--max-d/--max-q` set the AIC sweep bounds (defaults 3/2/3 reproduce the prior 4×3×4 = 48-model search). `--auto-diff` replaces the `d` sweep with a dependency-free variance heuristic (raw vs. 1st- vs. 2nd-difference), capped at `--max-d`. Flags affect `--model arima` only. |
+| Observe scheduler (extends D2) | `pat observe daemon install/uninstall/status` | #40 | Writes a platform-native scheduler unit — launchd LaunchAgent on macOS, systemd `--user` `.service`+`.timer` on Linux; other platforms error. Accepts `--prometheus`, `--layer`, `--interval` (default 60 s). **Observe stays single-shot** — the scheduler invokes it; it does not become a daemon. No new dependencies. |
+| Documentation | Backfilled ADRs 0001–0005 | #41 | Records the v0.8.0 design decisions D1–D5 as ADRs under `docs/adr/`. |
+| Security | 2026-06-16 audit hardening pass | #43 | See Security below; documented in `SECURITY-AUDIT-2026-06-16.md`. |
+| CI | Bump `codecov/codecov-action` 4.6.0 → 7.0.0 | — | Routine maintenance. |
+
+### Security (audit hardening, #43)
+
+- **Prometheus bearer auth tightened to env-only.** `pat observe --prometheus`
+  no longer auto-reads kubeconfig tokens; bearer auth is env-only via
+  `PAT_PROMETHEUS_TOKEN`, token use requires an **HTTPS** Prometheus URL, and
+  URLs/query strings reject control characters.
+- **Daemon unit generation hardened.** Scheduler inputs validated, control
+  characters rejected, systemd `ExecStart=` arguments quoted and `%` specifiers
+  escaped, generated unit files written owner-only where supported.
+- **Demo isolation tightened.** `pat demo` publishes Docker ports to `127.0.0.1`
+  only; the embedded workload image runs as an unprivileged user with a
+  healthcheck.
+- **Local store permissions tightened.** `~/.pat` created owner-only;
+  observation and model store files chmod'd `0o600` where supported.
+- **Security policy refreshed.** `SECURITY.md` updated with supported versions,
+  features, known limitations, and a reference to the 2026-06-16 audit.
+
+### Deviations from plan
+
+1. **Kubeconfig Prometheus auth (D3 follow-on) was added then reverted — net
+   not delivered.** Phase 2 (#38) implemented kubeconfig bearer-token auth, but
+   the 2026-06-16 security audit (#43) reverted it: auth is now **env-only via
+   `PAT_PROMETHEUS_TOKEN`**, requires HTTPS, and rejects control characters.
+   Auto-reading tokens from kubeconfig was judged too broad an ambient-credential
+   surface for the hardened posture. Net v0.9.0 state matches the original v0.8.0
+   **D3** decision (env-token-only). The roadmap-summary one-liner deliberately
+   omits "kubeconfig auth" for this reason.
+2. **D4 fully delivered.** Per-layer α/β fitting shipped first (#37); the
+   **Docker `--benchmark` mode** (controlled replica sweeps that measure the
+   operating points and fit from them) landed subsequently in a new `benchmark`
+   module that reuses the `demo` Docker harness and feeds the existing analytical
+   fitter. Both axes of D4 — per-layer fitting and Docker benchmark — are now
+   discharged. (`calibrate` stays Docker-free; all Docker orchestration lives in
+   `benchmark`.)
+3. **Not formally released.** Work is merged under `[Unreleased]`; cutting a
+   tagged v0.9.0 release is outstanding.
+
+### Carried forward
+
+- **Cut a tagged v0.9.0 release** — move `[Unreleased]` entries under a dated
+  `[0.9.0]` heading and tag. (Now the only open item for this cycle: with the
+  Docker `--benchmark` calibrate mode delivered, every locked decision from the
+  v0.8.0/v0.9.0 cycles is discharged.)
+
+---
+
+## Monitoring Integration Arc (v0.10.0 → v0.16.0) — "The Translucency Control Plane"
+
+**Deliberated:** 2026-06-17
+
+The monitoring-integration direction chosen for v0.10.0 is the first step of a
+deliberate seven-version arc. `pat` graduates from a CLI advisor into a
+monitoring-native control plane: it publishes its model as metrics, alerts on
+translucency mismatches, visualizes them, speaks every monitoring dialect, and
+ultimately feeds autoscaling — without ever mutating infrastructure directly.
+
+This arc is **directional, not a rigid commitment.** Each version still gets its
+own dated deliberation entry (and may re-scope) when it is built. Recorded here
+so the through-line is legible and individual versions don't drift.
+
+### Governing invariant (locked 2026-06-17)
+
+**`pat` emits, it never applies.** Across the entire arc, `pat` only *exposes*
+metrics and *emits* declarative artifacts (rules, dashboards, scaler configs). It
+**never holds write credentials to the cluster and never applies changes
+itself** — humans / GitOps / operators apply what it emits. This extends the
+existing v0.8 HPA-emitter pattern (`pat optimize --emit-hpa-patch | kubectl
+apply`) and is the security spine that keeps "monitoring integration" from
+becoming "a daemon with cluster admin." Any future proposal to let `pat` apply
+directly must reopen this decision explicitly.
+
+### The seven steps
+
+| Ver | Title | Deliverable | Security step |
+|---|---|---|---|
+| v0.10.0 | **Expose** | Read-only Prometheus exporter (`pat export` → `/metrics`) + official Grafana dashboard JSON | localhost-default bind, read-only, no new surface |
+| v0.11.0 | **Alert** | `pat rules --emit prometheus` → recording + alerting rules from the model (predicted demand > capacity within horizon; cost/req > budget; layer translucency mismatch); Alertmanager routing docs | Declarative YAML, still read-only |
+| v0.12.0 | **Visualize & Annotate** | Grafana provisioning bundle (datasource + dashboard provisioning), per-concern dashboard library (forecast / cost / per-layer), and `pat annotate --grafana <url>` pushing annotations when a recommendation fires | *First outbound write* — env token only, HTTPS-only, explicit opt-in |
+| v0.13.0 | **Speak OTLP** | `pat export --otlp <endpoint>` — vendor-neutral exposition so Datadog / New Relic / Honeycomb / Grafana Cloud ingest `pat` data without Prometheus | OTLP auth headers from env only |
+| v0.14.0 | **Reach ephemeral contexts** | Prometheus remote-write + Pushgateway targets so single-shot `observe`/`optimize` runs in cron / CI / CronJob can land metrics where no scrape endpoint exists | Complements D2 single-shot model; env-only auth |
+| v0.15.0 | **Close the loop (emit, don't apply)** | `pat optimize --emit-keda-scaledobject` / `--emit-prometheus-adapter` so HPA scales on `pat`'s predicted-demand metric (exposed since v0.10) instead of lagging CPU | Emit-only, sanitized YAML; GitOps applies |
+| v0.16.0 | **Package & operate** | `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor for Prometheus Operator; rules + dashboards as ConfigMaps via Grafana sidecar); optional small Grafana panel plugin rendering the layer recommendation natively | Least-privilege RBAC + NetworkPolicy; exporter read-only |
+
+### Three movements
+
+1. **Expose & Alert** (v0.10–v0.11) — publish the model, make it actionable in
+   the existing alerting pipeline. Purely declarative; no outbound writes yet.
+2. **Visualize & Generalize** (v0.12–v0.14) — richer Grafana surface, the first
+   (gated) outbound write, then vendor-neutral and ephemeral-context reach.
+3. **Control & Package** (v0.15–v0.16) — feed autoscaling from the predicted
+   metric, then ship the whole thing as a cluster-native bundle.
+
+### Ordering rationale
+
+- **Metrics before everything** (v0.10) — every later step consumes the exposed
+  model.
+- **Alerts before dashboards-at-scale** (v0.11 before v0.12) — alerting is higher
+  operational value and stays declarative, so the first write-path (annotations)
+  is deferred until v0.12 where there is a concrete payoff.
+- **OTLP before remote-write** (v0.13 before v0.14) — vendor-neutrality is more
+  broadly useful than the ephemeral-context niche; remote-write/pushgateway is a
+  targeted complement to the single-shot model.
+- **Control last** (v0.15) — closing the loop only makes sense once the
+  predicted-demand metric has existed long enough to trust; packaging (v0.16)
+  then caps the arc with cluster-native deployment.
+
+### Decisions (locked 2026-06-17)
+
+- **A1 — Emit-only invariant.** As above; the security spine of the arc.
+- **A2 — Seven-version arc.** Full arc retained rather than the 6-version
+  compression (folding remote-write into OTLP). Ephemeral-context support earns
+  its own version (v0.14) because the single-shot model (D2) is a first-class
+  constraint worth a dedicated, well-tested target.
+- **A3 — Closed-loop autoscaling is in scope (v0.15)** — but strictly as
+  *emit-only* KEDA / Prometheus-Adapter config, consistent with A1. `pat` never
+  calls the Kubernetes API to scale.
+
+---
+
+## v0.10.0 — Monitoring Integration: Prometheus Exporter + Grafana Dashboard
+
+**Deliberated:** 2026-06-17
+
+### Roadmap fork considered
+
+Two future directions were weighed: **(a) adding a GUI** vs. **(b) integrating with
+standard monitoring tools (Grafana et al.)**. Direction (b) was chosen.
+
+### Rationale
+
+1. **Completes a half-built loop.** `pat` already *ingests* from Prometheus
+   (`pat observe --prometheus`) and *emits* Kubernetes-native artifacts
+   (`pat optimize --emit-hpa-patch`). Exposing its recommendations and
+   predictions *back* as scrapeable metrics closes the observe → predict →
+   visualize circuit using infrastructure teams already run.
+2. **It is the thesis.** Architectural translucency is "monitor and control
+   non-functional properties architecture-wide." Grafana is the surface where
+   that monitoring is consumed — this is the concept's natural home, not a
+   bolt-on.
+3. **Preserves the hardened posture.** A read-only Prometheus exporter adds no
+   auth system, no write paths, and no new injection surface. A standalone GUI
+   (web or desktop) would mean auth, sessions, CSRF/XSS surface, frontend CVE
+   exposure, and cross-OS packaging — the opposite of the Presidio security
+   mandate every prior version has guarded.
+4. **Near-false dichotomy.** A Grafana dashboard *is* the visual interface a
+   "GUI" would provide, but delivered through infra users already operate and
+   secure. It captures the bulk of the GUI value at a fraction of the cost and
+   zero new attack surface.
+5. **Small, shippable increment.** Reuses existing `model`/`cost`/`optimize`
+   code; the new code is metric exposition + a dashboard. Fits a single release.
+
+A dedicated GUI is **deferred** — revisit only if real users hit a wall the
+dashboard cannot cover, and even then prefer a thin read-only web view over a
+stateful app.
+
+### Scope decision
+
+Exposition model: **Prometheus exporter** (pull-based `/metrics` endpoint),
+chosen over a Grafana JSON datasource or a dashboard-only deliverable. Pull-based
+exposition is idiomatic for the cloud-native stack, stateless, and adds no write
+paths. An official Grafana dashboard JSON ships alongside it.
+
+### New CLI surface
+
+```bash
+# Expose pat's recommendations/predictions as Prometheus metrics
+pat export --port 9847 \
+    --requests-per-second 500 --avg-latency-ms 80 --current-layer container
+```
+
+### Proposed metrics (illustrative — finalize at build time)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `pat_recommended_replicas` | gauge | `layer` |
+| `pat_predicted_rps` | gauge | `model` (sma/arima) |
+| `pat_predicted_rps_upper` / `_lower` | gauge | `model` (CI bands) |
+| `pat_throughput_gain_ratio` | gauge | `layer` |
+| `pat_cost_per_request` | gauge | `layer`, `cloud`, `region` |
+| `pat_response_time_ms` | gauge | `layer` |
+
+### Deliverables
+
+- `pat export` command exposing the metrics above over HTTP `/metrics`.
+- Official Grafana dashboard JSON (committed to the repo, e.g. `grafana/`)
+  built on those metrics.
+- README section: wiring `pat export` into a Prometheus scrape config and
+  importing the dashboard.
+
+### Security
+
+- **Read-only.** The exporter serves metrics only — no mutation endpoints.
+- Bind to `127.0.0.1` by default; explicit opt-in flag required to bind a
+  routable interface.
+- No secrets, no raw user input, and no auth tokens in exposed metric labels or
+  values (output sanitization rules from prior versions carry over).
+- No new authenticated surface introduced in v0.10.0.
+
+### Deferred
+
+- Dedicated standalone GUI (web/desktop) — revisit only on demonstrated need.
+- Grafana JSON datasource and push/remote-write exposition models.
+
+---
+
 ## Cross-cutting decisions
 
 | Decision | Rationale |
@@ -412,6 +656,8 @@ so PRs could merge.)
 | SMA before ARIMA | Ship fast, validate prediction usefulness before adding complexity |
 | On-demand before reserved/spot | Universally available without credentials |
 | AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
+| Grafana instead of a dedicated GUI | A dashboard delivers the visual-interface value through infra users already run, at lower cost and zero new attack surface; a standalone GUI is deferred indefinitely, not merely sequenced later |
+| Read-only Prometheus exporter over a web app | Pull-based exposition is idiomatic and adds no auth/write surface, preserving the hardened posture |
 
 ## SDLC
 

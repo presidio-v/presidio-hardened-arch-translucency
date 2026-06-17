@@ -125,6 +125,14 @@ pat calibrate --observation 100:50:2 --observation 300:80:5
 
 Each `--observation` is `rps:latency_ms:replicas`; supply **two or more**. This writes `~/.pat/model.json` (or use a project-local `.pat-model.json`), after which `pat analyze`/`cost`/`slo`/`what-if` use the fitted parameters and stop warning. No Docker required. Do **not** fabricate observations — if the user has no measurements, stay on the default model and note that the recommendation is un-calibrated.
 
+If the user has **no** measurements but **does** have a Docker daemon, offer benchmark mode — it measures the points for them by sweeping replica counts on the same workload `pat demo` uses, then fits:
+
+```bash
+pat calibrate --benchmark --layer container --replicas 1 --replicas 2 --replicas 4
+```
+
+At least two distinct replica counts are required; `--benchmark` is mutually exclusive with `--observation`. Tag the fit with `--layer` exactly as in analytical mode.
+
 ### Pattern 6 — Proactive scaling from observed history (v0.8.0)
 
 When the user has a populated observation store (`~/.pat/observations.db`) and wants a *forward-looking* replica count rather than a point-in-time analysis, use the observe→optimize loop.
