@@ -22,6 +22,7 @@ the dependency surface minimal -- the same approach ``hpa_patch`` takes for YAML
 from __future__ import annotations
 
 import ipaddress
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -68,12 +69,10 @@ def _escape_label_value(value: str) -> str:
 
 def _format_value(value: float) -> str:
     """Render a float in Prometheus-acceptable form (ints without trailing .0)."""
-    if value != value:  # NaN
+    if math.isnan(value):
         return "NaN"
-    if value == float("inf"):
-        return "+Inf"
-    if value == float("-inf"):
-        return "-Inf"
+    if math.isinf(value):
+        return "+Inf" if value > 0 else "-Inf"
     if float(value).is_integer():
         return str(int(value))
     return repr(float(value))

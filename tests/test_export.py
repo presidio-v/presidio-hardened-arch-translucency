@@ -7,17 +7,19 @@ import urllib.request
 import pytest
 from typer.testing import CliRunner
 
-import presidio_arch_translucency.export as export
 from presidio_arch_translucency.cli import app
 from presidio_arch_translucency.export import (
     Metric,
     Sample,
     build_metrics,
+    build_server,
     handle_request,
     is_loopback_host,
     render_exposition,
 )
 from presidio_arch_translucency.model import ReplicationLayer
+
+_BUILD_SERVER = "presidio_arch_translucency.export.build_server"
 
 runner = CliRunner()
 
@@ -142,7 +144,7 @@ def test_handle_request_health_and_root_and_404() -> None:
 
 
 def test_build_server_serves_and_is_read_only() -> None:
-    server = export.build_server("127.0.0.1", 0, lambda: "pat_marker 1\n")
+    server = build_server("127.0.0.1", 0, lambda: "pat_marker 1\n")
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -221,7 +223,7 @@ class _FakeServer:
 def test_export_serve_mode_runs_and_closes(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     fake = _FakeServer()
-    monkeypatch.setattr(export, "build_server", lambda *a, **k: fake)
+    monkeypatch.setattr(_BUILD_SERVER, lambda *a, **k: fake)
     result = invoke("export", "-r", "500", "-l", "80", "-c", "container")
     assert result.exit_code == 0, result.output
     assert fake.served and fake.closed
@@ -231,7 +233,7 @@ def test_export_serve_mode_runs_and_closes(tmp_path, monkeypatch) -> None:
 def test_export_serve_public_warns(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     fake = _FakeServer()
-    monkeypatch.setattr(export, "build_server", lambda *a, **k: fake)
+    monkeypatch.setattr(_BUILD_SERVER, lambda *a, **k: fake)
     result = invoke(
         "export",
         "-r",
