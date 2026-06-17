@@ -12,6 +12,19 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- **`pat scaler` — translucency-aware autoscaling (v0.15.0, "Close the loop").**
+  Emits the declarative glue so an autoscaler scales a Deployment to track pat's
+  forecast metric `pat_predicted_recommended_replicas` (from `pat export
+  --predict`, scraped into Prometheus). `--format keda` (default) emits a KEDA
+  `ScaledObject` with a Prometheus trigger (`threshold: "1"` → replicas == the
+  prediction); `--format prometheus-adapter` emits an HPA v2 on an External
+  metric (`target.type: Value`, `value: "1"`) plus a commented Prometheus-Adapter
+  `externalRules` snippet. `--layer` filters the default query, `--query`
+  overrides it, `--min-replicas`/`--max-replicas` bound the range,
+  `--namespace`/`--name` set the object. **Emit-only** — prints YAML to stdout;
+  `pat` never applies or scales anything (arc invariant A1). Names are RFC 1123
+  validated, the URL/query reject control characters and are quoted; hand-rolled
+  YAML, no new dependencies. The conceptual payoff of the monitoring arc.
 - **`pat export --pushgateway` — Prometheus Pushgateway target (v0.14.0, "Reach
   ephemeral contexts").** Pushes the exporter's metric set once to a Prometheus
   Pushgateway (Prometheus text format) and exits — for cron / CI / Kubernetes

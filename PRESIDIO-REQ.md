@@ -65,7 +65,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.12.0 | Monitoring arc · Visualize & Annotate — Grafana provisioning + `pat annotate` | Released in v0.13.0 |
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Released |
 | v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (unreleased) |
-| v0.15.0 | Monitoring arc · Close the loop — emit KEDA / Prometheus Adapter configs | Planned |
+| v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (unreleased) |
 | v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
 
 ---
@@ -856,6 +856,53 @@ arises — at which point it warrants its own ADR following the ADR-0006 pattern
 
 **Next on the arc:** v0.15.0 — Close the loop (emit KEDA ScaledObject /
 Prometheus-Adapter configs, emit-only).
+
+---
+
+## v0.15.0 — Close the loop (delivered 2026-06-17)
+
+Sixth step of the monitoring-integration arc, and its **conceptual payoff**:
+translucency-aware autoscaling. The exporter already publishes
+`pat_predicted_recommended_replicas` (v0.10.0 `--predict`); this version emits the
+declarative glue so an autoscaler scales a Deployment to *track that forecast* —
+the model's prediction becomes the scaling signal, while `pat` still never
+touches infrastructure.
+
+### What shipped
+
+- **`pat scaler`** — a new `scaler` module + CLI command, emit-only (YAML to
+  stdout).
+- **`--format keda`** (default) — a KEDA `ScaledObject` with a Prometheus trigger.
+  `threshold: "1"` makes KEDA's `desiredReplicas = ceil(query / 1)`, so the
+  Deployment's replica count equals pat's predicted recommendation.
+- **`--format prometheus-adapter`** — an HPA v2 on an External metric
+  (`target.type: Value`, `value: "1"` → the same identity) plus a commented
+  Prometheus-Adapter `externalRules` snippet registering the metric.
+- `--layer` filters the default query (`max(pat_predicted_recommended_replicas
+  {layer=…})`), `--query` overrides it, `--min/-max-replicas` bound the range,
+  `--namespace`/`--name` set the object.
+
+### Security & posture
+
+Names RFC 1123-validated; Prometheus URL + PromQL query reject control characters
+and are double-quoted/escaped in the YAML; **emit-only** (arc invariant A1) — no
+apply, no cluster credentials. Hand-rolled YAML, no new dependencies (like
+`rules` / `hpa_patch`). Both formats validated by parsing the emitted YAML (KEDA
+threshold and the escaped query round-trip exactly; HPA External `Value` target).
+
+### Scope note — Prometheus-Adapter ConfigMap
+
+The arc said "KEDA ScaledObject / Prometheus-Adapter configs." KEDA ships as a
+fully appliable `ScaledObject`. For the adapter path, the **HPA** is fully
+appliable, but the literal adapter `externalRules` are emitted as a *commented
+example* rather than a standalone ConfigMap: Prometheus Adapter reads one
+cluster-wide config, so a per-app rule must be merged into it, not applied. This
+is honest about how the adapter works; a generated, mergeable rules ConfigMap
+could be a follow-on if demanded.
+
+**Next on the arc:** v0.16.0 — Package & operate (Helm chart + optional Grafana
+panel plugin). Also outstanding from ADR-0007: a hand-rolled remote-write target
+(its own slot).
 
 ---
 

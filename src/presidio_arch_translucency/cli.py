@@ -781,6 +781,102 @@ def annotate_cmd(
     )
 
 
+@app.command("scaler")
+def scaler_cmd(
+    target: str = typer.Option(
+        ..., "--target", "-t", help="Deployment to scale (RFC 1123 name)."
+    ),
+    prometheus_url: str = typer.Option(
+        ...,
+        "--prometheus-url",
+        help="Prometheus URL the autoscaler queries (e.g. http://prom:9090).",
+    ),
+    fmt: str = typer.Option(
+        "keda",
+        "--format",
+        help="Emit format: 'keda' (ScaledObject) or 'prometheus-adapter' (HPA).",
+    ),
+    namespace: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--namespace", "-n", help="Target namespace (RFC 1123 name)."
+    ),
+    name: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--name", help="Name of the emitted object (default <target>-pat)."
+    ),
+    layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-c",
+        help=(
+            "Filter the default query to one layer "
+            f"({', '.join(VALID_LAYERS)}). Ignored when --query is given."
+        ),
+    ),
+    query: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--query",
+        help=(
+            "Override the PromQL query "
+            "(default: max(pat_predicted_recommended_replicas))."
+        ),
+    ),
+    min_replicas: int = typer.Option(
+        1, "--min-replicas", help="Minimum replica count.", min=1
+    ),
+    max_replicas: int = typer.Option(
+        10, "--max-replicas", help="Maximum replica count.", min=1
+    ),
+) -> None:
+    """
+    Emit autoscaler config that scales a Deployment to track pat's forecast.
+
+    Closes the loop: the exporter publishes pat_predicted_recommended_replicas
+    (run `pat export --predict`, scraped into Prometheus); this emits a KEDA
+    ScaledObject (default) or a Prometheus-Adapter HPA that scales --target to
+    match it. Emit-only — prints YAML to stdout; `pat` never applies or scales
+    anything.
+
+    \b
+      pat scaler -t web --prometheus-url http://prom:9090 -c container
+      pat scaler -t web --prometheus-url http://prom:9090 --format prometheus-adapter
+    """
+    from presidio_arch_translucency.scaler import (  # noqa: PLC0415
+        DEFAULT_METRIC,
+        VALID_FORMATS,
+        ScalerError,
+        build_scaler,
+        default_query,
+    )
+
+    if fmt not in VALID_FORMATS:
+        err_console.print(
+            f"[bold red]Unknown --format {fmt!r}.[/] Use one of: "
+            f"{', '.join(VALID_FORMATS)}."
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        effective_query = query if query else default_query(DEFAULT_METRIC, layer)
+        yaml = build_scaler(
+            fmt,
+            target,
+            prometheus_url,
+            effective_query,
+            metric=DEFAULT_METRIC,
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            namespace=namespace,
+            name=name,
+        )
+    except ScalerError as exc:
+        err_console.print(f"[bold red]Scaler error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "SCALER_EMIT", {"format": fmt, "target": target, "layer": layer or "all"}
+    )
+    typer.echo(yaml, nl=False)
+
+
 def _render_results(
     result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
     show_all: bool,
