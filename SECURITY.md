@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.9.0 prerelease | :white_check_mark: |
+| main / 0.9.x | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
@@ -35,7 +35,7 @@ This toolkit ships with the following Presidio security hardening:
 | **Prometheus token handling** | `PAT_PROMETHEUS_TOKEN` is env-only, never logged, and requires an HTTPS Prometheus URL |
 | **Private local stores** | Default pricing cache, observation store, calibrated model file, and daemon unit files are owner-only where the platform supports chmod |
 | **Demo isolation** | `pat demo` publishes Docker ports to `127.0.0.1` only and runs the embedded workload as an unprivileged user |
-| **Secure logging** | Recommendations logged without sensitive data; user input never echoed raw |
+| **Secure logging** | Recommendations and audit events redact token-, secret-, password-, key-, credential-, and auth-shaped context fields |
 | **CVE/dependency audit** | `pip-audit` check runs on every invocation (skippable via `--skip-audit`) |
 | **Security event logging** | Structured audit log entry emitted for every recommendation |
 | **Output sanitization** | Rich markup prevents injection via user-supplied layer names |
@@ -51,7 +51,7 @@ Dependencies are pinned in `uv.lock` and monitored via:
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Known Limitations (main / v0.8.x)
+## Known Limitations (main / v0.9.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -66,7 +66,8 @@ Dependencies are pinned in `uv.lock` and monitored via:
 
 Manual security audit history:
 
-- [`SECURITY-AUDIT-2026-06-16.md`](SECURITY-AUDIT-2026-06-16.md) -- current audit and remediation status.
+- [`SECURITY-AUDIT-2026-06-17.md`](SECURITY-AUDIT-2026-06-17.md) -- v0.9.0 release-cut audit and remediation status.
+- [`SECURITY-AUDIT-2026-06-16.md`](SECURITY-AUDIT-2026-06-16.md) -- v0.9.0 hardening audit and remediation status.
 - [`SECURITY-AUDIT.md`](SECURITY-AUDIT.md) -- 2026-06-03 audit and remediation status.
 
 ## Software Development Lifecycle
