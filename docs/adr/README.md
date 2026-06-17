@@ -30,8 +30,9 @@ at it. Do not rewrite history.
 | [0003](0003-prometheus-auth-env-token.md) | Prometheus auth via env token only | Accepted — extended by v0.9.0 kubeconfig auth |
 | [0004](0004-calibrate-global-analytical-fit.md) | `pat calibrate` fits global κ+β analytically | Accepted — extended by v0.9.0 per-layer fitting |
 | [0005](0005-model-file-location-project-overrides-global.md) | Model file at `~/.pat/model.json`; project-local `.pat-model.json` overrides global | Accepted |
+| [0006](0006-otlp-export-transport.md) | OTLP export via hand-rolled OTLP/HTTP+JSON (Collector-targeted), not the OpenTelemetry SDK | Accepted — governs v0.13.0 |
 
-These five records (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
+ADRs 0001–0005 (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
 "autoresearch" release and are backfilled here for traceability. The canonical
 decision log remains the "v0.8.0 Design Decisions" section of `PRESIDIO-REQ.md`;
 these ADRs restate it in the standard format.
