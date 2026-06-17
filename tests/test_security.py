@@ -152,6 +152,19 @@ class TestSanitizeLogContext:
         result = _sanitize_log_context(ctx)
         assert all(len(k) <= 64 for k in result)
 
+    def test_redacts_secret_shaped_keys(self):
+        ctx = {
+            "api_token": "secret-token",
+            "password": "secret-password",
+            "layer": "container",
+        }
+        result = _sanitize_log_context(ctx)
+        assert result["api_token"] == "[REDACTED]"
+        assert result["password"] == "[REDACTED]"
+        assert result["layer"] == "container"
+        assert "secret-token" not in result.values()
+        assert "secret-password" not in result.values()
+
     def test_empty_context(self):
         assert _sanitize_log_context({}) == {}
 
@@ -183,7 +196,7 @@ class TestLogging:
 
 
 # ---------------------------------------------------------------------------
-# run_dependency_audit (smoke test — graceful skip when pip-audit absent)
+# run_dependency_audit (smoke test -- graceful skip when pip-audit absent)
 # ---------------------------------------------------------------------------
 
 
