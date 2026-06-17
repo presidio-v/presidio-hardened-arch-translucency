@@ -11,12 +11,6 @@ from typer.testing import CliRunner
 
 import presidio_arch_translucency.benchmark as bench
 import presidio_arch_translucency.demo as demo
-from presidio_arch_translucency.benchmark import (
-    BenchmarkError,
-    BenchmarkPoint,
-    parse_replica_sweep,
-    points_to_observations,
-)
 from presidio_arch_translucency.cli import app
 
 runner = CliRunner()
@@ -26,8 +20,10 @@ def invoke(*args: str):
     return runner.invoke(app, ["--skip-audit", *args])
 
 
-def _point(replicas: int, rps: float, lat: float, errors: int = 0) -> BenchmarkPoint:
-    return BenchmarkPoint(
+def _point(
+    replicas: int, rps: float, lat: float, errors: int = 0
+) -> bench.BenchmarkPoint:
+    return bench.BenchmarkPoint(
         replicas=replicas,
         throughput_rps=rps,
         avg_latency_ms=lat,
@@ -40,31 +36,31 @@ def _point(replicas: int, rps: float, lat: float, errors: int = 0) -> BenchmarkP
 
 
 def test_parse_replica_sweep_sorts_and_dedupes() -> None:
-    assert parse_replica_sweep([4, 1, 2, 2, 4]) == [1, 2, 4]
+    assert bench.parse_replica_sweep([4, 1, 2, 2, 4]) == [1, 2, 4]
 
 
 def test_parse_replica_sweep_empty_raises() -> None:
-    with pytest.raises(BenchmarkError):
-        parse_replica_sweep([])
+    with pytest.raises(bench.BenchmarkError):
+        bench.parse_replica_sweep([])
 
 
 def test_parse_replica_sweep_single_count_raises() -> None:
     # One distinct count cannot constrain two parameters.
-    with pytest.raises(BenchmarkError):
-        parse_replica_sweep([4, 4, 4])
+    with pytest.raises(bench.BenchmarkError):
+        bench.parse_replica_sweep([4, 4, 4])
 
 
 @pytest.mark.parametrize("bad", [[0, 2], [-1, 3], [1, -2, 4]])
 def test_parse_replica_sweep_non_positive_raises(bad: list[int]) -> None:
-    with pytest.raises(BenchmarkError):
-        parse_replica_sweep(bad)
+    with pytest.raises(bench.BenchmarkError):
+        bench.parse_replica_sweep(bad)
 
 
 # ── points_to_observations ────────────────────────────────────────────────────
 
 
 def test_points_to_observations_maps_fields() -> None:
-    obs = points_to_observations([_point(1, 95.0, 80.0), _point(2, 180.0, 78.0)])
+    obs = bench.points_to_observations([_point(1, 95.0, 80.0), _point(2, 180.0, 78.0)])
     assert [(o.rps, o.latency_ms, o.replicas) for o in obs] == [
         (95.0, 80.0, 1),
         (180.0, 78.0, 2),
@@ -73,14 +69,14 @@ def test_points_to_observations_maps_fields() -> None:
 
 def test_points_to_observations_drops_zero_signal_points() -> None:
     pts = [_point(1, 95.0, 80.0), _point(2, 0.0, 78.0), _point(4, 340.0, 0.0)]
-    obs = points_to_observations(pts + [_point(8, 600.0, 70.0)])
+    obs = bench.points_to_observations(pts + [_point(8, 600.0, 70.0)])
     # The two zero-signal points are dropped; two usable points remain.
     assert {o.replicas for o in obs} == {1, 8}
 
 
 def test_points_to_observations_insufficient_raises() -> None:
-    with pytest.raises(BenchmarkError):
-        points_to_observations([_point(1, 95.0, 80.0), _point(2, 0.0, 0.0)])
+    with pytest.raises(bench.BenchmarkError):
+        bench.points_to_observations([_point(1, 95.0, 80.0), _point(2, 0.0, 0.0)])
 
 
 # ── measure_replica_point (Docker mocked) ─────────────────────────────────────
@@ -141,7 +137,7 @@ def test_measure_replica_point_returns_measured_point(monkeypatch) -> None:
         concurrency=4,
         iterations=1000,
     )
-    assert point == BenchmarkPoint(
+    assert point == bench.BenchmarkPoint(
         replicas=2,
         throughput_rps=180.0,
         avg_latency_ms=78.0,
@@ -156,7 +152,7 @@ def test_measure_replica_point_returns_measured_point(monkeypatch) -> None:
 def test_measure_replica_point_cleans_up_on_health_failure(monkeypatch) -> None:
     monkeypatch.setattr(demo, "_wait_url", lambda *a, **k: False)
     client = _FakeClient()
-    with pytest.raises(BenchmarkError, match="health check"):
+    with pytest.raises(bench.BenchmarkError, match="health check"):
         bench.measure_replica_point(
             client,
             Console(),
@@ -280,7 +276,7 @@ def test_run_benchmark_sweep_docker_unavailable_raises(monkeypatch) -> None:
         raise docker.errors.DockerException("no daemon")
 
     monkeypatch.setattr(docker, "from_env", _boom)
-    with pytest.raises(BenchmarkError, match="Docker daemon not available"):
+    with pytest.raises(bench.BenchmarkError, match="Docker daemon not available"):
         bench.run_benchmark_sweep(
             [1, 2], requests=20, concurrency=4, iterations=1000, client=None
         )
@@ -289,7 +285,7 @@ def test_run_benchmark_sweep_docker_unavailable_raises(monkeypatch) -> None:
 # ── pat calibrate --benchmark CLI (Docker mocked) ─────────────────────────────
 
 
-def _patch_sweep(monkeypatch, points: list[BenchmarkPoint]) -> None:
+def _patch_sweep(monkeypatch, points: list[bench.BenchmarkPoint]) -> None:
     """Replace the Docker sweep with a synthetic one."""
     monkeypatch.setattr(bench, "run_benchmark_sweep", lambda *a, **k: list(points))
 
@@ -369,7 +365,7 @@ def test_calibrate_benchmark_docker_error_exits_1(tmp_path, monkeypatch) -> None
     monkeypatch.chdir(tmp_path)
 
     def _boom(*a, **k):  # noqa: ANN002, ANN003
-        raise BenchmarkError("Docker daemon not available: nope")
+        raise bench.BenchmarkError("Docker daemon not available: nope")
 
     monkeypatch.setattr(bench, "run_benchmark_sweep", _boom)
     result = invoke("calibrate", "--benchmark")
