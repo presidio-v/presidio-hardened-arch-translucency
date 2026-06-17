@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-17
+
 ### Added
 
 - **`pat export` — read-only Prometheus exporter (v0.10.0).** Publishes the
@@ -47,6 +49,12 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   gain, and cost-per-request. A test keeps every metric the dashboard queries in
   sync with what the exporter actually emits. Completes the v0.10.0
   monitoring-integration scope (Expose → predict → visualize).
+
+### Fixed
+
+- Command help and version-only exits skip the on-run dependency audit, avoiding
+  network work and false CVE warnings while rendering help. Normal command
+  execution still runs `pip-audit` unless `--skip-audit` is supplied.
 
 ## [0.9.0] - 2026-06-17
 
@@ -212,7 +220,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.9.0
 [0.8.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.8.0
 [0.7.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.7.0

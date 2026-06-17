@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.9.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.10.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -619,7 +619,7 @@ This toolkit ships with mandatory Presidio security extensions:
 |---|---|
 | **Input sanitization** | All workload parameters are bounds-checked and type-validated |
 | **Secure logging** | Recommendations logged without sensitive data |
-| **CVE/dependency audit** | `pip-audit` check on every run (`--skip-audit` to disable) |
+| **CVE/dependency audit** | `pip-audit` check on normal command execution (`--skip-audit` to disable; help/version exits skip network audit) |
 | **Security event logging** | `"Presidio architectural-translucency recommendation applied"` emitted |
 | **Output sanitization** | User-supplied values are never echoed raw into output |
 | **Dependabot** | Automated dependency updates via `.github/dependabot.yml` |
@@ -715,8 +715,8 @@ pytest
 | v0.6.0 | Cloud billing — AWS reserved/spot + GCP + Azure |
 | v0.7.0 | Autoresearch — `pat calibrate` + observation store + SMA predictions |
 | v0.8.0 | Autoresearch — `pat observe`/`pat optimize`, Prometheus source, ARIMA + HPA patch emitter |
-| **v0.9.0** | **Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit** |
-| v0.10.0 | Monitoring integration — read-only Prometheus exporter (`pat export`) *(in progress)* |
+| v0.9.0 | Per-layer + Docker-benchmark `pat calibrate`, ARIMA order bounds, observe daemon, security audit |
+| **v0.10.0** | **Monitoring integration — read-only Prometheus exporter (`pat export`)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

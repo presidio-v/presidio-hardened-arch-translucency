@@ -36,7 +36,7 @@ This toolkit ships with the following Presidio security hardening:
 | **Private local stores** | Default pricing cache, observation store, calibrated model file, and daemon unit files are owner-only where the platform supports chmod |
 | **Demo isolation** | `pat demo` publishes Docker ports to `127.0.0.1` only and runs the embedded workload as an unprivileged user |
 | **Secure logging** | Recommendations and audit events redact token-, secret-, password-, key-, credential-, and auth-shaped context fields |
-| **CVE/dependency audit** | `pip-audit` check runs on every invocation (skippable via `--skip-audit`) |
+| **CVE/dependency audit** | `pip-audit` check runs on normal command execution (skippable via `--skip-audit`; help/version exits skip network audit) |
 | **Security event logging** | Structured audit log entry emitted for every recommendation |
 | **Output sanitization** | Rich markup prevents injection via user-supplied layer names |
 | **Dependabot** | Automated dependency updates configured in `.github/dependabot.yml` |
@@ -47,11 +47,11 @@ This toolkit ships with the following Presidio security hardening:
 Dependencies are pinned in `uv.lock` and monitored via:
 
 - GitHub Dependabot (automated PRs for updates)
-- `pip-audit` on every CLI run
+- `pip-audit` on normal CLI command execution
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Known Limitations (main / v0.9.x)
+## Known Limitations (main / v0.10.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
