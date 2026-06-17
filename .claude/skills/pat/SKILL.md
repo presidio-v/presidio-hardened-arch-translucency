@@ -47,6 +47,7 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | User wants pat's recommendations in Prometheus/Grafana | `pat export` |
 | User wants pat to alert through Prometheus/Alertmanager | `pat rules` |
 | User wants pat recommendations marked on Grafana dashboards | `pat annotate` |
+| User wants HPA/KEDA to scale on pat's forecast | `pat scaler` |
 
 `pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
@@ -65,7 +66,9 @@ to preview). `grafana/provisioning/` auto-loads the datasource + dashboard.
 OpenTelemetry Collector (vendor-neutral; no Prometheus needed; hand-rolled per
 ADR-0006, optional token from `PAT_OTLP_TOKEN`). `pat export --pushgateway <url>
 --job <job>` pushes once to a Prometheus Pushgateway for cron/CI/Job contexts
-(token from `PAT_PUSHGATEWAY_TOKEN`).
+(token from `PAT_PUSHGATEWAY_TOKEN`). `pat scaler -t <deployment> --prometheus-url
+<url>` emits a KEDA ScaledObject (or HPA, `--format prometheus-adapter`) that
+scales the deployment to track `pat_predicted_recommended_replicas` — emit-only.
 
 The first five rows are **analytical** (model-driven, no data needed beyond the
 inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the

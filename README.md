@@ -622,6 +622,27 @@ HTTPS is required (use `--insecure-http` for localhost dev), and tags are
 sanitised. `--dry-run` prints the payload without posting; `--dashboard-uid`
 scopes the annotation to one dashboard; `--tag` adds extra tags.
 
+### Close the loop: autoscaling (`pat scaler`, v0.15.0)
+
+The conceptual payoff of the monitoring arc — **translucency-aware autoscaling**.
+The exporter publishes `pat_predicted_recommended_replicas` (run `pat export
+--predict`, scraped into Prometheus); `pat scaler` emits the declarative glue so
+an autoscaler scales a Deployment to **track that forecast**:
+
+```bash
+# KEDA ScaledObject (default) — threshold 1, so replicas == pat's prediction
+pat scaler -t web --prometheus-url http://prom:9090 -c container > scaledobject.yaml
+kubectl apply -f scaledobject.yaml
+
+# Or an HPA on an External metric (Prometheus Adapter path)
+pat scaler -t web --prometheus-url http://prom:9090 --format prometheus-adapter
+```
+
+`pat` only **emits** the YAML — it never applies or scales anything (apply via
+`kubectl`/GitOps). `--min-replicas`/`--max-replicas` bound the range, `--layer`
+filters the default query, `--query` overrides it, and target/namespace names are
+RFC 1123-validated.
+
 ---
 
 ## Live Demonstrator
@@ -802,7 +823,8 @@ pytest
 | v0.11.0 | Alerting — `pat rules` emits Prometheus recording + alerting rules |
 | v0.12.0 | Visualize & Annotate — Grafana provisioning + `pat annotate` |
 | v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
-| **v0.14.0** | **Reach ephemeral contexts — `pat export --pushgateway`** *(in progress)* |
+| v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
+| **v0.15.0** | **Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast)** *(in progress)* |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 
