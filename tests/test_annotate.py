@@ -101,6 +101,12 @@ def test_token_from_env_rejects_control_chars(monkeypatch) -> None:
         token_from_env()
 
 
+def test_token_from_env_rejects_trailing_control_chars(monkeypatch) -> None:
+    monkeypatch.setenv("PAT_GRAFANA_TOKEN", "tok\n")
+    with pytest.raises(AnnotateError, match="control characters"):
+        token_from_env()
+
+
 def test_resolve_token_missing_raises(monkeypatch) -> None:
     monkeypatch.delenv("PAT_GRAFANA_TOKEN", raising=False)
     with pytest.raises(AnnotateError, match="PAT_GRAFANA_TOKEN"):
@@ -186,6 +192,11 @@ def test_post_annotation_non_json_returns_empty(monkeypatch) -> None:
 def test_post_annotation_rejects_bad_url() -> None:
     with pytest.raises(AnnotateError):
         post_annotation("ftp://g", Annotation(text="x"), token=_FAKE_TOKEN)
+
+
+def test_post_annotation_rejects_embedded_credentials() -> None:
+    with pytest.raises(AnnotateError, match="credentials"):
+        post_annotation("https://user:pass@g", Annotation(text="x"), token=_FAKE_TOKEN)
 
 
 # ── pat annotate CLI ──────────────────────────────────────────────────────────

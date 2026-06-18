@@ -26,14 +26,13 @@ Example (docker):
 
 ```bash
 docker run -d --name grafana -p 3000:3000 \
-  -e PROMETHEUS_URL=http://prometheus:9090 \
   -v "$PWD/grafana/provisioning:/etc/grafana/provisioning:ro" \
   -v "$PWD/grafana/pat-dashboard.json:/var/lib/grafana/dashboards/pat/pat-dashboard.json:ro" \
   grafana/grafana:latest
 ```
 
-The datasource URL defaults to `http://prometheus:9090` and honours
-`PROMETHEUS_URL`. Run `pat export` (with `--predict` and
+The datasource URL defaults to `http://prometheus:9090`. Edit
+`grafana/provisioning/datasources/datasource.yml` if your Prometheus service uses a different DNS name. Run `pat export` (with `--predict` and
 `--cost-per-replica-hour` for the full board) and scrape it from Prometheus.
 
 ## Annotations

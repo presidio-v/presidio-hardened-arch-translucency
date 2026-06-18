@@ -824,7 +824,7 @@ pytest
 | v0.12.0 | Visualize & Annotate — Grafana provisioning + `pat annotate` |
 | v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
 | v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
-| **v0.15.0** | **Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast)** *(in progress)* |
+| **v0.15.0** | **Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

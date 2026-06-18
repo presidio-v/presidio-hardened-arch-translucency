@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-18
+
 ### Added
 
 - **`pat scaler` — translucency-aware autoscaling (v0.15.0, "Close the loop").**
@@ -37,6 +39,16 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   Prometheus **remote-write** is intentionally deferred (its protobuf + snappy
   wire format would breach the zero-dependency posture — the same tension
   ADR-0006 resolved; Pushgateway already covers the ephemeral-job use case).
+
+### Security
+
+- Outbound Grafana, OTLP, Prometheus, Pushgateway, and scaler Prometheus URLs now reject embedded credentials before request construction, YAML emission, or audit-log host extraction.
+- Env telemetry tokens (`PAT_PROMETHEUS_TOKEN`, `PAT_GRAFANA_TOKEN`, `PAT_OTLP_TOKEN`, `PAT_PUSHGATEWAY_TOKEN`) now reject raw control characters before trimming whitespace.
+
+### Fixed
+
+- Grafana datasource provisioning now uses a static Prometheus default URL that Grafana loads correctly; the prior shell-style default expansion could provision an empty datasource URL in Grafana 13.
+
 
 ## [0.13.0] - 2026-06-17
 
@@ -299,7 +311,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...v0.15.0
 [0.13.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...v0.13.0
 [0.10.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/releases/tag/v0.9.0

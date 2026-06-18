@@ -52,6 +52,11 @@ def test_metrics_url_rejects_control_chars() -> None:
         metrics_url("http://c\n/v1/metrics")
 
 
+def test_metrics_url_rejects_embedded_credentials() -> None:
+    with pytest.raises(OtlpError, match="credentials"):
+        metrics_url("https://user:pass@c:4318")
+
+
 # ── build_otlp_payload ────────────────────────────────────────────────────────
 
 
@@ -118,6 +123,12 @@ def test_resolve_token_https_ok(monkeypatch) -> None:
 
 def test_resolve_token_rejects_control_chars(monkeypatch) -> None:
     monkeypatch.setenv("PAT_OTLP_TOKEN", "tok\rInjected: x")
+    with pytest.raises(OtlpError, match="control characters"):
+        resolve_token("https://c")
+
+
+def test_resolve_token_rejects_trailing_control_chars(monkeypatch) -> None:
+    monkeypatch.setenv("PAT_OTLP_TOKEN", "tok\n")
     with pytest.raises(OtlpError, match="control characters"):
         resolve_token("https://c")
 
