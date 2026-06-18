@@ -32,6 +32,7 @@ at it. Do not rewrite history.
 | [0005](0005-model-file-location-project-overrides-global.md) | Model file at `~/.pat/model.json`; project-local `.pat-model.json` overrides global | Accepted |
 | [0006](0006-otlp-export-transport.md) | OTLP export via hand-rolled OTLP/HTTP+JSON (Collector-targeted), not the OpenTelemetry SDK | Accepted — governs v0.13.0 |
 | [0007](0007-prometheus-remote-write.md) | Prometheus remote-write via hand-rolled v1 (protobuf + literals-only snappy), zero deps | Accepted |
+| [0008](0008-helm-chart-packaging.md) | Package the exporter as a static Helm chart — emit-only, RBAC-free, rules via `.Files.Get` | Accepted — governs v0.16.0 |
 
 ADRs 0001–0005 (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
 "autoresearch" release and are backfilled here for traceability. The canonical

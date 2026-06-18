@@ -1,0 +1,143 @@
+# Default values for pat-exporter.
+# This is emit-only packaging: the chart deploys the read-only `pat export`
+# endpoint and declarative monitoring artifacts. It grants the workload no
+# Kubernetes API access (see serviceAccount.automount below).
+
+# -- Workload the exporter models. These map directly to `pat export` flags;
+# the per-layer recommendation gauges are computed from them.
+workload:
+  # requests-per-second (-r). Required.
+  requestsPerSecond: 500
+  # avg-latency-ms (-l). Required.
+  avgLatencyMs: 80
+  # current-layer (-c): one of container, pod, deployment, node.
+  currentLayer: container
+  # Optional calibrated service-layer label (--layer). Empty = global fit.
+  modelLayer: ""
+
+# -- Forecast metrics (`pat export --predict`). Off by default: prediction
+# needs a populated observation store (`pat observe`) mounted into the pod,
+# which the base exporter does not provision. Enable only with a real DB.
+predict:
+  enabled: false
+  model: sma        # sma (cheap) or arima (refits each scrape)
+  window: 10
+  horizonMinutes: 10
+  layer: ""         # observation layer to forecast from; empty = currentLayer
+
+# -- Cost metrics (`pat export --cost-per-replica-hour`). Empty = disabled.
+costPerReplicaHour: ""
+
+image:
+  repository: ghcr.io/presidio-v/pat-exporter
+  # Empty tag defaults to the chart appVersion (see _helpers.tpl).
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Object naming overrides.
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  # The exporter needs no Kubernetes API access. Never mount a token.
+  automount: false
+  annotations: {}
+
+# -- Pod-level security context. Hardened by default.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context. Hardened by default.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 9847
+  # The metrics port name ServiceMonitor and probes reference.
+  portName: metrics
+  annotations: {}
+
+# Container/serve port. Matches `pat export --port`.
+containerPort: 9847
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# Probes hit the exporter's read-only liveness path (/healthz).
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: metrics
+  initialDelaySeconds: 5
+  periodSeconds: 15
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: metrics
+  initialDelaySeconds: 3
+  periodSeconds: 10
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Prometheus-Operator ServiceMonitor. Enable when prometheus-operator owns
+# scrape discovery; otherwise scrape the Service directly.
+serviceMonitor:
+  enabled: false
+  # Namespace to create the ServiceMonitor in (defaults to the release ns).
+  namespace: ""
+  interval: 30s
+  scrapeTimeout: 10s
+  # Extra labels so a Prometheus instance's serviceMonitorSelector matches.
+  labels: {}
+  honorLabels: false
+
+# -- Prometheus-Operator PrometheusRule from `pat rules` (recording + alerts).
+# The rule expressions live in files/pat-rules.yaml (verbatim `pat rules`
+# output) so Prometheus's own {{ ... }} templating survives Helm rendering.
+prometheusRule:
+  enabled: false
+  namespace: ""
+  labels: {}
+
+# -- Grafana dashboard as a ConfigMap discovered by the Grafana sidecar.
+dashboard:
+  enabled: false
+  # Label/value the Grafana sidecar watches for (kiwigrid/k8s-sidecar default).
+  sidecarLabel: grafana_dashboard
+  sidecarLabelValue: "1"
+  # Folder annotation the sidecar files the dashboard under.
+  folder: pat
+
+# -- NetworkPolicy restricting ingress to the metrics port. Off by default so
+# the chart works on clusters without a NetworkPolicy controller.
+networkPolicy:
+  enabled: false
+  # Sources allowed to reach the metrics port. Empty list = any pod may scrape
+  # the metrics port (still closes every other port). Each entry is a standard
+  # NetworkPolicyPeer (namespaceSelector / podSelector / ipBlock).
+  ingressFrom: []

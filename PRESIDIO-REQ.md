@@ -66,7 +66,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Released |
 | v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (included in v0.15.0 release) |
 | v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (released) |
-| v0.16.0 | Monitoring arc · Package & operate — Helm chart + Grafana panel plugin | Planned |
+| v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Complete (unreleased) |
 
 ---
 
@@ -903,6 +903,75 @@ could be a follow-on if demanded.
 **Next on the arc:** v0.16.0 — Package & operate (Helm chart + optional Grafana
 panel plugin). Also outstanding from ADR-0007: a hand-rolled remote-write target
 (its own slot).
+
+---
+
+## v0.16.0 — Package & operate (delivered 2026-06-18)
+
+Seventh and final step of the monitoring-integration arc. Everything the arc
+built — the read-only exporter, recording/alerting rules, the Grafana dashboard —
+is bundled into one cluster-native, installable artifact: the `charts/pat-exporter`
+Helm chart, plus a root `Dockerfile` for the exporter image. This caps the arc:
+`pat` is now deployable as a monitoring-native component, not just a CLI.
+
+### What shipped
+
+- **`charts/pat-exporter`** — a Helm chart (apiVersion v2). Always renders a
+  hardened `pat export` Deployment (read-only `/metrics`), a Service, and a
+  no-token ServiceAccount. Opt-in (default off) objects: a Prometheus-Operator
+  `ServiceMonitor`, a `PrometheusRule`, a Grafana-sidecar dashboard `ConfigMap`,
+  and a `NetworkPolicy`. Off-by-default keeps a bare `helm install` working on
+  any cluster (no Operator/sidecar/NP controller assumed).
+- **Root `Dockerfile`** — slim, non-root (UID 10001) image that `pip install`s
+  the published package and runs `pat`.
+- **`tests/test_chart.py`** — exact sync of the bundled dashboard + rules to
+  their sources (the chart's analogue of `test_grafana.py`), security-posture
+  invariants, and a full `helm lint`/`helm template` render gated on a `helm`
+  binary being present.
+
+### Security & posture
+
+Hardened by default and verified on the rendered manifests: pod `runAsNonRoot` +
+UID 10001 + `seccompProfile: RuntimeDefault`; container `readOnlyRootFilesystem`,
+`allowPrivilegeEscalation: false`, all capabilities dropped. **No RBAC** Role /
+ClusterRole / bindings exist in the chart and `automountServiceAccountToken` is
+`false` — the read-only exporter needs no Kubernetes API access. **Emit-only**
+(arc invariant A1): the chart deploys the exporter and emits declarative
+artifacts; it applies nothing and the exporter has no mutation path.
+
+### Decisions
+
+- **P1 — Static chart, not a `pat chart` emitter.** Helm charts are the
+  idiomatic packaging unit and (unlike rules/scaler) carry no per-invocation
+  logic, so they live as static files under `charts/` — mirroring the existing
+  static `grafana/` bundle rather than adding a CLI command.
+- **P2 — Rules injected via `.Files.Get`, not Helm templating.** The `pat rules`
+  output contains Prometheus's own Go-template annotations (`{{ $value }}`).
+  Embedding the verbatim `files/pat-rules.yaml` with `.Files.Get` (which does not
+  re-template) lets that pass through Helm untouched; the bundled copy is kept in
+  exact sync with `pat rules` by a test.
+- **P3 — Operator/sidecar objects default off.** ServiceMonitor / PrometheusRule
+  (CRDs) and the dashboard ConfigMap assume Prometheus Operator / a Grafana
+  sidecar; defaulting them off keeps the chart universally installable.
+- **P4 — No K8s API access ⇒ no RBAC, no token.** The exporter only computes from
+  CLI args and serves metrics, so the least-privilege posture is *zero* cluster
+  permissions and an unmounted SA token.
+
+### Scope notes
+
+- **Grafana panel plugin deferred.** The arc listed an *optional* "small Grafana
+  panel plugin rendering the layer recommendation natively." The shipped Grafana
+  dashboard (since v0.10.0) already delivers the visual surface through infra
+  users already run; a bespoke TS/React panel plugin is a separate frontend
+  artifact with its own build/release surface and is **deferred** (consistent
+  with the "Grafana instead of a dedicated GUI" cross-cutting decision) until a
+  user hits a wall the dashboard can't address.
+- **Image publishing is out of band.** The `Dockerfile` builds the image; wiring
+  a CI job to publish `ghcr.io/presidio-v/pat-exporter` is a follow-on.
+- **Still outstanding from ADR-0007:** a hand-rolled Prometheus remote-write
+  target (its own future slot).
+
+This completes the seven-step monitoring-integration arc (v0.10.0 → v0.16.0).
 
 ---
 
