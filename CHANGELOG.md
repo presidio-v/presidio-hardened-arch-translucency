@@ -10,6 +10,29 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **`charts/pat-exporter` — Helm chart (v0.16.0, "Package & operate").** The
+  seventh and final step of the monitoring-integration arc: cluster-native
+  packaging of the read-only `pat export` endpoint. `helm install` deploys a
+  hardened `pat export` Deployment serving `/metrics`, a Service, and a
+  no-privilege ServiceAccount; opt-in flags add a Prometheus-Operator
+  `ServiceMonitor`, a `PrometheusRule` (the verbatim `pat rules` recording +
+  alerting groups, injected via `.Files.Get` so Prometheus's own `{{ $value }}`
+  templating survives Helm rendering), the official Grafana dashboard as a
+  sidecar-discovered `ConfigMap`, and a `NetworkPolicy` restricting ingress to
+  the metrics port. Operator/sidecar objects default **off** so the chart
+  installs on any cluster. **Hardened by default:** `runAsNonRoot`, non-root UID
+  10001, `readOnlyRootFilesystem`, all capabilities dropped,
+  `seccompProfile: RuntimeDefault`, and `automountServiceAccountToken: false`
+  (the exporter holds no Kubernetes API credentials). **Emit-only** — the chart
+  applies nothing to the cluster and the exporter has no mutation path,
+  preserving arc invariant A1. Adds a root `Dockerfile` (slim, non-root) that
+  builds the `pat-exporter` image from the published package. No new runtime
+  dependencies; `tests/test_chart.py` keeps the bundled dashboard + rules in
+  exact sync with their sources and locks the security posture (with an extra
+  full `helm template`/`helm lint` render when a `helm` binary is present).
+
 ## [0.15.0] - 2026-06-18
 
 ### Added

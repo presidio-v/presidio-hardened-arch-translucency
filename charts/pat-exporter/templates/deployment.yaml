@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pat-exporter.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pat-exporter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pat-exporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pat-exporter.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pat-exporter.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: exporter
+          image: {{ include "pat-exporter.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - export
+            - --requests-per-second
+            - {{ .Values.workload.requestsPerSecond | quote }}
+            - --avg-latency-ms
+            - {{ .Values.workload.avgLatencyMs | quote }}
+            - --current-layer
+            - {{ .Values.workload.currentLayer | quote }}
+            {{- with .Values.workload.modelLayer }}
+            - --layer
+            - {{ . | quote }}
+            {{- end }}
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.containerPort | quote }}
+            # Binding a routable interface inside a pod is required for scraping;
+            # the endpoint stays read-only (GET /metrics, /healthz only).
+            - --listen-public
+            {{- if .Values.predict.enabled }}
+            - --predict
+            - --model
+            - {{ .Values.predict.model | quote }}
+            - --window
+            - {{ .Values.predict.window | quote }}
+            - --horizon-minutes
+            - {{ .Values.predict.horizonMinutes | quote }}
+            {{- with .Values.predict.layer }}
+            - --predict-layer
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.costPerReplicaHour }}
+            - --cost-per-replica-hour
+            - {{ .Values.costPerReplicaHour | quote }}
+            {{- end }}
+          ports:
+            - name: {{ .Values.service.portName }}
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -643,6 +643,36 @@ pat scaler -t web --prometheus-url http://prom:9090 --format prometheus-adapter
 filters the default query, `--query` overrides it, and target/namespace names are
 RFC 1123-validated.
 
+### Cluster-native packaging: Helm chart (`charts/pat-exporter`, v0.16.0)
+
+The arc's final step — **"Package & operate"**: the exporter and its declarative
+monitoring artifacts ship as one installable Helm chart.
+
+```bash
+# Minimal install — Deployment + Service + ServiceAccount (works on any cluster)
+helm install pat ./charts/pat-exporter -n monitoring --create-namespace \
+  --set workload.requestsPerSecond=500 \
+  --set workload.avgLatencyMs=80 \
+  --set workload.currentLayer=container
+
+# Full stack — add the Prometheus-Operator ServiceMonitor + PrometheusRule and
+# the Grafana dashboard (loaded via the Grafana sidecar)
+helm install pat ./charts/pat-exporter -n monitoring \
+  --set serviceMonitor.enabled=true \
+  --set prometheusRule.enabled=true \
+  --set dashboard.enabled=true
+```
+
+The pod is **hardened by default** (non-root UID 10001, read-only root
+filesystem, all capabilities dropped, `seccompProfile: RuntimeDefault`) and the
+ServiceAccount mounts **no token** — the read-only exporter needs no Kubernetes
+API access. Operator/sidecar objects (`ServiceMonitor`, `PrometheusRule`,
+dashboard `ConfigMap`) and the `NetworkPolicy` are off by default; enable the
+ones your stack supports. The chart **applies nothing** to the cluster — it only
+deploys the read-only exporter and emits declarative artifacts (arc invariant
+A1). The container image builds from the repo `Dockerfile`. See
+[`charts/pat-exporter/README.md`](charts/pat-exporter/README.md) for all values.
+
 ---
 
 ## Live Demonstrator
@@ -824,7 +854,8 @@ pytest
 | v0.12.0 | Visualize & Annotate — Grafana provisioning + `pat annotate` |
 | v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
 | v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
-| **v0.15.0** | **Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast)** |
+| v0.15.0 | Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast) |
+| **v0.16.0** | **Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

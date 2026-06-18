@@ -1,0 +1,30 @@
+apiVersion: v2
+name: pat-exporter
+description: |
+  Read-only Prometheus exporter for the architectural-translucency model
+  (`pat export`). Packages the v0.10.0 exporter as a hardened, cluster-native
+  Deployment with a Prometheus-Operator ServiceMonitor, a PrometheusRule, the
+  official Grafana dashboard (loaded via the Grafana sidecar), least-privilege
+  RBAC, and an optional NetworkPolicy. Emit-only: the exporter never holds
+  cluster write credentials and never applies changes (arc invariant A1).
+type: application
+# Chart version — bumped independently of the app, but kept in lock-step for
+# the v0.16.0 "Package & operate" release.
+version: 0.16.0
+# Application version — the `pat` release the default image tag tracks.
+appVersion: "0.16.0"
+keywords:
+  - architectural-translucency
+  - prometheus
+  - exporter
+  - kubernetes
+  - grafana
+home: https://github.com/presidio-v/presidio-hardened-arch-translucency
+sources:
+  - https://github.com/presidio-v/presidio-hardened-arch-translucency
+maintainers:
+  - name: Vladimir Stantchev
+annotations:
+  # The chart applies nothing to the cluster itself; it only deploys the
+  # read-only exporter. This mirrors the arc-wide "pat emits, never applies".
+  category: Monitoring

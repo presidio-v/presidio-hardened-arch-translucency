@@ -1,0 +1,31 @@
+pat-exporter {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+The read-only architectural-translucency exporter is serving on:
+
+  Service:  {{ include "pat-exporter.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+  Path:     /metrics   (liveness: /healthz)
+
+Modelling workload: {{ .Values.workload.requestsPerSecond }} req/s, {{ .Values.workload.avgLatencyMs }} ms avg latency, current layer "{{ .Values.workload.currentLayer }}".
+
+Quick check from inside the cluster:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "pat-exporter.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -s http://127.0.0.1:{{ .Values.service.port }}/metrics | grep pat_
+
+Scraping:
+{{- if .Values.serviceMonitor.enabled }}
+  A ServiceMonitor was created — Prometheus Operator will discover this target.
+{{- else }}
+  ServiceMonitor is disabled. Either enable it (serviceMonitor.enabled=true with
+  Prometheus Operator) or add a static scrape_config for the Service above.
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+  A PrometheusRule (recording + alerting rules from `pat rules`) was created.
+{{- end }}
+{{- if .Values.dashboard.enabled }}
+  The Grafana dashboard ConfigMap was created (sidecar label
+  {{ .Values.dashboard.sidecarLabel }}={{ .Values.dashboard.sidecarLabelValue }}).
+{{- end }}
+
+This chart is emit-only: the exporter holds no cluster write credentials and
+applies nothing. Recommendations are signals for humans / GitOps to act on.

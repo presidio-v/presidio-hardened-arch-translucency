@@ -1,0 +1,17 @@
+{{- if .Values.dashboard.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pat-exporter.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pat-exporter.labels" . | nindent 4 }}
+    # The Grafana sidecar (e.g. kiwigrid/k8s-sidecar) imports ConfigMaps
+    # carrying this label into Grafana automatically.
+    {{ .Values.dashboard.sidecarLabel }}: {{ .Values.dashboard.sidecarLabelValue | quote }}
+  annotations:
+    grafana_folder: {{ .Values.dashboard.folder | quote }}
+data:
+  pat-dashboard.json: |
+{{ .Files.Get "files/pat-dashboard.json" | indent 4 }}
+{{- end }}
