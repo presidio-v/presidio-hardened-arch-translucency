@@ -28,6 +28,7 @@ dependency (like ``hpa_patch`` / ``rules``).
 from __future__ import annotations
 
 import re
+import urllib.parse
 
 VALID_LAYERS: tuple[str, ...] = ("container", "pod", "deployment", "node")
 VALID_FORMATS: tuple[str, ...] = ("keda", "prometheus-adapter")
@@ -64,8 +65,11 @@ def _has_control_chars(value: str) -> bool:
 def _validate_prometheus_url(url: str) -> str:
     if _has_control_chars(url):
         raise ScalerError("Prometheus URL must not contain control characters")
-    if not re.match(r"^https?://[^\s/]+", url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ScalerError(f"Prometheus URL must be an http(s) URL, got {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ScalerError("Prometheus URL must not include embedded credentials")
     return url
 
 

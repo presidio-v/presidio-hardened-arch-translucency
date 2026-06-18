@@ -54,10 +54,12 @@ def _reject_control_chars(value: str, field_name: str) -> None:
 def _parsed_url(base_url: str) -> urllib.parse.ParseResult:
     _reject_control_chars(base_url, "URL")
     parsed = urllib.parse.urlparse(base_url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise PushgatewayError(
             f"Pushgateway URL must be an http(s) URL with a host, got {base_url!r}"
         )
+    if parsed.username is not None or parsed.password is not None:
+        raise PushgatewayError("Pushgateway URL must not include embedded credentials")
     return parsed
 
 
@@ -108,7 +110,11 @@ def pushgateway_url(
 
 def _token_from_env() -> str | None:
     token = os.environ.get(TOKEN_ENV)
-    return token.strip() if token and token.strip() else None
+    if not token or not token.strip():
+        return None
+    if _has_control_chars(token):
+        raise PushgatewayError(f"{TOKEN_ENV} must not contain control characters")
+    return token.strip()
 
 
 def resolve_token(base_url: str, insecure_http: bool = False) -> str | None:

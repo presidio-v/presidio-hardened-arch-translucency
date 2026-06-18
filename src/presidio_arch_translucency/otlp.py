@@ -62,10 +62,12 @@ def _reject_control_chars(value: str, field_name: str) -> None:
 def _parsed_url(base_url: str) -> urllib.parse.ParseResult:
     _reject_control_chars(base_url, "endpoint")
     parsed = urllib.parse.urlparse(base_url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise OtlpError(
             f"OTLP endpoint must be an http(s) URL with a host, got {base_url!r}"
         )
+    if parsed.username is not None or parsed.password is not None:
+        raise OtlpError("OTLP endpoint must not include embedded credentials")
     return parsed
 
 
@@ -158,9 +160,8 @@ def _token_from_env() -> str | None:
     token = os.environ.get(TOKEN_ENV)
     if not token or not token.strip():
         return None
-    cleaned = token.strip()
-    _reject_control_chars(cleaned, "token")
-    return cleaned
+    _reject_control_chars(token, "token")
+    return token.strip()
 
 
 def resolve_token(endpoint: str, insecure_http: bool = False) -> str | None:

@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.13.x | :white_check_mark: |
+| main / 0.15.x | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
@@ -32,7 +32,7 @@ This toolkit ships with the following Presidio security hardening:
 | Feature | Description |
 |---|---|
 | **Input sanitization** | CLI parameters and scheduler inputs are bounds-checked and type-validated before use |
-| **Env-only telemetry tokens** | `PAT_PROMETHEUS_TOKEN`, `PAT_GRAFANA_TOKEN`, and `PAT_OTLP_TOKEN` are env-only, never logged, reject control characters, and require HTTPS when sent as bearer auth |
+| **Env-only telemetry tokens** | `PAT_PROMETHEUS_TOKEN`, `PAT_GRAFANA_TOKEN`, `PAT_OTLP_TOKEN`, and `PAT_PUSHGATEWAY_TOKEN` are env-only, never logged, reject control characters, and require HTTPS when sent as bearer auth |
 | **Private local stores** | Default pricing cache, observation store, calibrated model file, and daemon unit files are owner-only where the platform supports chmod |
 | **Demo isolation** | `pat demo` publishes Docker ports to `127.0.0.1` only and runs the embedded workload as an unprivileged user |
 | **Secure logging** | Recommendations and audit events redact token-, secret-, password-, key-, credential-, and auth-shaped context fields |
@@ -51,7 +51,7 @@ Dependencies are pinned in `uv.lock` and monitored via:
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Known Limitations (main / v0.13.x)
+## Known Limitations (main / v0.15.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.

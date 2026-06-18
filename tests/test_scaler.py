@@ -83,6 +83,11 @@ def test_keda_rejects_bad_url() -> None:
         build_keda_scaledobject("web", "ftp://prom", "q")
 
 
+def test_keda_rejects_url_embedded_credentials() -> None:
+    with pytest.raises(ScalerError, match="credentials"):
+        build_keda_scaledobject("web", "https://user:pass@prom", "q")
+
+
 def test_keda_rejects_control_char_query() -> None:
     with pytest.raises(ScalerError):
         build_keda_scaledobject("web", "http://prom", "q\nbad")

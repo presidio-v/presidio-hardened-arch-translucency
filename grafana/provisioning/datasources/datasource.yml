@@ -1,6 +1,6 @@
 # Grafana datasource provisioning for the pat dashboard (v0.12.0).
 # Mount this directory at /etc/grafana/provisioning/datasources/.
-# Override the Prometheus URL via the PROMETHEUS_URL env var if needed.
+# Edit the Prometheus URL if your service uses a different DNS name.
 apiVersion: 1
 
 datasources:
@@ -8,7 +8,7 @@ datasources:
     uid: prometheus
     type: prometheus
     access: proxy
-    url: ${PROMETHEUS_URL:-http://prometheus:9090}
+    url: http://prometheus:9090
     isDefault: true
     editable: false
     jsonData:

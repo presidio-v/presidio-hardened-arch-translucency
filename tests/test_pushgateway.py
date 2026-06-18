@@ -79,6 +79,11 @@ def test_pushgateway_url_rejects_bad_base() -> None:
         pushgateway_url("ftp://pg", "pat")
 
 
+def test_pushgateway_url_rejects_embedded_credentials() -> None:
+    with pytest.raises(PushgatewayError, match="credentials"):
+        pushgateway_url("https://user:pass@pg", "pat")
+
+
 def test_pushgateway_url_rejects_empty_grouping_value() -> None:
     with pytest.raises(PushgatewayError, match="non-empty"):
         pushgateway_url("http://pg", "pat", {"instance": ""})
@@ -110,6 +115,12 @@ def test_resolve_token_insecure_allows_http(monkeypatch) -> None:
 
 def test_resolve_token_rejects_control_char_token(monkeypatch) -> None:
     monkeypatch.setenv("PAT_PUSHGATEWAY_TOKEN", "to\x01k")
+    with pytest.raises(PushgatewayError, match="control characters"):
+        resolve_token("https://pg")
+
+
+def test_resolve_token_rejects_trailing_control_char_token(monkeypatch) -> None:
+    monkeypatch.setenv("PAT_PUSHGATEWAY_TOKEN", "tok\n")
     with pytest.raises(PushgatewayError, match="control characters"):
         resolve_token("https://pg")
 

@@ -98,6 +98,10 @@ class TestBuildQueryURL:
         with pytest.raises(PrometheusError, match="control"):
             _build_query_url("http://prom:9090", "up\nmalicious")
 
+    def test_rejects_url_embedded_credentials(self):
+        with pytest.raises(PrometheusError, match="credentials"):
+            _build_query_url("https://user:pass@prom:9090", "up")
+
 
 # ---------------------------------------------------------------------------
 # instant_query -- response parsing
@@ -192,6 +196,11 @@ class TestAuth:
 
     def test_resolve_token_rejects_control_chars(self, monkeypatch):
         monkeypatch.setenv("PAT_PROMETHEUS_TOKEN", "tok\nInjected: x")  # noqa: S105
+        with pytest.raises(PrometheusError, match="control characters"):
+            _resolve_token(_URL)
+
+    def test_resolve_token_rejects_trailing_control_chars(self, monkeypatch):
+        monkeypatch.setenv("PAT_PROMETHEUS_TOKEN", "tok\n")  # noqa: S105
         with pytest.raises(PrometheusError, match="control characters"):
             _resolve_token(_URL)
 
