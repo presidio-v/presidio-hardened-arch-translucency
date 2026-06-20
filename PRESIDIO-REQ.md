@@ -66,7 +66,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.13.0 | Monitoring arc · Speak OTLP — vendor-neutral `pat export --otlp` | Released |
 | v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (included in v0.15.0 release) |
 | v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (released) |
-| v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Complete (unreleased) |
+| v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Released |
 
 ---
 

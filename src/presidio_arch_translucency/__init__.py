@@ -11,5 +11,5 @@ layers.  This tool recommends the optimal replication layer for a given
 workload.
 """
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 __author__ = "Vladimir Stantchev"

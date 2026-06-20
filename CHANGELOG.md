@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-20
+
 ### Added
 
 - **`charts/pat-exporter` — Helm chart (v0.16.0, "Package & operate").** The
@@ -334,7 +336,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...v0.15.0
 [0.13.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...v0.13.0
 [0.10.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.9.0...v0.10.0
