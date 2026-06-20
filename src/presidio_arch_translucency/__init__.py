@@ -1,7 +1,7 @@
 """
 presidio-hardened-arch-translucency
 ====================================
-v0.13.0 — Architectural Translucency analyzer for Docker/Kubernetes.
+v0.16.0 — Architectural Translucency analyzer for Docker/Kubernetes.
 
 Architectural translucency (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties (especially performance) architecture-wide
