@@ -10,6 +10,11 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Security
+
+- Pin the audit extra's transitive `msgpack` dependency to `>=1.2.1`, remediating
+  GHSA-6v7p-g79w-8964 in `uv.lock`.
+
 ## [0.16.0] - 2026-06-20
 
 ### Added
