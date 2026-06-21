@@ -27,13 +27,14 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 - CLI control plane: `analyze` · `what-if` · `slo` · `cost` (AWS/GCP/Azure, on-demand/
   reserved/spot/Fargate) · `calibrate` · `observe` · `optimize` (SMA/ARIMA + HPA patch) ·
   `export` (Prometheus / OTLP / Pushgateway) · `rules` · `annotate` · `scaler` · `demo`
-- Optional `[evidence]` extra (`cryptography`) for the v0.17.0 `evidence_producer`
-  (`evidence-ref@1` signing); HMAC + the canonical/hash layer are stdlib
+- Optional `[evidence]` extra (`cryptography>=49,<50`) for the v0.17.0
+  `evidence_producer` (`evidence-ref@1` signing); HMAC + the canonical/hash layer
+  are stdlib
 - ≥80% test coverage, enforced in CI (`--cov-fail-under=80`); `ruff` format + lint (incl.
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.16.0** (0.17.0 "Evidence arc" in progress)
+- Current version: **0.17.0** ("Evidence arc · Sign the signal")
 
 ---
 
@@ -63,7 +64,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (included in v0.15.0 release) |
 | v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (released) |
 | v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Released |
-| v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` (L-EV-3): runtime-posture degradation evidence as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | **In progress** (producer landed 2026-06-21) |
+| v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | Complete (2026-06-21) |
 
 ---
 
@@ -1013,13 +1014,18 @@ steal"): the producer code may ship in the package, but the *running exporter ho
 - [x] **`evidence_producer.py`** — vendored-contract `evidence-ref@1` producer (canonical
   JSON + SHA-256 Layer 0; Ed25519/HMAC detached signature Layer 1), golden-vector pinned to
   the family vector; `observation_to_evidence()` maps an `Observation` (p99) to a degradation
-  envelope. Optional `[evidence]` extra (`cryptography`). Landed 2026-06-21.
-- [ ] **Layer-0 emission** — a key-less `pat`/daemon surface that writes the *unsigned*
-  degradation reading (`{slo, value, threshold, window}`) for the sidecar to sign.
-- [ ] **Signing-bridge sidecar** — a separate process holding the key, signing Layer-0
-  readings into `evidence-ref@1`, exposing them to x402. (Reference implementation lives in
-  the x402-internal monorepo `evidence-bridge/`.)
-- [ ] **Docs** — key custody, trust-store wiring, rotation (x402 holds only the public key).
+  envelope. Optional `[evidence]` extra (`cryptography>=49,<50`). Landed
+  2026-06-21.
+- [x] **Layer-0 emission** — key-less `build_layer0_reading` / `observation_to_layer0` /
+  `is_degraded` + the **`pat evidence-emit`** CLI command. Emits the *unsigned* reading
+  (`{slo, value, threshold, window}` as `slo-reading@1`) to stdout, only when degraded
+  (`--always` to override), for the sidecar to sign. Landed 2026-06-21.
+- [x] **Signing-bridge sidecar** — `evidence-bridge/` in the x402-internal monorepo holds the
+  Ed25519 key (fail-closed load, 0600-enforced, never logged) and signs Layer-0 readings into
+  `evidence-ref@1` (`sign_layer0` re-verifies the `content_hash`). Cross-repo chain validated:
+  `pat evidence-emit` → bridge → x402 `verify_ref` → pay.
+- [x] **Docs** — key custody + trust-store wiring + rotation: `evidence-bridge/README.md` and
+  x402's `plan/v07-arch-tlc-trigger-spec.md`. (x402 holds only the public key.)
 
 ### Conformance + dependency posture
 

@@ -1561,7 +1561,7 @@ wheels = [
 
 [[package]]
 name = "presidio-hardened-arch-translucency"
-version = "0.16.0"
+version = "0.17.0"
 source = { editable = "." }
 dependencies = [
     { name = "docker" },
@@ -1593,7 +1593,7 @@ spot = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", marker = "extra == 'spot'", specifier = ">=1.26" },
-    { name = "cryptography", marker = "extra == 'evidence'", specifier = ">=42" },
+    { name = "cryptography", marker = "extra == 'evidence'", specifier = ">=49.0.0,<50.0.0" },
     { name = "docker", specifier = ">=6.0.0" },
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "msgpack", marker = "extra == 'audit'", specifier = ">=1.2.1" },

@@ -14,10 +14,14 @@ import pytest
 
 from presidio_arch_translucency.evidence_producer import (
     DEFAULT_SIGNER,
+    LAYER0_SCHEMA_ID,
     EvidenceProducerError,
+    build_layer0_reading,
     build_slo_evidence,
     canonical_bytes,
+    is_degraded,
     observation_to_evidence,
+    observation_to_layer0,
     sha256_hex,
     sign_evidence,
 )
@@ -64,6 +68,15 @@ def test_signing_fails_closed():
         sign_evidence(GOLD_CH, GOLD_SIGNER, algorithm="rsa", key=GOLD_PRIV)
 
 
+@pytest.mark.parametrize(
+    "bad_key", ["AA" * 32, f"{GOLD_PRIV[:2]} {GOLD_PRIV[2:]}", "01"]
+)
+def test_ed25519_key_format_is_strict_lowercase_seed_hex(bad_key):
+    pytest.importorskip("cryptography")
+    with pytest.raises(EvidenceProducerError, match="64 lowercase hex"):
+        sign_evidence(GOLD_CH, GOLD_SIGNER, algorithm="ed25519", key=bad_key)
+
+
 def test_build_slo_evidence_structure_and_self_verifies():
     pytest.importorskip("cryptography")
     from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -99,6 +112,42 @@ def test_build_slo_evidence_structure_and_self_verifies():
         bytes.fromhex(ref["signature"]), message
     )  # raises on failure
     assert ref["signer"] == DEFAULT_SIGNER
+
+
+def test_layer0_reading_is_unsigned_and_hash_bound():
+    reading = build_layer0_reading(
+        slo="p99_latency_ms", value=420, threshold=200, window="5m"
+    )
+    assert reading["schema"] == LAYER0_SCHEMA_ID
+    assert "evidence" not in reading  # key-less: no signature
+    assert reading["content_hash"] == sha256_hex(reading["attested_content"])
+    assert reading["source"] == DEFAULT_SIGNER
+
+
+def test_is_degraded():
+    assert is_degraded(
+        build_layer0_reading(slo="x", value=420, threshold=200, window="5m")
+    )
+    assert not is_degraded(
+        build_layer0_reading(slo="x", value=100, threshold=200, window="5m")
+    )
+
+
+def test_observation_to_layer0_rounds_and_is_unsigned():
+    reading = observation_to_layer0(
+        Observation(
+            timestamp=datetime.now(timezone.utc),
+            rps=480.0,
+            avg_latency_ms=80.0,
+            p99_latency_ms=420.6,
+            throughput=480.0,
+            layer="container",
+            replicas=4,
+        ).validate(),
+        slo_target_ms=200,
+    )
+    assert reading["attested_content"]["value"] == 421
+    assert "evidence" not in reading
 
 
 def test_observation_to_evidence_rounds_p99_to_int():

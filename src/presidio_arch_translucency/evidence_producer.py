@@ -13,8 +13,9 @@ repo vendors the schema/vectors and signs from its own copy — exactly as
 golden vector in the tests. Realizes evidence backlog L-EV-3 (arch-translucency as
 the runtime-posture evidence producer).
 
-Ed25519 needs the optional ``[evidence]`` extra (``cryptography``); HMAC-SHA256 and
-the canonical/hash layer are pure stdlib.
+Ed25519 needs the optional ``[evidence]`` extra (``cryptography``). The Ed25519
+key format is a raw 32-byte private seed encoded as exactly 64 lowercase hex
+characters; HMAC-SHA256 and the canonical/hash layer are pure stdlib.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import hmac as hmaclib
 import json
+import string
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -30,8 +32,12 @@ if TYPE_CHECKING:
     from .observe import Observation
 
 EVIDENCE_SCHEMA_ID = "presidio-hardened/evidence-ref@1"
+#: Wire id for the **unsigned** Layer-0 reading arch-translucency emits (key-less);
+#: a signing-bridge sidecar turns it into a signed ``evidence-ref@1`` envelope.
+LAYER0_SCHEMA_ID = "presidio-hardened/slo-reading@1"
 DEFAULT_SIGNER = "presidio-hardened-arch-translucency"
 SIGNING_ALGORITHMS = ("ed25519", "hmac-sha256")
+_LOWER_HEX = frozenset(string.hexdigits.lower()[:16])
 
 
 class EvidenceProducerError(ValueError):
@@ -76,6 +82,15 @@ def _require_crypto():  # noqa: ANN202
     return ed25519
 
 
+def _ed25519_seed_from_hex(key: str) -> bytes:
+    if len(key) != 64 or any(ch not in _LOWER_HEX for ch in key):
+        raise EvidenceProducerError(
+            "Ed25519 private key must be a raw 32-byte seed encoded as "
+            "exactly 64 lowercase hex characters"
+        )
+    return bytes.fromhex(key)
+
+
 def sign_evidence(
     content_hash: str, signer: str, *, algorithm: str = "ed25519", key: str = ""
 ) -> str:
@@ -89,10 +104,13 @@ def sign_evidence(
     if algorithm == "ed25519":
         ed25519 = _require_crypto()
         try:
-            sk = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key))
+            sk = ed25519.Ed25519PrivateKey.from_private_bytes(
+                _ed25519_seed_from_hex(key)
+            )
         except ValueError as exc:
             raise EvidenceProducerError(
-                "Ed25519 private key must be 64 lowercase hex chars"
+                "Ed25519 private key must be a raw 32-byte seed encoded as "
+                "exactly 64 lowercase hex characters"
             ) from exc
         return sk.sign(message).hex()
     if algorithm == "hmac-sha256":
@@ -189,3 +207,67 @@ def observation_to_evidence(
         signer=signer,
         ledger_ref=ledger_ref,
     )
+
+
+# ---------------------------------------------------------------------------
+# Layer 0 — unsigned reading (key-less). arch-translucency holds NO signing key;
+# it emits this, and a signing-bridge sidecar turns it into a signed
+# ``evidence-ref@1`` envelope. The ``content_hash`` binds the reading; the sidecar
+# recomputes it before signing so transport corruption is caught.
+# ---------------------------------------------------------------------------
+
+
+def build_layer0_reading(
+    *,
+    slo: str,
+    value: int,
+    threshold: int,
+    window: str,
+    source_version: str | None = None,
+    observed_at: str | None = None,
+) -> dict:
+    """Build an **unsigned** Layer-0 SLO reading (no key held).
+
+    Integers only (the canonical profile rejects floats). The result carries the
+    attested content and its content hash but **no signature** — signing is the
+    sidecar's job.
+    """
+    content = {
+        "slo": slo,
+        "value": int(value),
+        "threshold": int(threshold),
+        "window": window,
+    }
+    return {
+        "schema": LAYER0_SCHEMA_ID,
+        "attested_content": content,
+        "content_hash": sha256_hex(content),
+        "source": DEFAULT_SIGNER,
+        "source_version": source_version or _package_version(),
+        "generated_at": observed_at or _utcnow_iso(),
+    }
+
+
+def observation_to_layer0(
+    observation: Observation,
+    *,
+    slo_target_ms: int,
+    window: str = "5m",
+    source_version: str | None = None,
+) -> dict:
+    """Convenience: an unsigned Layer-0 p99-latency reading from an ``Observation``."""
+    return build_layer0_reading(
+        slo="p99_latency_ms",
+        value=round(observation.p99_latency_ms),
+        threshold=int(slo_target_ms),
+        window=window,
+        source_version=source_version,
+    )
+
+
+def is_degraded(reading: Mapping[str, object]) -> bool:
+    """True when a Layer-0 reading's observed value breaches its threshold."""
+    content = reading.get("attested_content")
+    if not isinstance(content, Mapping):
+        raise EvidenceProducerError("reading has no attested_content mapping")
+    return int(content["value"]) > int(content["threshold"])
