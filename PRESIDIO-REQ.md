@@ -19,25 +19,21 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 - Full GitHub security files: SECURITY.md, .github/dependabot.yml, .github/workflows/codeql.yml + pytest workflow
 
 ## Technical Requirements
-- Python 3.9+
-- Modern pyproject.toml + hatchling/uv + Typer CLI
-- src/presidio_arch_translucency/ layout
-- Simple CLI: `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-layer container`
-- Returns recommendation + estimated throughput/response-time improvement
-- Basic simulation model based on the original equations from the papers (ω(δ) = f(ι(δ)), response time = 1/ω)
-- 80%+ test coverage with pytest
-- README.md with side-by-side examples and clear reference to the architectural translucency concept
-- LICENSE = MIT
-- Version = 0.1.0
-
-## Workflow Rules (always follow)
-1. First create or update PRESIDIO-REQ.md from this template (adapt for the specific toolkit).
-2. Manually remove or comment out the final "Deliver the complete working project ready for GitHub publish." line.
-3. Implement file-by-file in logical order.
-4. After every major section run validation commands (ruff format . && ruff check . --fix && pytest) and fix all issues automatically.
-5. When complete, reply exactly: "BUILD COMPLETE – ready for publish"
-
-<!-- Deliver the complete working project ready for GitHub publish. -->
+- Python 3.10+ (`requires-python = ">=3.10"`); `pyproject.toml` (hatchling) + `uv`
+- `src/presidio_arch_translucency/` layout; Typer CLI `pat` (entry point
+  `presidio_arch_translucency.cli:app`)
+- Replication model from the architectural-translucency equations — throughput `ω(δ)`,
+  M/M/δ response time, layer-specific α/β — driving the cross-layer recommendation
+- CLI control plane: `analyze` · `what-if` · `slo` · `cost` (AWS/GCP/Azure, on-demand/
+  reserved/spot/Fargate) · `calibrate` · `observe` · `optimize` (SMA/ARIMA + HPA patch) ·
+  `export` (Prometheus / OTLP / Pushgateway) · `rules` · `annotate` · `scaler` · `demo`
+- Optional `[evidence]` extra (`cryptography`) for the v0.17.0 `evidence_producer`
+  (`evidence-ref@1` signing); HMAC + the canonical/hash layer are stdlib
+- ≥80% test coverage, enforced in CI (`--cov-fail-under=80`); `ruff` format + lint (incl.
+  bandit `S`); `pip-audit` on run
+- MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
+  dependabot, CodeQL)
+- Current version: **0.16.0** (0.17.0 "Evidence arc" in progress)
 
 ---
 
@@ -67,6 +63,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.14.0 | Monitoring arc · Reach ephemeral — Pushgateway target (remote-write deferred) | Complete (included in v0.15.0 release) |
 | v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (released) |
 | v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Released |
+| v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` (L-EV-3): runtime-posture degradation evidence as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | **In progress** (producer landed 2026-06-21) |
 
 ---
 
@@ -987,6 +984,60 @@ This completes the seven-step monitoring-integration arc (v0.10.0 → v0.16.0).
 | AWS before GCP/Azure | Largest K8s adoption share; proves the integration pattern first |
 | Grafana instead of a dedicated GUI | A dashboard delivers the visual-interface value through infra users already run, at lower cost and zero new attack surface; a standalone GUI is deferred indefinitely, not merely sequenced later |
 | Read-only Prometheus exporter over a web app | Pull-based exposition is idiomatic and adds no auth/write surface, preserving the hardened posture |
+
+## Evidence Arc (v0.17.0) — "Sign the Signal"
+
+**Deliberated:** 2026-06-21
+
+### Direction
+
+The monitoring arc (v0.10–v0.16) made `pat` a control plane that *observes*, *predicts*,
+and *scales*. The evidence arc makes its degradation signals **authenticatable** so a
+*downstream economic actor* can act on them safely. The first consumer is
+`presidio-hardened-x402`'s SLO payment broker, which autonomously pays for a capacity
+upgrade when arch-translucency reports a breach — but only if the report is a **signed,
+verified `presidio-hardened/evidence-ref@1` envelope** (the family signed-evidence contract).
+This realizes presidio-evidence backlog item **L-EV-3** (arch-translucency as the fifth,
+runtime-posture evidence producer).
+
+### Decision — arch-translucency stays key-less; a sidecar signs
+
+The v0.16 fork chose a read-only exporter precisely to add **no auth, no write paths, no key
+custody** (roadmap-fork rationale #3). Signing introduces an Ed25519 private key — exactly
+that surface. To preserve the posture, the **signing key lives in a separate bridge sidecar**,
+never in the `pat` runtime. This mirrors `treasury` in evidence ADR-0001 ("no secrets to
+steal"): the producer code may ship in the package, but the *running exporter holds no key*.
+
+### Scope
+
+- [x] **`evidence_producer.py`** — vendored-contract `evidence-ref@1` producer (canonical
+  JSON + SHA-256 Layer 0; Ed25519/HMAC detached signature Layer 1), golden-vector pinned to
+  the family vector; `observation_to_evidence()` maps an `Observation` (p99) to a degradation
+  envelope. Optional `[evidence]` extra (`cryptography`). Landed 2026-06-21.
+- [ ] **Layer-0 emission** — a key-less `pat`/daemon surface that writes the *unsigned*
+  degradation reading (`{slo, value, threshold, window}`) for the sidecar to sign.
+- [ ] **Signing-bridge sidecar** — a separate process holding the key, signing Layer-0
+  readings into `evidence-ref@1`, exposing them to x402. (Reference implementation lives in
+  the x402-internal monorepo `evidence-bridge/`.)
+- [ ] **Docs** — key custody, trust-store wiring, rotation (x402 holds only the public key).
+
+### Conformance + dependency posture
+
+`presidio-evidence` is private; this repo is public, so the producer **vendors the contract**
+(schema + golden vectors) and implements its own signing — exactly as `presidio-hardened-x402`'s
+`mica.py` does — rather than importing `presidio_evidence`. The golden vector is pinned in
+`tests/test_evidence_producer.py`; the same vector is pinned on the x402 side, so the producer
+and consumer cannot silently drift. Cross-repo round-trip validated 2026-06-21
+(real `Observation` → sidecar-sign → x402 `verify_ref` → pay; wrong-key rejected).
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Reuse the family `evidence-ref@1` wire format | One contract across ikigov / hardened-ai / x402 / treasury / scoutsuite; x402 already verifies it |
+| Key-less daemon, sidecar signs | Preserves the v0.16 "no secrets to steal" posture; mirrors treasury |
+| Integers only (round p99 to ms) | The canonical profile rejects floats so the content hash is portable |
+| Vendor the contract, do not import private evidence | Public repo cannot depend on the private evidence package; mirrors mica.py |
 
 ## SDLC
 

@@ -836,6 +836,27 @@ pytest
 
 ---
 
+## Signed degradation evidence (v0.17.0, library)
+
+`evidence_producer` turns a degradation reading / `Observation` into a signed
+`presidio-hardened/evidence-ref@1` envelope so a downstream economic actor —
+`presidio-hardened-x402`'s SLO payment broker — can verify the signal fail-closed before
+paying for a capacity upgrade.
+
+```python
+from presidio_arch_translucency.evidence_producer import observation_to_evidence
+envelope = observation_to_evidence(obs, slo_target_ms=200, private_key_hex=KEY)
+# → x402's ArchTranslucencyAdapter recomputes the hash + verifies the signature before acting.
+```
+
+**Key-less by design.** `pat` itself holds **no signing key** — the Ed25519 key lives in a
+separate signing-bridge sidecar, preserving the read-only "no secrets to steal" posture
+(mirrors `treasury` in evidence ADR-0001). x402 holds only the public key. Ed25519 needs the
+optional `[evidence]` extra; HMAC + the canonical/hash layer are stdlib. See
+[PRESIDIO-REQ.md](PRESIDIO-REQ.md) "Evidence Arc (v0.17.0)".
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -855,7 +876,8 @@ pytest
 | v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
 | v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
 | v0.15.0 | Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast) |
-| **v0.16.0** | **Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile** |
+| v0.16.0 | Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile |
+| **v0.17.0** | **Evidence arc · Sign the signal — `evidence_producer` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar** (in progress) |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

@@ -10,6 +10,25 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- **`evidence_producer.py` — signed runtime-posture evidence (v0.17.0 "Evidence
+  arc · Sign the signal", L-EV-3).** Turns a degradation reading / `Observation`
+  into a `presidio-hardened/evidence-ref@1` envelope (canonical JSON + SHA-256
+  Layer 0; Ed25519/HMAC detached signature Layer 1), so `presidio-hardened-x402`'s
+  SLO payment broker can verify the signal fail-closed before paying for a capacity
+  upgrade. Golden-vector pinned to the family wire format; optional `[evidence]`
+  extra (`cryptography`). `observation_to_evidence()` maps p99 latency (rounded to an
+  int — the canonical profile rejects floats).
+
+### Security
+
+- **Key-less posture preserved.** The producer ships as a library primitive but the
+  `pat` runtime holds **no signing key** — signing runs in a separate bridge sidecar
+  that holds the Ed25519 key (mirrors `treasury` in evidence ADR-0001, "no secrets to
+  steal"). x402 holds only the corresponding **public** key. See `PRESIDIO-REQ.md`
+  "Evidence Arc (v0.17.0)".
+
 ## [0.16.0] - 2026-06-20
 
 ### Added

@@ -41,6 +41,7 @@ This toolkit ships with the following Presidio security hardening:
 | **Output sanitization** | Rich markup prevents injection via user-supplied layer names |
 | **Dependabot** | Automated dependency updates configured in `.github/dependabot.yml` |
 | **CodeQL** | Static analysis via `.github/workflows/codeql.yml` |
+| **Key-less evidence producer (v0.17.0)** | `evidence_producer` signs runtime-posture degradation evidence, but the `pat` runtime holds **no signing key** — the Ed25519 key lives in a separate signing-bridge sidecar (consumers hold only the public key), preserving the read-only "no secrets to steal" posture |
 
 ## Dependency Security
 

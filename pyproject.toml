@@ -43,6 +43,13 @@ dev = [
 ]
 audit = [
     "pip-audit>=2.6.0",
+    # CVE guard for pip-audit/cachecontrol's transitive dependency.
+    "msgpack>=1.2.1",
+]
+evidence = [
+    # Ed25519 signing for the evidence-ref@1 SLO degradation producer
+    # (evidence_producer.py). HMAC-SHA256 + the canonical/hash layer are stdlib.
+    "cryptography>=42",
 ]
 spot = [
     "boto3>=1.26",
