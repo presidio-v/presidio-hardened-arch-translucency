@@ -43,6 +43,8 @@ dev = [
 ]
 audit = [
     "pip-audit>=2.6.0",
+    # CVE guard for pip-audit/cachecontrol's transitive dependency.
+    "msgpack>=1.2.1",
 ]
 spot = [
     "boto3>=1.26",
