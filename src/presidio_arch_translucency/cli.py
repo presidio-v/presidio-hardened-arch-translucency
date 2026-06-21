@@ -2631,5 +2631,83 @@ def _render_slo(
     console.print()
 
 
+@app.command("evidence-emit")
+def evidence_emit_cmd(
+    p99_target_ms: float = typer.Option(
+        ...,
+        "--p99-target-ms",
+        help="SLO target: maximum acceptable p99 latency in milliseconds.",
+        min=1.0,
+    ),
+    p99_latency_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--p99-latency-ms",
+        help="Observed p99 latency (ms). Omit to read the latest stored observation.",
+        min=0.0,
+    ),
+    window: str = typer.Option("5m", "--window", help="Observation window label."),
+    layer: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--layer", help="Filter the stored observation by replication layer."
+    ),
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None, "--db", help="Observation store path (defaults to the standard location)."
+    ),
+    always: bool = typer.Option(
+        False,
+        "--always",
+        help="Emit even when not degraded (default: only when p99 > target).",
+    ),
+) -> None:
+    """Emit a key-less Layer-0 SLO degradation reading as JSON.
+
+    arch-translucency holds **no signing key**: this prints an *unsigned* reading to
+    stdout. Pipe it to the signing-bridge sidecar, which adds the Ed25519 signature
+    that presidio-hardened-x402's SLO payment broker verifies before paying. By
+    default a reading is emitted only when the observed p99 breaches the target
+    (cron/daemon-friendly); pass ``--always`` to emit regardless.
+    """
+    from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
+        build_layer0_reading,
+        is_degraded,
+    )
+
+    try:
+        target = sanitize_latency_ms(p99_target_ms)
+        if p99_latency_ms is None:
+            from presidio_arch_translucency.observe import (  # noqa: PLC0415
+                latest_observations,
+            )
+
+            obs_layer = sanitize_layer(layer, VALID_LAYERS) if layer else None
+            recent = latest_observations(1, db_path=db, layer=obs_layer)
+            if not recent:
+                err_console.print(
+                    "[bold red]No observation found[/] — pass --p99-latency-ms or "
+                    "record one with `pat observe`."
+                )
+                raise typer.Exit(code=1)
+            observed = recent[-1].p99_latency_ms
+        else:
+            observed = sanitize_latency_ms(p99_latency_ms)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    reading = build_layer0_reading(
+        slo="p99_latency_ms",
+        value=round(observed),
+        threshold=round(target),
+        window=window,
+    )
+    degraded = is_degraded(reading)
+    log_security_event("EVIDENCE_EMIT", {"slo": "p99_latency_ms", "degraded": degraded})
+
+    if not degraded and not always:
+        # Not degraded → nothing to authorize. Stay silent on stdout.
+        raise typer.Exit(code=0)
+
+    typer.echo(json.dumps(reading, separators=(",", ":")))
+
+
 if __name__ == "__main__":
     app()

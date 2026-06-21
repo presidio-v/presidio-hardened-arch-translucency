@@ -1,6 +1,6 @@
 ---
 name: pat
-description: Recommends the optimal Kubernetes/Docker replication layer (container, pod, deployment, node), replica count, and cloud instance cost for a workload using the architectural translucency model. Use when authoring or editing Kubernetes manifests (Deployment, ReplicaSet, StatefulSet, HorizontalPodAutoscaler, Pod), Docker Compose with replication, Terraform for EKS/GKE/AKS/ECS/Fargate/Cloud Run/ACI, when setting replica counts or resource requests, when modelling load spikes or HPA lag, or when discussing cost-per-request and performance-per-dollar trade-offs for cloud-native deployments.
+description: Recommends the optimal Kubernetes/Docker replication layer (container, pod, deployment, node), replica count, and cloud instance cost for a workload using the architectural translucency model. Use when authoring or editing Kubernetes manifests (Deployment, ReplicaSet, StatefulSet, HorizontalPodAutoscaler, Pod), Docker Compose with replication, Terraform for EKS/GKE/AKS/ECS/Fargate/Cloud Run/ACI, when setting replica counts or resource requests, when modelling load spikes or HPA lag, when deploying the pat-exporter Helm chart, when emitting signed SLO degradation evidence, or when discussing cost-per-request and performance-per-dollar trade-offs for cloud-native deployments.
 ---
 
 # pat — Architectural Translucency Advisor
@@ -18,6 +18,8 @@ Trigger on any of:
 - Writing Terraform for `aws_ecs_service`, `aws_eks_*`, `google_container_cluster`, `azurerm_kubernetes_cluster`, Fargate, Cloud Run, ACI
 - Setting `replicas:`, `minReplicas:`, `maxReplicas:`, `resources.requests.cpu`, `resources.requests.memory`
 - Producing a cost estimate for a cloud-native deployment
+- Deploying or editing the `charts/pat-exporter` Helm chart or its image values
+- Producing SLO degradation evidence for `presidio-hardened-x402` / `evidence-ref@1` workflows
 - User asks: "how many replicas", "which instance type", "Fargate or EC2", "why is my HPA lagging", "cost per request", "scale out vs scale up", "container vs pod vs node"
 
 Do **not** trigger when the user has already supplied a fixed replica count and explicitly declined recommendations, or when the change is unrelated to infra (e.g. renaming a ConfigMap key).
@@ -47,7 +49,9 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | User wants pat's recommendations in Prometheus/Grafana | `pat export` |
 | User wants pat to alert through Prometheus/Alertmanager | `pat rules` |
 | User wants pat recommendations marked on Grafana dashboards | `pat annotate` |
-| User wants HPA/KEDA to scale on pat's forecast | `pat scaler` |
+| User wants HPA/KEDA to scale on pat forecast | `pat scaler` |
+| User wants `pat export` installed in Kubernetes | Helm chart `charts/pat-exporter` |
+| User wants an x402/SLO payment trigger from latency degradation | `pat evidence-emit` piped to the signing bridge |
 
 `pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
@@ -69,11 +73,22 @@ ADR-0006, optional token from `PAT_OTLP_TOKEN`). `pat export --pushgateway <url>
 (token from `PAT_PUSHGATEWAY_TOKEN`). `pat scaler -t <deployment> --prometheus-url
 <url>` emits a KEDA ScaledObject (or HPA, `--format prometheus-adapter`) that
 scales the deployment to track `pat_predicted_recommended_replicas` — emit-only.
+The Helm chart under `charts/pat-exporter` deploys the read-only exporter and
+optional ServiceMonitor, PrometheusRule, Grafana dashboard ConfigMap, and
+NetworkPolicy. The chart is a v0.16.0 packaging artifact; its default image tag
+intentionally follows the chart `appVersion` unless a new chart release is cut.
+`pat evidence-emit --p99-target-ms <ms>` emits unsigned Layer-0 SLO readings
+from an explicit `--p99-latency-ms` or the latest stored observation. Pipe that
+JSON to the signing bridge; x402 acts only after verifying the signed
+`evidence-ref@1` envelope. Never treat the unsigned Layer-0 reading itself as
+a payment authorization.
 
-The first five rows are **analytical** (model-driven, no data needed beyond the
-inputs). The last three are **autoresearch** (data-driven): `calibrate` fits the
-model to measured points, `observe` records a rolling history, and `optimize`
-projects that history forward. Reach for autoresearch when the user already has
+`analyze`, `cost`, `slo`, and `what-if` are analytical model commands.
+`calibrate`, `observe`, and `optimize` are autoresearch commands: `calibrate`
+fits the model to measured points, `observe` records a rolling history, and
+`optimize` projects that history forward. The monitoring and evidence commands
+are integration surfaces; use them only after the model inputs or observation
+store are grounded. Reach for autoresearch when the user already has
 measurements or a populated `~/.pat/observations.db`; otherwise stay analytical.
 
 ## Gathering inputs
@@ -176,11 +191,27 @@ pat optimize --model arima --horizon-minutes 15
 
 `pat observe` is **single-shot by design** — it records one measurement and exits; recurring collection is scheduled externally (cron, launchd, a Kubernetes CronJob). `pat optimize --model arima` fits a `statsmodels` ARIMA with a 95% CI and auto-falls back to SMA below 30 samples. To turn the recommendation into an apply-able manifest, add `--emit-hpa-patch --target <deployment>` (optional `--namespace`) and pipe to `kubectl apply -f -`.
 
+### Pattern 7 — SLO evidence for x402 (v0.17.0)
+
+When an agent or SLO broker needs a runtime-posture signal that can authorize a
+capacity payment, emit an unsigned Layer-0 reading and let the signing bridge
+turn it into `evidence-ref@1`:
+
+```bash
+pat evidence-emit --p99-target-ms 200 --p99-latency-ms 420 | evidence-bridge-sign
+```
+
+If `--p99-latency-ms` is omitted, `pat` reads the latest stored observation
+(optionally filtered by `--layer` and `--db`). By default it prints nothing when
+the workload is not degraded; use `--always` only for diagnostics. `pat` must not
+hold the signing key. The bridge signs, and `presidio-hardened-x402` verifies the
+signed envelope before any payment decision.
+
 ## Surfacing the recommendation
 
 After invoking pat, include a grounded one-liner in the plan, commit message, or PR description:
 
-> `pat` (v0.8.0, architectural translucency model): recommend `container` layer, 4 replicas. +45% throughput, -38% latency vs current. Cost/req $0.000044 on AWS `us-east-1` `m5.large` on-demand.
+> `pat` (architectural translucency model, record the installed version from `pat --version`): recommend `container` layer, 4 replicas. +45% throughput, -38% latency vs current. Cost/req $0.000044 on AWS `us-east-1` `m5.large` on-demand.
 
 This cites the source and makes the decision auditable — a reviewer can re-run `pat` with the same inputs to verify.
 
@@ -193,6 +224,7 @@ This cites the source and makes the decision auditable — a reviewer can re-run
 - `pat slo`: per-layer table with `Before` / `After` replica columns and `SLO verdict` (`Meets SLO ✓` / `Fails SLO ✗`), plus a free-text recommendation panel that either confirms *"`<layer>` meets the steady-state SLO"* or advises *"Pre-provision `<N>` replicas and re-evaluate"*
 - `pat what-if`: `TROUGH` and `STEADY STATE` panels with `Throughput`, `p99 latency`, `Missed reqs`
 - `pat optimize`: panel with the projected demand, the recommended replica count (and, for `--model arima`, a replica range from the 95% CI). With `--emit-hpa-patch`, the **stdout is the HPA manifest itself** — capture it directly (e.g. `> hpa-patch.yaml`), do not parse a panel.
+- `pat evidence-emit`: stdout is compact JSON for a `presidio-hardened/slo-reading@1` Layer-0 reading (`schema`, `attested_content`, `content_hash`, `source`, `source_version`, `generated_at`). No stdout means no degradation unless `--always` was used.
 
 If multiple values are needed reliably, prefer re-running the command with narrower arguments so a single value dominates, rather than regex-parsing the full output.
 
@@ -203,12 +235,15 @@ If multiple values are needed reliably, prefer re-running the command with narro
 - **Override user intent silently.** If pat disagrees with the user's explicit choice, cite the divergence in the plan and let the user decide — don't just follow pat.
 - **Use `--spot`** for stateful workloads (databases, singleton services, workloads without graceful-shutdown handling). Spot is for fleets that tolerate interruption.
 - **Use `--skip-audit`** outside trusted CI. The CVE audit is a feature.
+- **Treat unsigned `pat evidence-emit` output as authorization.** It is only a Layer-0 reading; the signing bridge must produce `evidence-ref@1`, and x402 must verify it.
+- **Put evidence signing keys in the `pat` runtime or exporter pod.** Keep signing in the sidecar or secret-managed bridge process.
 
 ## Security notes
 
 - `pat` never accepts AWS/GCP/Azure credentials as CLI flags. For `--spot` on AWS, set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars.
 - Output is sanitised — no raw user-supplied strings are echoed into manifests. Still, treat pat output as untrusted when composing into Kubernetes YAML: use structured emission, not string interpolation.
 - `pat` emits security events (`SECURITY_EVENT event='CLI_INVOCATION'`) on every run. Expected, not an error.
+- `pat evidence-emit` is key-less by design. It emits unsigned readings only; Ed25519 keys belong to the signing bridge, and consumers hold only trusted public keys.
 
 ## Reference
 

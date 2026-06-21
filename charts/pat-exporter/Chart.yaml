@@ -8,8 +8,9 @@ description: |
   RBAC, and an optional NetworkPolicy. Emit-only: the exporter never holds
   cluster write credentials and never applies changes (arc invariant A1).
 type: application
-# Chart version — bumped independently of the app, but kept in lock-step for
-# the v0.16.0 "Package & operate" release.
+# Chart version — bumped independently of the app. v0.17.0 is an
+# evidence/library release, not a chart release; keep this chart and appVersion
+# at 0.16.0 until the exporter chart/image is deliberately bumped.
 version: 0.16.0
 # Application version — the `pat` release the default image tag tracks.
 appVersion: "0.16.0"

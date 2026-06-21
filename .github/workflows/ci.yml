@@ -81,10 +81,12 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install package and pip-audit
-        run: uv pip install --system -e ".[audit]"
+        run: uv pip install --system -e ".[audit,evidence]"
 
       - name: Run pip-audit
         # --skip-editable skips the local (not-yet-on-PyPI) package itself.
+        # The evidence extra is installed so the optional Ed25519 dependency is
+        # included in the release security gate.
         # continue-on-error: true so CVEs in transitive deps (e.g. pygments via
         # rich) are reported but do not block the CI matrix. Direct deps are
         # tracked by Dependabot PRs; pin overrides should be added to

@@ -4,10 +4,12 @@
 # /healthz and never mutates infrastructure. The image runs as an unprivileged
 # user and carries only the runtime needed to serve metrics.
 #
-# Build (latest published release):
-#   docker build -t ghcr.io/presidio-v/pat-exporter:0.16.0 .
-# Pin a specific release:
+# Build the latest published package image:
+#   docker build -t ghcr.io/presidio-v/pat-exporter:0.17.0 .
+# Build the image expected by charts/pat-exporter 0.16.0:
 #   docker build --build-arg PAT_VERSION=0.16.0 -t ghcr.io/presidio-v/pat-exporter:0.16.0 .
+# v0.17.0 is an evidence/library release; the Helm chart remains on appVersion
+# 0.16.0 until a chart/image release is cut deliberately.
 FROM python:3.12-slim
 
 ARG PAT_VERSION=""

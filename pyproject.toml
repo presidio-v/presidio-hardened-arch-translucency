@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "presidio-hardened-arch-translucency"
-version = "0.16.0"
+version = "0.17.0"
 description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,6 +45,12 @@ audit = [
     "pip-audit>=2.6.0",
     # CVE guard for pip-audit/cachecontrol's transitive dependency.
     "msgpack>=1.2.1",
+]
+evidence = [
+    # Ed25519 signing for the evidence-ref@1 SLO degradation producer
+    # (evidence_producer.py). Major-bounded and lock-pinned for release auditability.
+    # HMAC-SHA256 + the canonical/hash layer are stdlib.
+    "cryptography>=49.0.0,<50.0.0",
 ]
 spot = [
     "boto3>=1.26",

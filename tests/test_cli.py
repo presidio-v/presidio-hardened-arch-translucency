@@ -1,10 +1,18 @@
 """Tests for the CLI entry-point."""
 
+import json
 import re
+import stat
+from datetime import datetime, timezone
 
 from typer.testing import CliRunner
 
 from presidio_arch_translucency.cli import app
+from presidio_arch_translucency.observe import (
+    Observation,
+    default_db_path,
+    record_observation,
+)
 
 runner = CliRunner()
 
@@ -290,3 +298,65 @@ class TestEnvelopeWarning:
         assert result.exit_code == 0
         combined = strip_ansi(combined_output(result))
         assert "pat calibrate" not in combined
+
+
+class TestEvidenceEmit:
+    def test_emits_layer0_json_when_degraded(self):
+        result = invoke(
+            "evidence-emit", "--p99-target-ms", "200", "--p99-latency-ms", "420"
+        )
+        assert result.exit_code == 0
+        line = strip_ansi(result.stdout).strip().splitlines()[-1]
+        reading = json.loads(line)
+        assert reading["schema"] == "presidio-hardened/slo-reading@1"
+        assert reading["attested_content"] == {
+            "slo": "p99_latency_ms",
+            "value": 420,
+            "threshold": 200,
+            "window": "5m",
+        }
+        assert "content_hash" in reading
+        assert "evidence" not in reading  # key-less: unsigned, no signature
+
+    def test_silent_when_not_degraded(self):
+        result = invoke(
+            "evidence-emit", "--p99-target-ms", "200", "--p99-latency-ms", "100"
+        )
+        assert result.exit_code == 0
+        assert strip_ansi(result.stdout).strip() == ""  # nothing to authorize
+
+    def test_always_emits_even_when_not_degraded(self):
+        result = invoke(
+            "evidence-emit",
+            "--p99-target-ms",
+            "200",
+            "--p99-latency-ms",
+            "100",
+            "--always",
+        )
+        assert result.exit_code == 0
+        reading = json.loads(strip_ansi(result.stdout).strip().splitlines()[-1])
+        assert reading["attested_content"]["value"] == 100
+
+    def test_reads_private_default_observation_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        record_observation(
+            Observation(
+                timestamp=datetime.now(timezone.utc),
+                rps=480.0,
+                avg_latency_ms=80.0,
+                p99_latency_ms=420.6,
+                throughput=480.0,
+                layer="container",
+                replicas=4,
+            )
+        )
+
+        result = invoke("evidence-emit", "--p99-target-ms", "200")
+
+        assert result.exit_code == 0
+        reading = json.loads(strip_ansi(result.stdout).strip().splitlines()[-1])
+        assert reading["attested_content"]["value"] == 421
+        store = default_db_path()
+        assert stat.S_IMODE(store.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(store.stat().st_mode) == 0o600

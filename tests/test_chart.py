@@ -42,7 +42,8 @@ def test_chart_yaml_present_and_v2() -> None:
     assert re.search(r"^apiVersion:\s*v2\s*$", chart, re.MULTILINE)
     assert re.search(r"^name:\s*pat-exporter\s*$", chart, re.MULTILINE)
     assert re.search(r"^type:\s*application\s*$", chart, re.MULTILINE)
-    # Chart + app version are kept in lock-step for the 0.16.0 packaging release.
+    # Chart + appVersion stay at 0.16.0: v0.17.0 is an evidence/library
+    # release, not a pat-exporter chart/image release.
     assert re.search(r"^version:\s*0\.16\.0\s*$", chart, re.MULTILINE)
     assert re.search(r'^appVersion:\s*"0\.16\.0"\s*$', chart, re.MULTILINE)
 
