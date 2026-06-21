@@ -30,7 +30,9 @@ costPerReplicaHour: ""
 
 image:
   repository: ghcr.io/presidio-v/pat-exporter
-  # Empty tag defaults to the chart appVersion (see _helpers.tpl).
+  # Empty tag defaults to the chart appVersion (see _helpers.tpl). The chart
+  # appVersion intentionally stays 0.16.0 until a chart/image release is cut;
+  # override this only when you have built and published a matching newer image.
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

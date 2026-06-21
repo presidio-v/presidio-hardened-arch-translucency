@@ -10,8 +10,39 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-21
+
+**Evidence arc · "Sign the signal" (L-EV-3).** arch-translucency's runtime-posture
+degradation signal becomes authenticatable so a downstream economic actor —
+`presidio-hardened-x402`'s SLO payment broker — can verify it fail-closed before
+paying for a capacity upgrade.
+
+### Added
+
+- **`evidence_producer.py` — signed runtime-posture evidence.** Turns a degradation
+  reading / `Observation` into a `presidio-hardened/evidence-ref@1` envelope (canonical
+  JSON + SHA-256 Layer 0; Ed25519/HMAC detached signature Layer 1). Golden-vector pinned
+  to the family wire format; optional `[evidence]` extra (`cryptography`).
+  `observation_to_evidence()` maps p99 latency (rounded to an int — the canonical profile
+  rejects floats).
+- **Key-less Layer-0 emit** — `build_layer0_reading` / `observation_to_layer0` /
+  `is_degraded`, plus the **`pat evidence-emit`** CLI command. Emits an *unsigned*
+  Layer-0 SLO reading as JSON (from an explicit p99 or the latest stored observation),
+  only when the observed p99 breaches the target (`--always` to override). Pipe it to the
+  signing-bridge sidecar, which adds the signature — `pat` itself never holds a key.
+
 ### Security
 
+- **Key-less posture preserved.** The producer ships as a library primitive and
+  `pat evidence-emit` emits unsigned readings only — the `pat` runtime holds **no signing
+  key**. Signing runs in a separate bridge sidecar that holds the Ed25519 key (mirrors
+  `treasury` in evidence ADR-0001, "no secrets to steal"); x402 holds only the **public**
+  key. The bridge re-verifies the reading's `content_hash` before signing. See
+  `PRESIDIO-REQ.md` "Evidence Arc (v0.17.0)".
+- **Third-party audit remediation.** The optional Ed25519 dependency is now included in
+  the CI `pip-audit` release gate, `cryptography` is major-bounded and lock-pinned,
+  Ed25519 keys are enforced as raw 32-byte lowercase-hex seeds, and the local
+  observation-store trust boundary is documented and regression-tested.
 - Pin the audit extra's transitive `msgpack` dependency to `>=1.2.1`, remediating
   GHSA-6v7p-g79w-8964 in `uv.lock`.
 
@@ -341,7 +372,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...v0.15.0
 [0.13.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.10.0...v0.13.0

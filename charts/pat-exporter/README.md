@@ -5,6 +5,10 @@ Cluster-native packaging of the read-only architectural-translucency exporter
 monitoring-integration arc: it ships the exporter and its declarative monitoring
 artifacts as one installable bundle.
 
+`v0.17.0` is an evidence/library release, not a chart release. This chart and
+its default image tag remain `0.16.0` until a chart/image release is cut
+deliberately.
+
 **Emit-only.** The chart deploys a read-only `/metrics` endpoint and declarative
 objects (ServiceMonitor, PrometheusRule, dashboard ConfigMap). The exporter
 holds **no** Kubernetes API credentials (`automountServiceAccountToken: false`)
@@ -44,10 +48,11 @@ helm install pat ./charts/pat-exporter -n monitoring \
   --set dashboard.enabled=true
 ```
 
-The container image is built from the repo `Dockerfile`:
+The container image is built from the repo `Dockerfile`. Pin `PAT_VERSION` when
+building the image expected by this chart:
 
 ```bash
-docker build -t ghcr.io/presidio-v/pat-exporter:0.16.0 .
+docker build --build-arg PAT_VERSION=0.16.0 -t ghcr.io/presidio-v/pat-exporter:0.16.0 .
 ```
 
 ## Security posture

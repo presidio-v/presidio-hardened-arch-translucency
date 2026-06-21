@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.16.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.17.0 — Architectural Translucency Analyzer for Docker & Kubernetes
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -648,6 +648,10 @@ RFC 1123-validated.
 The arc's final step — **"Package & operate"**: the exporter and its declarative
 monitoring artifacts ship as one installable Helm chart.
 
+`v0.17.0` is an evidence/library release, not a chart release. The chart and
+default image tag remain `0.16.0`; set `image.tag` only when you have built and
+published a matching newer `pat-exporter` image.
+
 ```bash
 # Minimal install — Deployment + Service + ServiceAccount (works on any cluster)
 helm install pat ./charts/pat-exporter -n monitoring --create-namespace \
@@ -836,6 +840,37 @@ pytest
 
 ---
 
+## Signed degradation evidence (v0.17.0, library)
+
+`evidence_producer` turns a degradation reading / `Observation` into a signed
+`presidio-hardened/evidence-ref@1` envelope so a downstream economic actor —
+`presidio-hardened-x402`'s SLO payment broker — can verify the signal fail-closed before
+paying for a capacity upgrade.
+
+**Key-less by design.** `pat` itself holds **no signing key**. It emits an *unsigned*
+Layer-0 reading; a separate signing-bridge sidecar holds the Ed25519 key and signs it —
+preserving the read-only "no secrets to steal" posture (mirrors `treasury` in evidence
+ADR-0001). x402 holds only the public key.
+
+```bash
+# Emit a key-less Layer-0 reading (only when p99 breaches the target), pipe to the sidecar:
+pat evidence-emit --p99-target-ms 200 --p99-latency-ms 420 | evidence-bridge-sign
+```
+
+```python
+# Library API (the sidecar uses observation_to_evidence with its key):
+from presidio_arch_translucency.evidence_producer import observation_to_layer0
+reading = observation_to_layer0(obs, slo_target_ms=200)   # unsigned, key-less
+# sidecar signs → x402's ArchTranslucencyAdapter verifies the signature before acting.
+```
+
+Ed25519 needs the optional `[evidence]` extra and uses a raw 32-byte private
+seed encoded as exactly 64 lowercase hex characters; HMAC + the canonical/hash
+layer are stdlib.
+See [PRESIDIO-REQ.md](PRESIDIO-REQ.md) "Evidence Arc (v0.17.0)".
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -855,7 +890,8 @@ pytest
 | v0.13.0 | Speak OTLP — vendor-neutral `pat export --otlp` (hand-rolled OTLP/HTTP+JSON, ADR-0006) |
 | v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
 | v0.15.0 | Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast) |
-| **v0.16.0** | **Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile** |
+| v0.16.0 | Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile |
+| **v0.17.0** | **Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

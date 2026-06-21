@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.15.x | :white_check_mark: |
+| main / 0.17.x | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
@@ -41,6 +41,7 @@ This toolkit ships with the following Presidio security hardening:
 | **Output sanitization** | Rich markup prevents injection via user-supplied layer names |
 | **Dependabot** | Automated dependency updates configured in `.github/dependabot.yml` |
 | **CodeQL** | Static analysis via `.github/workflows/codeql.yml` |
+| **Key-less evidence producer (v0.17.0)** | `evidence_producer` signs runtime-posture degradation evidence, but the `pat` runtime holds **no signing key** — the Ed25519 key lives in a separate signing-bridge sidecar (consumers hold only the public key), preserving the read-only "no secrets to steal" posture |
 
 ## Dependency Security
 
@@ -48,10 +49,22 @@ Dependencies are pinned in `uv.lock` and monitored via:
 
 - GitHub Dependabot (automated PRs for updates)
 - `pip-audit` on normal CLI command execution
+- CI `pip-audit` against both `[audit]` and `[evidence]`, so the optional
+  Ed25519 dependency is covered by the release gate
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Known Limitations (main / v0.15.x)
+## Evidence Trust Boundary (v0.17.x)
+
+`pat evidence-emit` reads either an explicit `--p99-latency-ms` value or the
+latest local observation from `~/.pat/observations.db`, then emits an unsigned
+Layer-0 reading. The signing-bridge sidecar is expected to run on the same
+trusted host boundary, recompute the `content_hash`, and hold the Ed25519 key.
+Local observation integrity therefore depends on the host and filesystem
+permissions. The default store is created owner-only (`~/.pat` at `0700`,
+`observations.db` at `0600`) and this is covered by regression tests.
+
+## Known Limitations (main / v0.17.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -66,6 +79,7 @@ Dependencies are pinned in `uv.lock` and monitored via:
 
 Manual security audit history:
 
+- [`SECURITY-AUDIT-2026-06-21-v0.17.0.md`](SECURITY-AUDIT-2026-06-21-v0.17.0.md) -- v0.17.0 third-party release audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-17-v0.13.0.md`](SECURITY-AUDIT-2026-06-17-v0.13.0.md) -- v0.13.0 release-cut audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-17.md`](SECURITY-AUDIT-2026-06-17.md) -- v0.9.0 release-cut audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-16.md`](SECURITY-AUDIT-2026-06-16.md) -- v0.9.0 hardening audit and remediation status.
