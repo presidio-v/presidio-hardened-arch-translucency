@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.17.0 — Architectural Translucency Analyzer for Docker & Kubernetes
+> v0.18.0 — Architectural Translucency Analyzer for Docker & Kubernetes — and ML training parallelism
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -871,6 +871,54 @@ See [PRESIDIO-REQ.md](PRESIDIO-REQ.md) "Evidence Arc (v0.17.0)".
 
 ---
 
+## ML training parallelism (v0.18.0, Training Arc)
+
+The same translucency question — *at which layer does replication yield the
+highest throughput gain with the lowest overhead?* — answered for
+**distributed training**. Strategies are the training analog of replication
+layers: `data` (DDP), `fsdp` (FSDP/ZeRO-3), `tensor`, `pipeline`
+([ADR-0009](docs/adr/0009-training-domain-profile.md) — a separate domain
+profile; the serving model is untouched).
+
+Two deliberate departures from the serving domain: **per-device memory is a
+hard feasibility constraint** (an oversized DDP replica is impossible, not
+suboptimal — infeasible points are excluded, never scored), and **throughput
+is compute-bound** (no demand cap). `pipeline` uses the exact bubble formula
+`(1 − α)·m/(m+δ−1)`; the α/β strategies are calibratable via a `training`
+section of `.pat-model.json`.
+
+```bash
+# Cross-strategy recommendation (40 GB model on 24 GB devices → DDP excluded):
+pat train-analyze --samples-per-second 120 --model-memory-gb 40 \
+  --device-memory-gb 24 --devices 8 --show-all
+
+# One specific configuration, JSON for automation:
+pat train-what-if --strategy pipeline --degree 4 -s 100 -m 40 -d 24 --json
+```
+
+### Training-run evidence (`training-run@1`) + provenance parents
+
+`pat train-evidence-emit` emits a key-less, unsigned Layer-0 **training-run
+record** (run id, strategy, degree, samples/s, duration, devices, optional
+model/dataset hashes) for the same signing-bridge sidecar as `evidence-emit`.
+The payload may carry `parents` — content hashes of the upstream evidence that
+authorized the run (classification, gate decision) — attested *inside* the
+signed content, so evidence forms a verifiable provenance DAG
+(EU AI Act Art. 12 record-keeping as a by-product):
+
+```bash
+pat train-evidence-emit --run-id run-2026-07-02-001 --strategy fsdp --degree 8 \
+  -s 712 --duration-s 3600 -n 8 \
+  --parent <classification content_hash> --parent <gate-decision content_hash> \
+  | evidence-bridge-sign
+```
+
+All inputs are validated fail-closed (finite numbers only, printable bounded
+run ids, lowercase-hex parent hashes); the library enforces the same contract
+independently of the CLI so a sidecar can never sign malformed content.
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -891,7 +939,8 @@ See [PRESIDIO-REQ.md](PRESIDIO-REQ.md) "Evidence Arc (v0.17.0)".
 | v0.14.0 | Reach ephemeral contexts — `pat export --pushgateway` |
 | v0.15.0 | Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast) |
 | v0.16.0 | Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile |
-| **v0.17.0** | **Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar** |
+| v0.17.0 | Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar |
+| **v0.18.0** | **Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

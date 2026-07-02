@@ -7,6 +7,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -50,6 +51,7 @@ from presidio_arch_translucency.security import (
     log_recommendation,
     log_security_event,
     run_dependency_audit,
+    sanitize_bounded_number,
     sanitize_latency_ms,
     sanitize_layer,
     sanitize_requests_per_second,
@@ -2706,6 +2708,371 @@ def evidence_emit_cmd(
         # Not degraded → nothing to authorize. Stay silent on stdout.
         raise typer.Exit(code=0)
 
+    typer.echo(json.dumps(reading, separators=(",", ":")))
+
+
+# ---------------------------------------------------------------------------
+# Training domain (MVP) — ML training parallelism analysis + evidence
+# ---------------------------------------------------------------------------
+
+
+def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
+    """Render a TrainingAnalysisResult as a Rich table + recommendation panel."""
+    table = Table(
+        title="Training parallelism analysis (architectural translucency)",
+        box=box.SIMPLE_HEAVY,
+    )
+    table.add_column("Strategy", style="bold")
+    table.add_column("Degree δ", justify="right")
+    table.add_column("Samples/s", justify="right")
+    table.add_column("Scaling eff %", justify="right")
+    table.add_column("Mem/device GB", justify="right")
+    table.add_column("Feasible", justify="center")
+    table.add_column("Gain %", justify="right")
+
+    for r in result.strategies:
+        if not show_all and not r.feasible:
+            continue
+        marker = "✓" if r.feasible else "[red]✗[/]"
+        highlight = (
+            r.feasible
+            and result.recommended_strategy is not None
+            and r.strategy == result.recommended_strategy
+        )
+        style = "bold green" if highlight else None
+        table.add_row(
+            r.strategy.value,
+            str(r.optimal_degree) if r.optimal_degree else "—",
+            f"{r.estimated_samples_per_second:,.2f}",
+            f"{r.scaling_efficiency_pct:.1f}",
+            f"{r.per_device_memory_gb:.2f}",
+            marker,
+            f"{r.throughput_gain_pct:+.1f}",
+            style=style,
+        )
+
+    console.print(table)
+
+    if result.recommended_strategy is None:
+        console.print(
+            Panel(
+                "[bold red]No feasible parallelism configuration[/] within the given "
+                f"device count ({result.device_count}) and device memory. "
+                "The model state does not fit even when sharded — add devices, "
+                "use devices with more memory, or reduce model/optimizer state.",
+                title="Recommendation",
+            )
+        )
+        return
+
+    best = next(
+        r for r in result.strategies if r.strategy == result.recommended_strategy
+    )
+    console.print(
+        Panel(
+            f"Replicate at the [bold green]{best.strategy.value}[/] parallelism "
+            f"layer with degree [bold]δ = {best.optimal_degree}[/] "
+            f"→ ≈ [bold]{best.estimated_samples_per_second:,.2f}[/] samples/s "
+            f"({best.throughput_gain_pct:+.1f}% vs single device, "
+            f"{best.scaling_efficiency_pct:.1f}% scaling efficiency, "
+            f"{best.per_device_memory_gb:.2f} GB model state per device).",
+            title="Recommendation",
+        )
+    )
+
+
+@app.command("train-analyze")
+def train_analyze_cmd(
+    samples_per_second: float = typer.Option(
+        ...,
+        "--samples-per-second",
+        "-s",
+        help="Measured single-device training throughput (samples/second).",
+        min=0.000001,
+    ),
+    model_memory_gb: float = typer.Option(
+        ...,
+        "--model-memory-gb",
+        "-m",
+        help="Model state size (parameters + gradients + optimizer state) in GB.",
+        min=0.001,
+    ),
+    device_memory_gb: float = typer.Option(
+        ...,
+        "--device-memory-gb",
+        "-d",
+        help="Memory per accelerator device in GB.",
+        min=0.001,
+    ),
+    devices: int = typer.Option(
+        ...,
+        "--devices",
+        "-n",
+        help="Number of accelerator devices available.",
+        min=1,
+    ),
+    microbatches: Optional[int] = typer.Option(  # noqa: UP045
+        None,
+        "--microbatches",
+        help="Pipeline microbatches m (bubble = (δ-1)/(m+δ-1)). Default: 8.",
+        min=1,
+    ),
+    show_all: bool = typer.Option(
+        False,
+        "--show-all",
+        help="Also list strategies with no feasible degree.",
+    ),
+) -> None:
+    """
+    Analyze a training workload and recommend the parallelism strategy.
+
+    Training-domain counterpart of `pat analyze`: applies the architectural
+    translucency model to data / fsdp / tensor / pipeline parallelism, with
+    per-device memory as a hard feasibility constraint (not a soft penalty).
+    """
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        DEFAULT_MICROBATCHES,
+        TrainingDomainError,
+        analyze_training,
+    )
+
+    try:
+        sps = sanitize_bounded_number(
+            samples_per_second, "samples_per_second", 1e-6, 1e9
+        )
+        model_mem = sanitize_bounded_number(
+            model_memory_gb, "model_memory_gb", 1e-3, 1e6
+        )
+        device_mem = sanitize_bounded_number(
+            device_memory_gb, "device_memory_gb", 1e-3, 1e6
+        )
+        result = analyze_training(
+            baseline_samples_per_second=sps,
+            model_memory_gb=model_mem,
+            device_memory_gb=device_mem,
+            device_count=devices,
+            microbatches=microbatches or DEFAULT_MICROBATCHES,
+        )
+    except (InputValidationError, TrainingDomainError) as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    log_recommendation(
+        layer=(
+            result.recommended_strategy.value
+            if result.recommended_strategy is not None
+            else "none-feasible"
+        ),
+        replicas=result.recommended_degree,
+        throughput_gain_pct=next(
+            (
+                r.throughput_gain_pct
+                for r in result.strategies
+                if r.strategy == result.recommended_strategy
+            ),
+            0.0,
+        ),
+    )
+    _render_training_results(result, show_all=show_all)
+
+
+@app.command("train-what-if")
+def train_what_if_cmd(
+    strategy: str = typer.Option(
+        ...,
+        "--strategy",
+        help="Parallelism strategy. One of: data, fsdp, tensor, pipeline.",
+    ),
+    degree: int = typer.Option(
+        ...,
+        "--degree",
+        help="Parallelism degree δ (number of devices for the strategy).",
+        min=1,
+    ),
+    samples_per_second: float = typer.Option(
+        ...,
+        "--samples-per-second",
+        "-s",
+        help="Measured single-device training throughput (samples/second).",
+        min=0.000001,
+    ),
+    model_memory_gb: float = typer.Option(
+        ...,
+        "--model-memory-gb",
+        "-m",
+        help="Model state size in GB.",
+        min=0.001,
+    ),
+    device_memory_gb: float = typer.Option(
+        ...,
+        "--device-memory-gb",
+        "-d",
+        help="Memory per accelerator device in GB.",
+        min=0.001,
+    ),
+    microbatches: Optional[int] = typer.Option(  # noqa: UP045
+        None,
+        "--microbatches",
+        help="Pipeline microbatches m. Default: 8.",
+        min=1,
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the result as JSON instead of a table."
+    ),
+) -> None:
+    """Evaluate one specific (strategy, degree) training configuration.
+
+    Fail-closed: a degree beyond the strategy's `max_degree` is out-of-domain
+    and rejected (exit 2), never reported as feasible.
+    """
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        DEFAULT_MICROBATCHES,
+        VALID_STRATEGIES,
+        ParallelismStrategy,
+        TrainingDomainError,
+        evaluate_strategy,
+    )
+
+    try:
+        strategy_str = sanitize_layer(strategy, VALID_STRATEGIES)
+        sps = sanitize_bounded_number(
+            samples_per_second, "samples_per_second", 1e-6, 1e9
+        )
+        model_mem = sanitize_bounded_number(
+            model_memory_gb, "model_memory_gb", 1e-3, 1e6
+        )
+        device_mem = sanitize_bounded_number(
+            device_memory_gb, "device_memory_gb", 1e-3, 1e6
+        )
+        r = evaluate_strategy(
+            ParallelismStrategy(strategy_str),
+            degree,
+            baseline_samples_per_second=sps,
+            model_memory_gb=model_mem,
+            device_memory_gb=device_mem,
+            microbatches=microbatches or DEFAULT_MICROBATCHES,
+        )
+    except (InputValidationError, TrainingDomainError) as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "strategy": r.strategy.value,
+                    "degree": r.optimal_degree,
+                    "estimated_samples_per_second": r.estimated_samples_per_second,
+                    "scaling_efficiency_pct": r.scaling_efficiency_pct,
+                    "per_device_memory_gb": r.per_device_memory_gb,
+                    "feasible": r.feasible,
+                    "throughput_gain_pct": r.throughput_gain_pct,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+    feasibility = "[green]feasible[/]" if r.feasible else "[bold red]INFEASIBLE[/]"
+    console.print(
+        Panel(
+            f"[bold]{r.strategy.value}[/] at δ = {r.optimal_degree}: "
+            f"≈ {r.estimated_samples_per_second:,.2f} samples/s "
+            f"({r.throughput_gain_pct:+.1f}%, "
+            f"{r.scaling_efficiency_pct:.1f}% scaling efficiency), "
+            f"{r.per_device_memory_gb:.2f} GB/device — {feasibility}.",
+            title="What-if (training)",
+        )
+    )
+
+
+@app.command("train-evidence-emit")
+def train_evidence_emit_cmd(
+    run_id: str = typer.Option(
+        ..., "--run-id", help="Stable identifier of the training run."
+    ),
+    strategy: str = typer.Option(
+        ...,
+        "--strategy",
+        help="Parallelism strategy used. One of: data, fsdp, tensor, pipeline.",
+    ),
+    degree: int = typer.Option(
+        ..., "--degree", help="Parallelism degree δ used.", min=1
+    ),
+    samples_per_second: float = typer.Option(
+        ...,
+        "--samples-per-second",
+        "-s",
+        help="Achieved training throughput (samples/second; rounded to int).",
+        min=0.0,
+    ),
+    duration_s: int = typer.Option(
+        ..., "--duration-s", help="Wall-clock run duration in seconds.", min=0
+    ),
+    devices: int = typer.Option(
+        ..., "--devices", "-n", help="Number of accelerator devices used.", min=1
+    ),
+    parent: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--parent",
+        help=(
+            "Content hash of an upstream evidence payload (repeatable) — e.g. "
+            "the eai-classification or gate-decision that authorized this run. "
+            "Attested inside the signed content (provenance DAG convention)."
+        ),
+    ),
+    model_hash: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--model-hash", help="Content hash of the trained model artifact."
+    ),
+    dataset_hash: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--dataset-hash", help="Content hash of the training dataset."
+    ),
+) -> None:
+    """Emit a key-less Layer-0 training-run record as JSON.
+
+    arch-translucency holds **no signing key**: this prints an *unsigned*
+    ``training-run@1`` record to stdout. Pipe it to the signing-bridge sidecar,
+    which adds the Ed25519 signature. ``--parent`` hashes chain the run to the
+    upstream evidence that authorized it (classification, gate decision),
+    forming a verifiable provenance DAG across the suite — traceability
+    (EU AI Act Art. 12 record-keeping) as a data structure.
+    """
+    from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
+        EvidenceProducerError,
+        build_training_run_reading,
+    )
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        VALID_STRATEGIES,
+    )
+
+    try:
+        strategy_str = sanitize_layer(strategy, VALID_STRATEGIES)
+        sps = sanitize_bounded_number(
+            samples_per_second, "samples_per_second", 0.0, 1e9
+        )
+        reading = build_training_run_reading(
+            run_id=run_id,
+            strategy=strategy_str,
+            degree=degree,
+            samples_per_second=round(sps),
+            duration_s=duration_s,
+            device_count=devices,
+            parents=tuple(parent),
+            model_hash=model_hash,
+            dataset_hash=dataset_hash,
+        )
+    except (InputValidationError, EvidenceProducerError) as exc:
+        err_console.print(f"[bold red]Evidence error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Log a digest, not the raw run_id (audit finding: raw user-supplied
+    # strings must not reach the security log).
+    run_id_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+    log_security_event(
+        "TRAINING_EVIDENCE_EMIT",
+        {
+            "run_id_sha256_16": run_id_digest,
+            "strategy": strategy_str,
+            "parents": len(parent),
+        },
+    )
     typer.echo(json.dumps(reading, separators=(",", ":")))
 
 

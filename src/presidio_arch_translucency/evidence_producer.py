@@ -35,6 +35,12 @@ EVIDENCE_SCHEMA_ID = "presidio-hardened/evidence-ref@1"
 #: Wire id for the **unsigned** Layer-0 reading arch-translucency emits (key-less);
 #: a signing-bridge sidecar turns it into a signed ``evidence-ref@1`` envelope.
 LAYER0_SCHEMA_ID = "presidio-hardened/slo-reading@1"
+#: Wire id for the **unsigned** Layer-0 training-run record (key-less; same
+#: signing-bridge pattern as ``slo-reading@1``). Carries the payload-level
+#: provenance convention: ``parents`` — content hashes of upstream evidence
+#: (e.g. the eai-classification and gate-decision envelopes that authorized
+#: the run) — turning isolated envelopes into a verifiable provenance DAG.
+TRAINING_SCHEMA_ID = "presidio-hardened/training-run@1"
 DEFAULT_SIGNER = "presidio-hardened-arch-translucency"
 SIGNING_ALGORITHMS = ("ed25519", "hmac-sha256")
 _LOWER_HEX = frozenset(string.hexdigits.lower()[:16])
@@ -271,3 +277,134 @@ def is_degraded(reading: Mapping[str, object]) -> bool:
     if not isinstance(content, Mapping):
         raise EvidenceProducerError("reading has no attested_content mapping")
     return int(content["value"]) > int(content["threshold"])
+
+
+# ---------------------------------------------------------------------------
+# Training-run evidence (``training-run@1``) — Layer 0, key-less.
+#
+# A training run becomes a content-addressed, signable record: parallelism
+# configuration, throughput, duration and device count (EU AI Act Art. 12
+# record-keeping / GPAI compute documentation as a by-product of the
+# optimization tool). ``parents`` implements the family payload-level
+# provenance convention: hashes of upstream evidence payloads (classification,
+# gate decision, dataset attestation) are attested *inside* the signed
+# content, so the frozen ``evidence-ref@1`` envelope is untouched while
+# envelopes become nodes of a provenance DAG.
+# ---------------------------------------------------------------------------
+
+#: Family hash discipline (mirrors ``evidence-ref@1``'s
+#: ``^[0-9a-f]{8,128}$`` for ``content_hash``).
+_PARENT_HASH_MIN, _PARENT_HASH_MAX = 8, 128
+
+#: Valid training strategies. Kept local (not imported from ``training``) so
+#: this vendored-contract module stays self-contained for signing-bridge
+#: sidecars; a test pins it to ``training.VALID_STRATEGIES``.
+_TRAINING_STRATEGIES = ("data", "fsdp", "tensor", "pipeline")
+
+#: ``run_id`` bound matches the family ≤512-char field discipline.
+_RUN_ID_MAX = 512
+
+
+def _validate_run_id(value: object) -> str:
+    """Non-empty printable string, ≤512 chars, no control characters.
+
+    Audit finding (v0.18.0 third-party): a newline-bearing ``run_id`` produced
+    a signable record; the library must enforce the contract independently of
+    the CLI so a sidecar can never sign malformed content.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise EvidenceProducerError("run_id must be a non-empty string")
+    if len(value) > _RUN_ID_MAX:
+        raise EvidenceProducerError(f"run_id must be <= {_RUN_ID_MAX} characters")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise EvidenceProducerError("run_id must not contain control characters")
+    return value
+
+
+def _coerce_int(value: object, name: str, *, minimum: int) -> int:
+    """Coerce to int, fail-closed on nan/inf/non-numeric/below-minimum."""
+    if isinstance(value, bool):
+        raise EvidenceProducerError(f"{name} must be an integer, got bool")
+    if isinstance(value, float) and not value.is_integer():
+        # No silent truncation: the canonical profile rejects floats on the
+        # wire, so rounding is the caller's explicit decision, not ours.
+        raise EvidenceProducerError(f"{name} must be an integer (round upstream)")
+    try:
+        v = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EvidenceProducerError(f"{name} must be an integer") from exc
+    if v < minimum:
+        raise EvidenceProducerError(f"{name} must be >= {minimum}, got {v}")
+    return v
+
+
+def _validate_parent_hash(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not (_PARENT_HASH_MIN <= len(value) <= _PARENT_HASH_MAX)
+        or any(ch not in _LOWER_HEX for ch in value)
+    ):
+        raise EvidenceProducerError(
+            "parent reference must be a lowercase-hex content hash "
+            f"({_PARENT_HASH_MIN}-{_PARENT_HASH_MAX} chars)"
+        )
+    return value
+
+
+def build_training_run_reading(
+    *,
+    run_id: str,
+    strategy: str,
+    degree: int,
+    samples_per_second: int,
+    duration_s: int,
+    device_count: int,
+    parents: tuple[str, ...] | list[str] = (),
+    model_hash: str | None = None,
+    dataset_hash: str | None = None,
+    source_version: str | None = None,
+    observed_at: str | None = None,
+) -> dict:
+    """Build an **unsigned** Layer-0 ``training-run@1`` record (no key held).
+
+    Integers only (the canonical profile rejects floats — round upstream).
+    ``parents`` are content hashes of upstream evidence payloads and are
+    attested inside the signed content; they are validated against the family
+    lowercase-hex discipline and included only when non-empty (fail-closed on
+    malformed hashes). ``model_hash`` / ``dataset_hash`` bind the run to its
+    artifacts when available.
+
+    The full contract is enforced here, independently of any CLI (fail-closed:
+    a sidecar must never be handed malformed signable content): valid strategy,
+    printable bounded ``run_id``, non-negative integers, degree/devices >= 1.
+    """
+    run_id = _validate_run_id(run_id)
+    if strategy not in _TRAINING_STRATEGIES:
+        raise EvidenceProducerError(
+            f"strategy must be one of {_TRAINING_STRATEGIES!r}, got {strategy!r}"
+        )
+    content: dict[str, object] = {
+        "run_id": run_id,
+        "strategy": strategy,
+        "degree": _coerce_int(degree, "degree", minimum=1),
+        "samples_per_second": _coerce_int(
+            samples_per_second, "samples_per_second", minimum=0
+        ),
+        "duration_s": _coerce_int(duration_s, "duration_s", minimum=0),
+        "device_count": _coerce_int(device_count, "device_count", minimum=1),
+    }
+    validated_parents = [_validate_parent_hash(p) for p in parents]
+    if validated_parents:
+        content["parents"] = validated_parents
+    if model_hash is not None:
+        content["model_hash"] = _validate_parent_hash(model_hash)
+    if dataset_hash is not None:
+        content["dataset_hash"] = _validate_parent_hash(dataset_hash)
+    return {
+        "schema": TRAINING_SCHEMA_ID,
+        "attested_content": content,
+        "content_hash": sha256_hex(content),
+        "source": DEFAULT_SIGNER,
+        "source_version": source_version or _package_version(),
+        "generated_at": observed_at or _utcnow_iso(),
+    }

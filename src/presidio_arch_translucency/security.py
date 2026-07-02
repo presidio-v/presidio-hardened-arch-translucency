@@ -12,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import math
 import subprocess
 import sys
 from typing import Any
@@ -128,6 +129,33 @@ def sanitize_latency_ms(value: float) -> float:
         raise InputValidationError(
             f"avg_latency_ms must be between {_LATENCY_MIN_MS} and "
             f"{_LATENCY_MAX_MS}, got {v}"
+        )
+    return v
+
+
+def sanitize_bounded_number(
+    value: float,
+    name: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Validate a finite number within [minimum, maximum] (rejects nan/inf).
+
+    Added for the v0.18.0 training-domain inputs (third-party audit finding:
+    Typer's ``min=`` bound does not reject ``nan``/``inf``). ``bool`` is
+    rejected explicitly — it is an ``int`` subclass but never a valid workload
+    number.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InputValidationError(
+            f"{name} must be a number, got {type(value).__name__!r}"
+        )
+    v = float(value)
+    if not math.isfinite(v):
+        raise InputValidationError(f"{name} must be finite, got {v!r}")
+    if not (minimum <= v <= maximum):
+        raise InputValidationError(
+            f"{name} must be between {minimum} and {maximum}, got {v}"
         )
     return v
 

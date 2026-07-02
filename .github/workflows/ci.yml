@@ -87,9 +87,11 @@ jobs:
         # --skip-editable skips the local (not-yet-on-PyPI) package itself.
         # The evidence extra is installed so the optional Ed25519 dependency is
         # included in the release security gate.
-        # continue-on-error: true so CVEs in transitive deps (e.g. pygments via
-        # rich) are reported but do not block the CI matrix. Direct deps are
-        # tracked by Dependabot PRs; pin overrides should be added to
-        # pyproject.toml once a patched release is available.
+        # Advisory on pull requests (transitive-dep CVEs are reported but do
+        # not block contributor CI; direct deps are tracked by Dependabot) —
+        # BLOCKING on push (main + release tags), so a release cannot ship
+        # with known-vulnerable dependencies. v0.18.0 third-party audit
+        # finding: SECURITY.md describes pip-audit as a release gate, so the
+        # release path must enforce it.
         run: pip-audit --progress-spinner=off --skip-editable
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'pull_request' }}

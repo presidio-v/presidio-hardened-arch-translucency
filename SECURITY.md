@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.17.x | :white_check_mark: |
+| main / 0.18.x | :white_check_mark: |
+| 0.17.x  | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
@@ -54,7 +55,7 @@ Dependencies are pinned in `uv.lock` and monitored via:
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Evidence Trust Boundary (v0.17.x)
+## Evidence Trust Boundary (v0.17.x / v0.18.x)
 
 `pat evidence-emit` reads either an explicit `--p99-latency-ms` value or the
 latest local observation from `~/.pat/observations.db`, then emits an unsigned
@@ -64,7 +65,21 @@ Local observation integrity therefore depends on the host and filesystem
 permissions. The default store is created owner-only (`~/.pat` at `0700`,
 `observations.db` at `0600`) and this is covered by regression tests.
 
-## Known Limitations (main / v0.17.x)
+**`training-run@1` (v0.18.0).** `pat train-evidence-emit` emits an unsigned
+Layer-0 training-run record under the same key-less model: `pat` holds no
+signing key; the sidecar recomputes the `content_hash` before signing. The
+record's inputs come from CLI arguments (not a local store), so the trust
+boundary is the invoking process: `run_id` is bounded (≤512 chars) and
+control-character free, numeric fields must be finite non-negative integers,
+and `parents` / `model_hash` / `dataset_hash` must be lowercase-hex content
+hashes — all enforced fail-closed **in the library**
+(`build_training_run_reading`), so an alternative caller (sidecar, script)
+cannot construct malformed signable content. `parents` entries are *claims*
+by the producer; resolving and verifying the referenced payloads is the
+consumer's responsibility (presidio-evidence ADR-0002 P4). The security log
+records a SHA-256 digest of `run_id`, never the raw value.
+
+## Known Limitations (main / v0.18.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -79,6 +94,7 @@ permissions. The default store is created owner-only (`~/.pat` at `0700`,
 
 Manual security audit history:
 
+- [`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`](SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md) -- v0.18.0 third-party release audit (Codex, `presidio-third-party-audits`) remediation status.
 - [`SECURITY-AUDIT-2026-06-21-v0.17.0.md`](SECURITY-AUDIT-2026-06-21-v0.17.0.md) -- v0.17.0 third-party release audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-17-v0.13.0.md`](SECURITY-AUDIT-2026-06-17-v0.13.0.md) -- v0.13.0 release-cut audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-17.md`](SECURITY-AUDIT-2026-06-17.md) -- v0.9.0 release-cut audit and remediation status.
