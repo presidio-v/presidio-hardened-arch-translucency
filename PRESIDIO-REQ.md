@@ -65,6 +65,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.15.0 | Monitoring arc · Close the loop — `pat scaler` (KEDA / HPA on the forecast) | Complete (released) |
 | v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Released |
 | v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | Complete (2026-06-21) |
+| v0.18.0 | **Training arc · Same question, new domain** — ML training parallelism as a domain profile (`training.py`: data/fsdp/tensor/pipeline; memory as hard constraint), `pat train-analyze`/`train-what-if`, `training-run@1` Layer-0 evidence + provenance-parents convention (ADR-0009) | Implemented + 3rd-party audited (2026-07-02, Codex); all P1/P2 findings remediated same day (`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`); founder tag/publish gate open (delta audit recommended) |
 
 ---
 
@@ -1036,6 +1037,15 @@ steal"): the producer code may ship in the package, but the *running exporter ho
 and consumer cannot silently drift. Cross-repo round-trip validated 2026-06-21
 (real `Observation` → sidecar-sign → x402 `verify_ref` → pay; wrong-key rejected).
 
+**Family-vector upgrade (2026-07-03, presidio-evidence v0.2.1):** the degradation chain now has
+its own normative anchor, `presidio-evidence vectors/slo-reading/` — cross-checked at creation
+as byte-identical (content hash **and** deterministic Ed25519 signature) to `build_slo_evidence`
+/ `build_layer0_reading` output, with `item_id "SLO-DEGRADED"` and
+`ledger_ref "arch-translucency:obs"` pinned in both language suites. Follow-up (L-EV-7, next
+maintenance pass): swap the local `test_evidence_producer.py` golden constants to cite the
+family slo-reading vector explicitly, as `test_training.py` already does for
+`vectors/training-run/`.
+
 ### Design decisions
 
 | Decision | Rationale |
@@ -1044,6 +1054,86 @@ and consumer cannot silently drift. Cross-repo round-trip validated 2026-06-21
 | Key-less daemon, sidecar signs | Preserves the v0.16 "no secrets to steal" posture; mirrors treasury |
 | Integers only (round p99 to ms) | The canonical profile rejects floats so the content hash is portable |
 | Vendor the contract, do not import private evidence | Public repo cannot depend on the private evidence package; mirrors mica.py |
+
+## Training Arc (v0.18.0, MVP) — "Same Question, New Domain"
+
+**Deliberated:** 2026-07-02 (suite-strategy session: evidence as fundament,
+eai-classificator as workshop door-opener, presidio suite as the compliant AI
+implementation environment; strategy memo persisted in
+`presidio-projects-overview/analysis/`).
+
+### Direction
+
+The suite covers *classify* (eai-classificator → ikigov bridge), *govern*
+(ikigov gates), and *operate* (pat serving posture, x402 payment gating) — but
+not the **build/train** phase of an AI use case. Distributed training is a
+textbook translucency problem: the same replication decision applied as data /
+sharded-data / tensor / pipeline parallelism yields different throughput at
+different overhead. Extending `pat` here (a) fills the suite gap, (b) turns a
+training run into a signed compliance artifact (EU AI Act Art. 12
+record-keeping, Art. 10 data-governance linkage, GPAI compute documentation)
+as a *by-product* of an optimization tool, and (c) is in peto before detailed
+healthcare-workshop planning starts (~August 2026), so workshops can
+demonstrate classify → gate → train → evidence end-to-end if the pitch calls
+for it.
+
+### Decision — domain profile, not new layers (ADR-0009)
+
+Training strategies live in a separate `training.py` domain module with their
+own enum and CLI surface; the serving `ReplicationLayer` enum and its call
+sites (cost, scaler, exporter, rules) are untouched. Two semantic departures
+from serving, both deliberate: **per-device memory is a hard feasibility
+constraint** (infeasible points excluded, not scored down) and **throughput is
+compute-bound** (no demand cap). `pipeline` uses the exact bubble formula
+`(1 − α)·m/(m+δ−1)` instead of the α/β approximation.
+
+### Scope (MVP, implemented 2026-07-02)
+
+- [x] **`training.py`** — strategies `data` (DDP, full replica/device),
+  `fsdp` (ZeRO-3, `model/δ`), `tensor` (max δ=8, intra-node), `pipeline`
+  (bubble formula, default m=8); α/β defaults as documented MVP placeholders;
+  calibration overrides via the `training` section of `.pat-model.json` /
+  `~/.pat/model.json` (ADR-0005 mechanism); 0.9 memory-headroom reserve.
+- [x] **`pat train-analyze`** — cross-strategy recommendation (most gain,
+  fewest devices, memory-feasible only); **`pat train-what-if`** — single
+  (strategy, δ) point, `--json`.
+- [x] **`training-run@1` Layer-0 evidence** — `build_training_run_reading()` +
+  **`pat train-evidence-emit`**: key-less unsigned record (run id, strategy,
+  degree, samples/s, duration, devices, optional `model_hash`/`dataset_hash`)
+  for the signing-bridge sidecar (v0.17.0 pattern). Payload carries
+  **`parents`** — content hashes of upstream evidence (classification, gate
+  decision), attested *inside* the signed content per the family
+  provenance-parents convention (presidio-evidence ADR-0002): envelopes become
+  a verifiable provenance DAG while `evidence-ref@1` stays frozen. Fail-closed
+  parent-hash validation; floats rejected on the wire.
+- [x] **Tests** — 32 new (model equations, memory feasibility, recommendation,
+  calibration overrides, evidence shape/hash stability, CLI round-trips);
+  full suite 764 passed, ruff clean. +14 audit regressions (2026-07-02
+  remediation) and +1 family-vector re-pin: the `training-run@1` hash test now
+  pins the presidio-evidence `vectors/training-run/` golden vector
+  (byte-identity verified 2026-07-02, both evidence suites green — Rust lane
+  first green run same day), replacing the self-referential golden-ish test.
+
+### Deferred (recorded, not built)
+
+- L-TR-1: step-time log ingestion + α/β fitting (`pat train-calibrate`),
+  NVML/DCGM metric source.
+- L-TR-2: hybrid/3D parallelism as strategy composition.
+- L-TR-3: degraded-training-throughput broker in x402 (second instantiation of
+  the SLO-payment pattern) — **blocked on provisional claim-breadth check**
+  (see `presidio-hardened-x402/plan/`); nothing public before that.
+- L-TR-4: federated learning as a third domain (`presidio-hardened-fl`);
+  triggers the engine-generalization revisit in ADR-0009.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Domain profile, not new enum members | Serving call sites iterate `ReplicationLayer`; training strategies there would poison cost/scaler/exporter paths |
+| Memory = hard constraint | An oversized DDP replica is impossible, not suboptimal; feasibility ≠ score |
+| Pipeline bubble exact, others α/β | Exact form is well-known and cheap; α/β stays honest as an approximation elsewhere |
+| Parents inside the signed payload | Provenance without touching the frozen `evidence-ref@1` envelope; tampering with lineage changes the content hash |
+| No version bump in the MVP commit | Founder-signed release discipline; v0.18.0 gate stays with V.S. |
 
 ## SDLC
 

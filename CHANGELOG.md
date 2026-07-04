@@ -10,6 +10,67 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-02
+
+**Training arc (MVP) · "Same question, new domain".** The architectural
+translucency question — *at which layer does replication yield the highest
+throughput gain with the lowest overhead?* — extended from serving
+(container / pod / deployment / node) to ML **training** parallelism.
+
+### Added
+
+- **`training.py` — training parallelism domain model.** Strategies `data`
+  (DDP), `fsdp` (FSDP/ZeRO-3), `tensor`, `pipeline` as the training analog of
+  replication layers. `data`/`fsdp`/`tensor` reuse the α/β efficiency form
+  `1 − α − β·ln(δ)`; `pipeline` uses the exact bubble formula
+  `(1 − α) · m/(m + δ − 1)` for `m` microbatches. Two deliberate departures
+  from the serving model: **per-device memory is a hard feasibility
+  constraint** (infeasible (strategy, δ) points are excluded, not scored down;
+  `data` holds a full replica, sharded strategies hold `model/δ` under a 0.9
+  headroom reserve) and **throughput is compute-bound** (no demand cap).
+  Per-strategy α/β are calibratable via a `training` section in
+  `.pat-model.json` / `~/.pat/model.json`; fitting from step-time logs is
+  deferred past the MVP.
+- **`pat train-analyze`** — cross-strategy recommendation (most gain, fewest
+  devices, memory-feasible only) with a Rich table; **`pat train-what-if`** —
+  evaluate one (strategy, degree) point, `--json` for automation.
+- **`training-run@1` Layer-0 evidence + provenance-parents convention.**
+  `build_training_run_reading()` / **`pat train-evidence-emit`** emit a
+  key-less, unsigned training-run record (run id, strategy, degree, samples/s,
+  duration, devices, optional `model_hash`/`dataset_hash`) for the
+  signing-bridge sidecar — the same pattern as `slo-reading@1`. The payload
+  carries **`parents`**: content hashes of upstream evidence (classification,
+  gate decision) attested *inside* the signed content, turning family
+  envelopes into a verifiable provenance DAG without touching the frozen
+  `evidence-ref@1` envelope. Fail-closed validation of parent hashes against
+  the family lowercase-hex discipline; floats rejected on the wire (rounded
+  upstream). EU AI Act Art. 12 record-keeping / GPAI compute documentation as
+  a by-product of the optimization tool.
+
+### Security
+
+Remediation of the 2026-07-02 third-party release-gate audit
+(`presidio-third-party-audits/arch-translucency-third-party-security-audit-v0-18-0.md`;
+status in `SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`):
+
+- **Finite-input validation (audit P1).** New `sanitize_bounded_number`
+  rejects `nan`/`inf`/out-of-range on every training CLI number; the library
+  independently guards all model math (`TrainingDomainError`) so API callers
+  get the same fail-closed behavior. Invalid input → clean exit 2
+  (analyze/what-if) or 1 (evidence-emit), never a traceback.
+- **`training-run@1` contract enforced in the library (audit P1).**
+  `build_training_run_reading` now validates strategy against the domain set,
+  rejects control characters / blank / >512-char `run_id`, rejects negative
+  or non-integral numerics (no silent truncation — rounding is the caller's
+  explicit decision), and wraps conversion failures in
+  `EvidenceProducerError`. The security log records a SHA-256 digest of
+  `run_id`, never the raw value.
+- **`train-what-if` domain guard (audit P2).** `evaluate_strategy` rejects
+  `degree` outside `[1, max_degree]` — out-of-domain configurations can no
+  longer be reported as feasible.
+- **CI `pip-audit` is now blocking on push (audit P2)** — advisory only on
+  pull requests, so a release cannot ship with known-vulnerable dependencies.
+
 ## [0.17.0] - 2026-06-21
 
 **Evidence arc · "Sign the signal" (L-EV-3).** arch-translucency's runtime-posture
