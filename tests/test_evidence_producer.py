@@ -39,6 +39,18 @@ GOLD_SIG = (
 GOLD_HMAC_KEY = "shared-key"  # noqa: S105 - public golden-vector key, not a secret
 GOLD_HMAC_SIG = "2e7af6d2882dd53847dcf3032e1fe36e58c5a879c224ea97b505b3e3b626b87a"
 
+# Family slo-reading vector (presidio-evidence vectors/slo-reading/, appended
+# 2026-07-03, v0.2.1 consumer-coverage arc; L-EV-7 re-pin). Pins the full
+# degradation chain this producer feeds: content hash AND deterministic
+# Ed25519 signature of the envelope the x402 SLO payment broker verifies.
+SLO_VECTOR_CONTENT_HASH = (
+    "cc0d5b97d442aa7afd1b9e33aabb952c5389381fea954256855fece2678580c0"
+)
+SLO_VECTOR_SIGNATURE = (
+    "486280c962830a8291b72caa67e0c9409849dbc66fc4f3c10b60de3aea9a3ca4"
+    "b347a234f6dc70dd230c6612fc437468c5cfed516f19fdd26a1c2472b308b709"
+)
+
 
 def test_canonical_matches_family_and_rejects_floats():
     assert canonical_bytes({"b": "2", "a": "1"}) == b'{"a":"1","b":"2"}'
@@ -112,6 +124,43 @@ def test_build_slo_evidence_structure_and_self_verifies():
         bytes.fromhex(ref["signature"]), message
     )  # raises on failure
     assert ref["signer"] == DEFAULT_SIGNER
+
+
+def test_build_slo_evidence_matches_family_slo_reading_vector():
+    """L-EV-7: byte-identity with presidio-evidence vectors/slo-reading/.
+
+    Not merely self-consistency — the family vector's content hash and its
+    deterministic Ed25519 signature must be reproduced exactly. If this
+    producer ever drifts from the family canonical profile, this test breaks
+    before the x402 consumer does.
+    """
+    pytest.importorskip("cryptography")
+    env = build_slo_evidence(
+        slo="p99_latency_ms",
+        value=420,
+        threshold=200,
+        window="5m",
+        private_key_hex=GOLD_PRIV,
+        source_version="test",
+        observed_at="2026-07-02T00:00:00+00:00",
+    )
+    ref = env["evidence"][0]
+    assert ref["content_hash"] == SLO_VECTOR_CONTENT_HASH
+    assert ref["signature"] == SLO_VECTOR_SIGNATURE
+    assert ref["item_id"] == "SLO-DEGRADED"
+    assert ref["ledger_ref"] == "arch-translucency:obs"
+    assert ref["signer"] == DEFAULT_SIGNER
+    # The Layer-0 reading binds the same content and hash (key-less path).
+    reading = build_layer0_reading(
+        slo="p99_latency_ms",
+        value=420,
+        threshold=200,
+        window="5m",
+        source_version="test",
+        observed_at="2026-07-02T00:00:00+00:00",
+    )
+    assert reading["content_hash"] == SLO_VECTOR_CONTENT_HASH
+    assert reading["schema"] == "presidio-hardened/slo-reading@1"
 
 
 def test_layer0_reading_is_unsigned_and_hash_bound():
