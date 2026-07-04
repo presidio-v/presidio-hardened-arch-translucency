@@ -16,6 +16,7 @@ from presidio_arch_translucency.evidence_producer import (
 from presidio_arch_translucency.training import (
     DEFAULT_MICROBATCHES,
     MEMORY_HEADROOM,
+    ORDERED_STRATEGIES,
     STRATEGY_PARAMS,
     VALID_STRATEGIES,
     ParallelismStrategy,
@@ -34,11 +35,11 @@ from presidio_arch_translucency.training import (
 
 
 def test_valid_strategies_match_enum():
-    assert VALID_STRATEGIES == tuple(s.value for s in ParallelismStrategy)
+    assert VALID_STRATEGIES == tuple(s.value for s in ORDERED_STRATEGIES)
 
 
 def test_efficiency_is_one_at_degree_one():
-    for strategy in ParallelismStrategy:
+    for strategy in ORDERED_STRATEGIES:
         assert scaling_efficiency(strategy, 1) == 1.0
 
 

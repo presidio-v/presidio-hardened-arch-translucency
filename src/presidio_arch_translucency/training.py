@@ -95,6 +95,14 @@ class ParallelismStrategy(str, Enum):
     PIPELINE = "pipeline"
 
 
+ORDERED_STRATEGIES: Final[tuple[ParallelismStrategy, ...]] = (
+    ParallelismStrategy.DATA,
+    ParallelismStrategy.FSDP,
+    ParallelismStrategy.TENSOR,
+    ParallelismStrategy.PIPELINE,
+)
+
+
 @dataclass(frozen=True)
 class StrategyParams:
     overhead_alpha: float  # fixed overhead fraction per device
@@ -358,7 +366,7 @@ def analyze_training(
 
     strategy_results: list[StrategyResult] = []
 
-    for strategy in ParallelismStrategy:
+    for strategy in ORDERED_STRATEGIES:
         params = resolve_strategy_params(strategy)
         max_delta = min(params.max_degree, device_count)
 
