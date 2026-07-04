@@ -10,6 +10,22 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-07-04
+
+### Changed
+
+- Documentation pass: producer docs, docstrings, CLI help, and agent-skill
+  files now describe downstream verification generically ("downstream
+  family consumers") instead of naming specific consumers.
+- ADR-0009 accepted (status update + index row).
+
+### Added
+
+- `test_evidence_producer.py` now pins the family `slo-reading` golden
+  vector (content hash and deterministic signature) from
+  presidio-evidence v0.2.1, matching the existing `training-run` pin
+  (L-EV-7).
+
 ## [0.18.0] - 2026-07-02
 
 **Training arc (MVP) · "Same question, new domain".** The architectural
@@ -74,9 +90,8 @@ status in `SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`):
 ## [0.17.0] - 2026-06-21
 
 **Evidence arc · "Sign the signal" (L-EV-3).** arch-translucency's runtime-posture
-degradation signal becomes authenticatable so a downstream economic actor —
-`presidio-hardened-x402`'s SLO payment broker — can verify it fail-closed before
-paying for a capacity upgrade.
+degradation signal becomes authenticatable so downstream family consumers can
+verify it fail-closed before acting on it.
 
 ### Added
 

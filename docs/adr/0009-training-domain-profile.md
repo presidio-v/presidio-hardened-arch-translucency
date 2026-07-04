@@ -89,7 +89,5 @@ natural candidate).
 - Harder: two domain models to calibrate and document; defaults for training
   α/β are MVP placeholders until step-time fitting lands.
 - Revisit: (a) step-time log ingestion + fitting; (b) hybrid/3D parallelism as
-  strategy composition; (c) a degraded-training-throughput broker tie-in in
-  x402 (same pattern as the SLO payment broker — **check provisional patent
-  claim breadth before anything public**); (d) engine generalization on the
-  third domain.
+  strategy composition; (c) reserved — tracked in private planning notes;
+  (d) engine generalization on the third domain.

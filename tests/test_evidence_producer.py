@@ -2,8 +2,8 @@
 
 The golden vectors below are the family ``evidence-ref@1`` wire-format pins —
 byte-identical to the vectors in presidio-hardened-x402 (mica.py) and
-presidio-evidence. If these drift, the x402 SLO broker can no longer verify our
-degradation triggers.
+presidio-evidence. If these drift, downstream family consumers can no longer
+verify our degradation readings.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ GOLD_HMAC_SIG = "2e7af6d2882dd53847dcf3032e1fe36e58c5a879c224ea97b505b3e3b626b87
 # Family slo-reading vector (presidio-evidence vectors/slo-reading/, appended
 # 2026-07-03, v0.2.1 consumer-coverage arc; L-EV-7 re-pin). Pins the full
 # degradation chain this producer feeds: content hash AND deterministic
-# Ed25519 signature of the envelope the x402 SLO payment broker verifies.
+# Ed25519 signature of the envelope downstream family consumers verify.
 SLO_VECTOR_CONTENT_HASH = (
     "cc0d5b97d442aa7afd1b9e33aabb952c5389381fea954256855fece2678580c0"
 )
