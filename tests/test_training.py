@@ -306,8 +306,19 @@ def test_training_run_rejects_empty_run_id_and_bad_degree():
         )
 
 
-def test_training_run_content_hash_is_stable():
-    """Golden-ish vector: canonical bytes must stay byte-stable across releases."""
+# Family golden vector: presidio-evidence vectors/training-run/ (appended
+# 2026-07-02, both suites green — see presidio-evidence
+# docs/conformance/full-run-conformance-suite-2026-07-02T234741+0200.md).
+# Pinned here exactly as the evidence-ref@1 vector is pinned in
+# test_evidence_producer.py: if this producer ever drifts from the family
+# canonical profile, this constant catches it.
+_FAMILY_TRAINING_RUN_VECTOR_HASH = (
+    "91733915b4797d71bfc42422dcfff105b512f613c4d6ad3f1013463d1853b378"
+)
+
+
+def test_training_run_content_hash_matches_family_golden_vector():
+    """Byte-identity with the family vector, not just self-consistency."""
     reading = build_training_run_reading(
         run_id="golden-run",
         strategy="pipeline",
@@ -319,17 +330,10 @@ def test_training_run_content_hash_is_stable():
         observed_at="2026-07-02T00:00:00+00:00",
         source_version="test",
     )
-    assert reading["content_hash"] == sha256_hex(
-        {
-            "run_id": "golden-run",
-            "strategy": "pipeline",
-            "degree": 4,
-            "samples_per_second": 250,
-            "duration_s": 7200,
-            "device_count": 4,
-            "parents": [_PARENT],
-        }
-    )
+    # Cross-repo pin: the family vector's content hash, byte-for-byte.
+    assert reading["content_hash"] == _FAMILY_TRAINING_RUN_VECTOR_HASH
+    # And self-consistency of the canonical layer (sidecar recompute path).
+    assert reading["content_hash"] == sha256_hex(reading["attested_content"])
 
 
 # ---------------------------------------------------------------------------

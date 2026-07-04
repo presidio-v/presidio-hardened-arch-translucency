@@ -1037,6 +1037,15 @@ steal"): the producer code may ship in the package, but the *running exporter ho
 and consumer cannot silently drift. Cross-repo round-trip validated 2026-06-21
 (real `Observation` → sidecar-sign → x402 `verify_ref` → pay; wrong-key rejected).
 
+**Family-vector upgrade (2026-07-03, presidio-evidence v0.2.1):** the degradation chain now has
+its own normative anchor, `presidio-evidence vectors/slo-reading/` — cross-checked at creation
+as byte-identical (content hash **and** deterministic Ed25519 signature) to `build_slo_evidence`
+/ `build_layer0_reading` output, with `item_id "SLO-DEGRADED"` and
+`ledger_ref "arch-translucency:obs"` pinned in both language suites. Follow-up (L-EV-7, next
+maintenance pass): swap the local `test_evidence_producer.py` golden constants to cite the
+family slo-reading vector explicitly, as `test_training.py` already does for
+`vectors/training-run/`.
+
 ### Design decisions
 
 | Decision | Rationale |
@@ -1099,7 +1108,11 @@ compute-bound** (no demand cap). `pipeline` uses the exact bubble formula
   parent-hash validation; floats rejected on the wire.
 - [x] **Tests** — 32 new (model equations, memory feasibility, recommendation,
   calibration overrides, evidence shape/hash stability, CLI round-trips);
-  full suite 764 passed, ruff clean.
+  full suite 764 passed, ruff clean. +14 audit regressions (2026-07-02
+  remediation) and +1 family-vector re-pin: the `training-run@1` hash test now
+  pins the presidio-evidence `vectors/training-run/` golden vector
+  (byte-identity verified 2026-07-02, both evidence suites green — Rust lane
+  first green run same day), replacing the self-referential golden-ish test.
 
 ### Deferred (recorded, not built)
 

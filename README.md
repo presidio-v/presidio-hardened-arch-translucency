@@ -869,6 +869,15 @@ seed encoded as exactly 64 lowercase hex characters; HMAC + the canonical/hash
 layer are stdlib.
 See [PRESIDIO-REQ.md](PRESIDIO-REQ.md) "Evidence Arc (v0.17.0)".
 
+**Family golden vectors.** The producer's wire formats are pinned in the
+normative `presidio-evidence` vector tree (Python + Rust conformance): the
+degradation chain by `vectors/slo-reading/` (byte-identical — content hash
+*and* deterministic Ed25519 signature — to `build_slo_evidence` output;
+`item_id SLO-DEGRADED`, `ledger_ref arch-translucency:obs`) and the training
+record by `vectors/training-run/` (pinned in `tests/test_training.py`). If
+this producer ever drifts from the family canonical profile, a vector suite
+breaks before a consumer does.
+
 ---
 
 ## ML training parallelism (v0.18.0, Training Arc)
