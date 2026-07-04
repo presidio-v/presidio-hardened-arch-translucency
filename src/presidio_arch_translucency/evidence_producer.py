@@ -1,10 +1,9 @@
 """Signed SLO-degradation evidence producer (``evidence-ref@1``).
 
 Turns an arch-translucency observation into a ``presidio-hardened/evidence-ref@1``
-envelope that the ``presidio-hardened-x402`` SLO payment broker verifies
-fail-closed *before* paying for a capacity upgrade. This makes a degradation
-signal an **authorization, not a metric**: a spoofed or misconfigured reading
-cannot trigger a payment because it carries no valid signature.
+envelope that downstream family consumers verify fail-closed before acting on
+it: a spoofed or misconfigured reading carries no valid signature and is
+rejected.
 
 Vendored contract: this implements the family canonical-JSON + detached-signature
 wire format directly. ``presidio-evidence`` is a private repo, so this public

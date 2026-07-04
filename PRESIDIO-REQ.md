@@ -994,10 +994,8 @@ This completes the seven-step monitoring-integration arc (v0.10.0 → v0.16.0).
 ### Direction
 
 The monitoring arc (v0.10–v0.16) made `pat` a control plane that *observes*, *predicts*,
-and *scales*. The evidence arc makes its degradation signals **authenticatable** so a
-*downstream economic actor* can act on them safely. The first consumer is
-`presidio-hardened-x402`'s SLO payment broker, which autonomously pays for a capacity
-upgrade when arch-translucency reports a breach — but only if the report is a **signed,
+and *scales*. The evidence arc makes its degradation signals **authenticatable** so
+downstream family consumers can act on them safely — but only if the report is a **signed,
 verified `presidio-hardened/evidence-ref@1` envelope** (the family signed-evidence contract).
 This realizes presidio-evidence backlog item **L-EV-3** (arch-translucency as the fifth,
 runtime-posture evidence producer).
@@ -1121,9 +1119,8 @@ compute-bound** (no demand cap). `pipeline` uses the exact bubble formula
 - L-TR-1: step-time log ingestion + α/β fitting (`pat train-calibrate`),
   NVML/DCGM metric source.
 - L-TR-2: hybrid/3D parallelism as strategy composition.
-- L-TR-3: degraded-training-throughput broker in x402 (second instantiation of
-  the SLO-payment pattern) — **blocked on provisional claim-breadth check**
-  (see `presidio-hardened-x402/plan/`); nothing public before that.
+- L-TR-3: reserved — tracked in private planning notes
+  (`presidio-hardened-x402/plan/`).
 - L-TR-4: federated learning as a third domain (`presidio-hardened-fl`);
   triggers the engine-generalization revisit in ADR-0009.
 

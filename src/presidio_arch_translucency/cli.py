@@ -2664,7 +2664,7 @@ def evidence_emit_cmd(
 
     arch-translucency holds **no signing key**: this prints an *unsigned* reading to
     stdout. Pipe it to the signing-bridge sidecar, which adds the Ed25519 signature
-    that presidio-hardened-x402's SLO payment broker verifies before paying. By
+    that downstream family consumers verify fail-closed before acting. By
     default a reading is emitted only when the observed p99 breaches the target
     (cron/daemon-friendly); pass ``--always`` to emit regardless.
     """

@@ -843,14 +843,13 @@ pytest
 ## Signed degradation evidence (v0.17.0, library)
 
 `evidence_producer` turns a degradation reading / `Observation` into a signed
-`presidio-hardened/evidence-ref@1` envelope so a downstream economic actor —
-`presidio-hardened-x402`'s SLO payment broker — can verify the signal fail-closed before
-paying for a capacity upgrade.
+`presidio-hardened/evidence-ref@1` envelope that downstream family consumers
+verify fail-closed before acting on it.
 
 **Key-less by design.** `pat` itself holds **no signing key**. It emits an *unsigned*
 Layer-0 reading; a separate signing-bridge sidecar holds the Ed25519 key and signs it —
 preserving the read-only "no secrets to steal" posture (mirrors `treasury` in evidence
-ADR-0001). x402 holds only the public key.
+ADR-0001). Consumers hold only the public key.
 
 ```bash
 # Emit a key-less Layer-0 reading (only when p99 breaches the target), pipe to the sidecar:
@@ -861,7 +860,7 @@ pat evidence-emit --p99-target-ms 200 --p99-latency-ms 420 | evidence-bridge-sig
 # Library API (the sidecar uses observation_to_evidence with its key):
 from presidio_arch_translucency.evidence_producer import observation_to_layer0
 reading = observation_to_layer0(obs, slo_target_ms=200)   # unsigned, key-less
-# sidecar signs → x402's ArchTranslucencyAdapter verifies the signature before acting.
+# sidecar signs → downstream consumers verify the signature before acting.
 ```
 
 Ed25519 needs the optional `[evidence]` extra and uses a raw 32-byte private

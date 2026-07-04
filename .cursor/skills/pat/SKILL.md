@@ -51,7 +51,7 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | User wants pat recommendations marked on Grafana dashboards | `pat annotate` |
 | User wants HPA/KEDA to scale on pat forecast | `pat scaler` |
 | User wants `pat export` installed in Kubernetes | Helm chart `charts/pat-exporter` |
-| User wants an x402/SLO payment trigger from latency degradation | `pat evidence-emit` piped to the signing bridge |
+| User wants a signed SLO degradation signal from latency readings | `pat evidence-emit` piped to the signing bridge |
 
 `pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
@@ -79,9 +79,9 @@ NetworkPolicy. The chart is a v0.16.0 packaging artifact; its default image tag
 intentionally follows the chart `appVersion` unless a new chart release is cut.
 `pat evidence-emit --p99-target-ms <ms>` emits unsigned Layer-0 SLO readings
 from an explicit `--p99-latency-ms` or the latest stored observation. Pipe that
-JSON to the signing bridge; x402 acts only after verifying the signed
-`evidence-ref@1` envelope. Never treat the unsigned Layer-0 reading itself as
-a payment authorization.
+JSON to the signing bridge; downstream consumers act only after verifying the
+signed `evidence-ref@1` envelope. Never treat the unsigned Layer-0 reading
+itself as verified evidence.
 
 `analyze`, `cost`, `slo`, and `what-if` are analytical model commands.
 `calibrate`, `observe`, and `optimize` are autoresearch commands: `calibrate`
@@ -191,10 +191,10 @@ pat optimize --model arima --horizon-minutes 15
 
 `pat observe` is **single-shot by design** — it records one measurement and exits; recurring collection is scheduled externally (cron, launchd, a Kubernetes CronJob). `pat optimize --model arima` fits a `statsmodels` ARIMA with a 95% CI and auto-falls back to SMA below 30 samples. To turn the recommendation into an apply-able manifest, add `--emit-hpa-patch --target <deployment>` (optional `--namespace`) and pipe to `kubectl apply -f -`.
 
-### Pattern 7 — SLO evidence for x402 (v0.17.0)
+### Pattern 7 — signed SLO evidence (v0.17.0)
 
-When an agent or SLO broker needs a runtime-posture signal that can authorize a
-capacity payment, emit an unsigned Layer-0 reading and let the signing bridge
+When a downstream consumer needs a verifiable runtime-posture signal, emit an
+unsigned Layer-0 reading and let the signing bridge
 turn it into `evidence-ref@1`:
 
 ```bash
@@ -204,8 +204,8 @@ pat evidence-emit --p99-target-ms 200 --p99-latency-ms 420 | evidence-bridge-sig
 If `--p99-latency-ms` is omitted, `pat` reads the latest stored observation
 (optionally filtered by `--layer` and `--db`). By default it prints nothing when
 the workload is not degraded; use `--always` only for diagnostics. `pat` must not
-hold the signing key. The bridge signs, and `presidio-hardened-x402` verifies the
-signed envelope before any payment decision.
+hold the signing key. The bridge signs; downstream family consumers verify the
+signed envelope fail-closed before acting.
 
 ## Surfacing the recommendation
 
