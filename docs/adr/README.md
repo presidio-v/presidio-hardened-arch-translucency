@@ -33,7 +33,7 @@ at it. Do not rewrite history.
 | [0006](0006-otlp-export-transport.md) | OTLP export via hand-rolled OTLP/HTTP+JSON (Collector-targeted), not the OpenTelemetry SDK | Accepted — governs v0.13.0 |
 | [0007](0007-prometheus-remote-write.md) | Prometheus remote-write via hand-rolled v1 (protobuf + literals-only snappy), zero deps | Accepted |
 | [0008](0008-helm-chart-packaging.md) | Package the exporter as a static Helm chart — emit-only, RBAC-free, rules via `.Files.Get` | Accepted — governs v0.16.0 |
-| [0009](0009-training-domain-profile.md) | ML training as a domain profile (`data`/`fsdp`/`tensor`/`pipeline`), memory as hard constraint, `training-run@1` + provenance parents | Proposed — governs the Training Arc (targeted v0.18.0) |
+| [0009](0009-training-domain-profile.md) | ML training as a domain profile (`data`/`fsdp`/`tensor`/`pipeline`), memory as hard constraint, `training-run@1` + provenance parents | Accepted — governs v0.18.0 Training Arc |
 
 ADRs 0001–0005 (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
 "autoresearch" release and are backfilled here for traceability. The canonical

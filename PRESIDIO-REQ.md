@@ -1041,10 +1041,12 @@ and consumer cannot silently drift. Cross-repo round-trip validated 2026-06-21
 its own normative anchor, `presidio-evidence vectors/slo-reading/` — cross-checked at creation
 as byte-identical (content hash **and** deterministic Ed25519 signature) to `build_slo_evidence`
 / `build_layer0_reading` output, with `item_id "SLO-DEGRADED"` and
-`ledger_ref "arch-translucency:obs"` pinned in both language suites. Follow-up (L-EV-7, next
-maintenance pass): swap the local `test_evidence_producer.py` golden constants to cite the
-family slo-reading vector explicitly, as `test_training.py` already does for
-`vectors/training-run/`.
+`ledger_ref "arch-translucency:obs"` pinned in both language suites. **L-EV-7 delivered
+2026-07-03:** `test_build_slo_evidence_matches_family_slo_reading_vector` in
+`test_evidence_producer.py` pins the family vector's content hash AND deterministic Ed25519
+signature (plus `item_id`/`ledger_ref` and the key-less Layer-0 binding), matching the
+`test_training.py` pattern for `vectors/training-run/`. Both degradation and training chains
+now break here before any consumer if the canonical profile drifts.
 
 ### Design decisions
 

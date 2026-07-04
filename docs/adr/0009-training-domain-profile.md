@@ -1,7 +1,6 @@
 # ADR-0009: Extend translucency to ML training as a domain profile, not new layers
 
-- **Status:** Proposed (2026-07-02) — MVP implemented on this decision; founder
-  sign-off pending for the release that ships it (targeted v0.18.0).
+- **Status:** Accepted (2026-07-04) — governs the v0.18.0 Training Arc.
 - **Deciders:** Vladimir Stantchev (maintainer)
 - **Related:** PRESIDIO-REQ.md "Training Arc"; suite strategy deliberation of
   2026-07-02 (persisted in `presidio-projects-overview/analysis/`);
