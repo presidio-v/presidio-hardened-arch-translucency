@@ -22,6 +22,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Final
 
+from presidio_arch_translucency.model_config import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_LAYER_NAME,
+    GLOBAL_MODEL_RELPATH,
+)
+
 # ---------------------------------------------------------------------------
 # Layer definitions
 # ---------------------------------------------------------------------------
@@ -53,8 +59,6 @@ class ReplicationLayer(str, Enum):
 # aiohttp, …) keep many requests in flight per worker, so per-replica capacity
 # is far higher.  ``DEFAULT_CONCURRENCY = 8`` yields ~100 rps/replica at 80 ms,
 # placing the reference workload at a realistic 4–8 replicas.
-DEFAULT_CONCURRENCY: Final[float] = 8.0
-
 # Validity envelope the default parameters were calibrated against.  Outside
 # this range (or for non-async workloads) the CLI warns and suggests
 # `pat calibrate`.
@@ -63,7 +67,6 @@ REFERENCE_LATENCY_RANGE_MS: Final[tuple[float, float]] = (10.0, 250.0)
 
 # Fitted-parameter persistence (written by `pat calibrate`, v0.7.0).
 PROJECT_MODEL_FILENAME: Final[str] = ".pat-model.json"
-GLOBAL_MODEL_RELPATH: Final[tuple[str, str]] = (".pat", "model.json")
 
 
 def _model_search_paths() -> list[Path]:
@@ -180,9 +183,6 @@ def resolve_calibration_commitment(layer: str | None = None) -> dict:
 # named per-layer fit (v0.9.0).  ``pat calibrate`` with no ``--layer`` (or
 # ``--layer default``) writes the top-level parameters; named layers live under
 # ``model["layers"][name]``.
-DEFAULT_LAYER_NAME: Final[str] = "default"
-
-
 def _concurrency_from_record(record: object) -> float | None:
     """Extract a positive ``concurrency`` from a fit record, or ``None``."""
     if not isinstance(record, dict):
