@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from presidio_arch_translucency.model import (
+from presidio_arch_translucency.model_config import (
     DEFAULT_CONCURRENCY,
     DEFAULT_LAYER_NAME,
     GLOBAL_MODEL_RELPATH,
