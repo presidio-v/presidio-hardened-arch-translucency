@@ -10,6 +10,38 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-05
+
+### Added
+
+- **Hash-chained observations (evidence-hardening).** Each new observation is
+  linked into a per-store SHA-256 hash chain (parallel `observation_chain`
+  table; the `observations` measurement schema is untouched). A new
+  `pat observe verify` verb walks the chain and reports the first break,
+  detecting any post-hoc row edit, deletion, insertion, or reorder relative to
+  the chain head. Rows recorded before chaining existed carry no link and are
+  reported as an UNVERIFIABLE **legacy prefix** — never counted as verified.
+  Numeric readings (rps / latency / throughput) are hashed as shortest
+  round-trip decimal strings, following the family's float discipline
+  ([ADR-0010](docs/adr/0010-observation-chain-and-calibration-commitment.md)).
+- **Calibration commitments (evidence-hardening).** `pat calibrate` now writes
+  a `calibration_commitment` digest into the model file: a SHA-256 over the
+  calibration inputs (the observation set) and outputs (fitted κ/β, R²/RMSE).
+  `pat analyze` re-hashes the stored parameters and **fails closed** if they no
+  longer match the commitment (tamper detection); an uncommitted legacy model
+  is reported as such, never rejected, and the recommendation output now carries
+  the commitment digest for provenance.
+
+### Notes
+
+- Honest scope: the observation chain proves the local history was not rewritten
+  after the fact relative to the chain head; it does **not** prove the readings
+  were honest at capture time. Grounded in the Computational Jurisprudence
+  program (Stantchev, arXiv 2026) — "evidence by cryptography, not by mutable
+  logs".
+- Additive only: existing databases and model files keep working; no migration
+  is required.
+
 ## [0.18.1] - 2026-07-04
 
 ### Changed
@@ -448,7 +480,10 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.1...v0.19.0
+[0.18.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.13.0...v0.15.0

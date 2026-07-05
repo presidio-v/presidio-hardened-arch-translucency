@@ -34,6 +34,7 @@ at it. Do not rewrite history.
 | [0007](0007-prometheus-remote-write.md) | Prometheus remote-write via hand-rolled v1 (protobuf + literals-only snappy), zero deps | Accepted |
 | [0008](0008-helm-chart-packaging.md) | Package the exporter as a static Helm chart — emit-only, RBAC-free, rules via `.Files.Get` | Accepted — governs v0.16.0 |
 | [0009](0009-training-domain-profile.md) | ML training as a domain profile (`data`/`fsdp`/`tensor`/`pipeline`), memory as hard constraint, `training-run@1` + provenance parents | Accepted — governs v0.18.0 Training Arc |
+| [0010](0010-observation-chain-and-calibration-commitment.md) | Tamper-evident observation hash chain (`pat observe verify`) + calibration commitments (`pat analyze` fails closed on mismatch); string-decimal float encoding; honest legacy handling | Accepted — governs the evidence-hardening pass |
 
 ADRs 0001–0005 (D1–D5) were locked on 2026-06-10 alongside the v0.8.0
 "autoresearch" release and are backfilled here for traceability. The canonical

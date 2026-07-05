@@ -66,6 +66,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.16.0 | Monitoring arc · Package & operate — `charts/pat-exporter` Helm chart + Dockerfile (Grafana panel plugin deferred) | Released |
 | v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | Complete (2026-06-21) |
 | v0.18.0 | **Training arc · Same question, new domain** — ML training parallelism as a domain profile (`training.py`: data/fsdp/tensor/pipeline; memory as hard constraint), `pat train-analyze`/`train-what-if`, `training-run@1` Layer-0 evidence + provenance-parents convention (ADR-0009) | Implemented + 3rd-party audited (2026-07-02, Codex); all P1/P2 findings remediated same day (`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`); founder tag/publish gate open (delta audit recommended) |
+| v0.19.0 | **Evidence-hardening arc · Prove the history, bind the fit** — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes; calibration commitments binding fitted models to source observations; ADR-0010 accepted | Shipped v0.19.0 (2026-07-05); third-party audit finding ARCH-01 remediated before release |
 
 ---
 
@@ -1133,6 +1134,79 @@ compute-bound** (no demand cap). `pipeline` uses the exact bubble formula
 | Pipeline bubble exact, others α/β | Exact form is well-known and cheap; α/β stays honest as an approximation elsewhere |
 | Parents inside the signed payload | Provenance without touching the frozen `evidence-ref@1` envelope; tampering with lineage changes the content hash |
 | No version bump in the MVP commit | Founder-signed release discipline; v0.18.0 gate stays with V.S. |
+
+## Evidence-Hardening Arc — "Prove the history, bind the fit"
+
+**Deliberated:** 2026-07-05
+
+### Direction
+
+Two creed violations remained after the Evidence Arc signed the *outgoing*
+signal. (1) The observation store is **mutable SQLite** — the local history a
+recommendation rests on can be silently rewritten. (2) Calibrated model
+parameters (κ/β) enter `pat analyze`'s recommendation with **no binding** to the
+observations that produced them. This arc closes both against the Computational
+Jurisprudence creed (Stantchev, arXiv 2026): *evidence by cryptography, not by
+mutable logs; the honest path is O(1) local; fail closed.* Governed by
+[ADR-0010](docs/adr/0010-observation-chain-and-calibration-commitment.md).
+
+### Scope
+
+- [x] **Hash-chained observations.** Each new observation is linked into a
+  per-store SHA-256 hash chain (parallel `observation_chain` table; the
+  `observations` measurement schema and what `pat observe` records are
+  untouched). Record hash = `SHA-256(canonical({content, prev_hash, seq}))`;
+  genesis `prev_hash` is the documented sentinel `"0"*64`. **`pat observe
+  verify`** walks the chain and reports the first break — detecting post-hoc row
+  edit, deletion, insertion, or reorder relative to the chain head (exit 1 on
+  break).
+- [x] **Honest legacy handling.** Rows predating the chain carry no link and are
+  reported as an **UNVERIFIABLE legacy prefix**, never counted as verified;
+  new observations always chain. Existing databases keep working with no
+  migration.
+- [x] **Calibration commitments.** `pat calibrate` writes a
+  `calibration_commitment` (`{schema, digest}`) into the fit record — a SHA-256
+  over the calibration inputs (observation set) and outputs (κ, β, R², RMSE,
+  point count). **`pat analyze` fails closed** when a present commitment no
+  longer matches the stored parameters (the model file was edited after
+  calibration); the recommendation output carries the commitment digest for
+  provenance.
+- [x] **Legacy models reported, not rejected.** A model file written before
+  commitments has no `calibration_commitment`; it is classified *legacy* and
+  used, with the output stating the parameters are unbound. A NEW calibration
+  always writes the commitment. No opt-in strictness flag is added (no repo
+  precedent for one); fail-closed is scoped to present-but-mismatched
+  commitments, so existing files never break.
+- [x] **Float discipline.** The family canonical profile rejects bare floats
+  (non-portable across encoders); the existing rounding convention is *lossy*.
+  Both hashes therefore encode float readings (rps/latency/throughput, κ/β,
+  R²/RMSE) as shortest **round-trip decimal strings** (`repr(float(x))`) —
+  portable and lossless — the repo's string-decimal encoding for numeric
+  readings.
+- [x] **Tests** — 28 new: chain build + verify; each tamper class (row edit,
+  row delete, row insert, reorder); legacy-prefix reporting; calibration
+  commitment roundtrip; tampered model file fails closed; legacy model reported
+  not rejected; per-layer commitments; CLI round-trips. Full suite green,
+  ruff clean, no regressions.
+
+### Bounded claim (no overclaiming)
+
+The observation chain proves the local history was **not rewritten after the
+fact relative to the chain head**. It does **not** prove the readings were honest
+at capture time — a source can still record a false measurement; the chain only
+makes silent *rewriting* of what was recorded detectable. Signing/externally
+anchoring the chain head (or emitting it as `evidence-ref@1`) is the natural
+next step and is deferred.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Parallel chain table, not new columns | The `observations` column set is test-pinned; a parallel table keeps the measurement schema untouched and lets pre-chain rows read as legacy |
+| Hash `seq` and `prev_hash` | Binding both makes insertion/deletion/reorder detectable, not just neighbour edits |
+| String-decimal float encoding | Honours "no bare floats in a hash" without the precision loss of rounding — two distinct readings never collide |
+| Fail-closed only on mismatch | Present-but-wrong commitment is tamper; *absent* commitment is legacy and used — existing model files never break |
+| No strictness flag | No repo precedent for opt-in strictness; the honest-legacy default is the safe one |
 
 ## SDLC
 
