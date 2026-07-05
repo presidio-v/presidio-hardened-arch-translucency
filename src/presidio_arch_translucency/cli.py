@@ -40,9 +40,11 @@ from presidio_arch_translucency.model import (
     REFERENCE_LATENCY_RANGE_MS,
     REFERENCE_RPS_RANGE,
     VALID_LAYERS,
+    CalibrationTamperError,
     ReplicationLayer,
     analyze,
     model_is_calibrated,
+    resolve_calibration_commitment,
     resolve_concurrency,
 )
 from presidio_arch_translucency.security import (
@@ -92,6 +94,21 @@ def _warn_if_uncalibrated() -> None:
     """Emit the envelope warning to stderr unless a calibrated model exists."""
     if not model_is_calibrated():
         warn_console.print(_envelope_warning_text())
+
+
+def _resolve_commitment_or_exit(model_layer: Optional[str]) -> dict:  # noqa: UP045
+    """Resolve the active fit's calibration commitment, failing closed on tamper.
+
+    Returns the commitment status dict for inclusion in the recommendation
+    artifact. On a present-but-mismatched commitment (the model file was edited
+    after calibration) prints the tamper error and exits non-zero rather than
+    acting on tampered α/β. A legacy (uncommitted) fit is reported, not rejected.
+    """
+    try:
+        return resolve_calibration_commitment(model_layer)
+    except CalibrationTamperError as exc:
+        err_console.print(f"[bold red]Calibration tamper detected:[/] {exc}")
+        raise typer.Exit(code=2) from exc
 
 
 def _is_help_invocation() -> bool:
@@ -193,6 +210,10 @@ def analyze_cmd(
     current = ReplicationLayer(layer_str)
     _warn_if_uncalibrated()
 
+    # --- Calibration-commitment gate (v0.19.0): fail closed if the model
+    #     file's stored parameters no longer match their commitment. ---
+    commitment = _resolve_commitment_or_exit(model_layer)
+
     # --- Run analysis ---
     result = analyze(
         requests_per_second=rps,
@@ -210,7 +231,12 @@ def analyze_cmd(
     )
 
     # --- Render output ---
-    _render_results(result, show_all=show_all, uniform_cost=cost_per_replica_hour)
+    _render_results(
+        result,
+        show_all=show_all,
+        uniform_cost=cost_per_replica_hour,
+        commitment=commitment,
+    )
 
 
 @app.command("export")
@@ -883,6 +909,7 @@ def _render_results(
     result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
     show_all: bool,
     uniform_cost: Optional[float] = None,  # noqa: UP045
+    commitment: Optional[dict] = None,  # noqa: UP045
 ) -> None:
     from presidio_arch_translucency.model import AnalysisResult  # local import for type
 
@@ -981,8 +1008,32 @@ def _render_results(
     console.print(
         f"\n[dim]Baseline: {result.baseline_throughput_rps:.0f} req/s "
         f"@ {result.baseline_response_time_ms:.1f} ms  "
-        f"(current layer: {result.current_layer.value})[/]\n"
+        f"(current layer: {result.current_layer.value})[/]"
     )
+    console.print(_commitment_line(commitment) + "\n")
+
+
+def _commitment_line(commitment: Optional[dict]) -> str:  # noqa: UP045
+    """One-line calibration-commitment provenance for a recommendation artifact.
+
+    ``ok`` shows the bound digest (the recommendation is tied to the exact fitted
+    α/β and their observation set). ``legacy`` states the fit predates
+    commitments. ``uncalibrated`` states no calibrated model drove the result.
+    """
+    status = (commitment or {}).get("status", "uncalibrated")
+    if status == "ok":
+        digest = (commitment or {}).get("digest") or ""
+        return (
+            f"[dim]Calibration commitment: [green]{digest[:16]}…[/] "
+            "(parameters bound to their observation set)[/]"
+        )
+    if status == "legacy":
+        return (
+            "[dim]Calibration commitment: [yellow]none (legacy fit)[/] — "
+            "these parameters predate commitments and are not bound to an "
+            "observation set. Recalibrate to bind them.[/]"
+        )
+    return "[dim]Calibration commitment: n/a (uncalibrated — default parameters)[/]"
 
 
 @app.command("what-if")
@@ -1762,6 +1813,107 @@ def _observe_from_prometheus(url: str, layer: str | None, db: Path | None) -> No
         f"({obs.rps:.0f} req/s, p99 {obs.p99_latency_ms:.0f} ms, "
         f"{obs.replicas} replicas) → {total} total in store.\n"
     )
+
+
+@observe_app.command("verify")
+def observe_verify_cmd(
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--db",
+        help="Observation store to verify (default: ~/.pat/observations.db).",
+    ),
+    allow_legacy: bool = typer.Option(
+        False,
+        "--allow-legacy",
+        help="Exit 0 when the chain is intact but legacy unchained rows remain.",
+    ),
+) -> None:
+    """Verify the observation hash chain and report the first break, if any.
+
+    Walks the per-observation hash chain (v0.19.0) and detects any post-hoc
+    edit, insertion, deletion, or reorder of chained history relative to the
+    chain head. Rows recorded before chaining existed carry no chain link and
+    are reported as an UNVERIFIABLE legacy prefix — never counted as verified.
+
+    Honest scope: a clean chain proves the local history was not rewritten after
+    the fact; it does NOT prove the readings were honest when captured. Exits 0
+    when the chain is intact and fully covered, 1 when a break is found, and 2
+    when the chain suffix is intact but coverage is incomplete. ``--allow-legacy``
+    downgrades only the incomplete-coverage exit to 0; a broken chain still exits 1.
+    """
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+
+    report = store.verify_chain(db_path=db)
+    log_security_event(
+        "OBSERVE_VERIFY",
+        {
+            "total": report.total,
+            "verified": report.verified,
+            "legacy": report.legacy_count,
+            "ok": report.ok,
+            "allow_legacy": allow_legacy,
+        },
+    )
+    _render_chain_report(report)
+    if report.broken_obs_id is not None:
+        raise typer.Exit(code=1)
+    if not report.ok and not (allow_legacy and report.legacy_count > 0):
+        raise typer.Exit(code=2)
+
+
+def _render_chain_report(report: object) -> None:
+    """Render a ChainReport: coverage, legacy prefix, and the first break."""
+    from presidio_arch_translucency.observe import ChainReport  # noqa: PLC0415
+
+    assert isinstance(report, ChainReport)  # noqa: S101
+
+    if report.total == 0:
+        console.print("\n[dim]No observations recorded yet — nothing to verify.[/]\n")
+        return
+
+    lines = [
+        f"[bold]Observations:[/]   {report.total}",
+        f"[bold]Chained:[/]        {report.chained}",
+        f"[bold]Verified:[/]       {report.verified}",
+    ]
+    if report.legacy_count:
+        lines.append(
+            f"[bold]Legacy (pre-chain):[/] [yellow]{report.legacy_count} "
+            "UNVERIFIABLE[/]"
+        )
+
+    if report.broken_obs_id is not None:
+        lines.append(
+            f"\n[bold red]✗ Chain broken[/] at observation id "
+            f"{report.broken_obs_id} (seq {report.broken_seq}):\n"
+            f"  {report.break_reason}"
+        )
+        border = "red"
+        title = "[bold red]Observation chain — BROKEN[/]"
+    elif report.legacy_count:
+        lines.append(
+            "\n[yellow]⚠ Chain intact over the chained suffix, but a legacy "
+            "prefix predates chaining and cannot be verified.[/]\n"
+            "[dim]The chain proves the chained history was not rewritten after "
+            "the fact; it does not attest the readings were honest at "
+            "capture.[/]"
+        )
+        border = "yellow"
+        title = "[bold yellow]Observation chain — PARTIAL (legacy prefix)[/]"
+    else:
+        lines.append(
+            "\n[green]✓ Chain intact[/] — no post-hoc edit, insertion, "
+            "deletion, or reorder detected.\n"
+            "[dim]Proves the local history was not rewritten after the fact "
+            "relative to the chain head; not that the readings were honest at "
+            "capture.[/]"
+        )
+        border = "green"
+        title = "[bold blue]Observation chain — verified[/]"
+
+    console.print()
+    console.print(Panel("\n".join(lines), title=title, border_style=border))
+    console.print()
 
 
 # ── observe daemon: continuous collection via launchd / systemd ───────────────

@@ -96,6 +96,86 @@ def model_is_calibrated() -> bool:
     return load_calibrated_model() is not None
 
 
+# ---------------------------------------------------------------------------
+# Calibration commitments (v0.19.0) -- bind fitted α/β to the observations
+# ---------------------------------------------------------------------------
+
+
+class CalibrationTamperError(ValueError):
+    """Raised when a committed fit record no longer re-hashes to its commitment.
+
+    Fail-closed: a consumer that finds a present-but-mismatched commitment must
+    refuse to act on the parameters rather than silently using tampered α/β.
+    """
+
+
+def commitment_status(record: object) -> str:
+    """Classify a fit record's commitment: ``ok`` / ``tampered`` / ``legacy``.
+
+    ``legacy`` = no commitment stored (a fit written before commitments existed);
+    reported honestly, never rejected. ``tampered`` = commitment present but the
+    stored parameters do not re-hash to it. ``ok`` = present and matches.
+    """
+    from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
+        commitment_of,
+        verify_commitment,
+    )
+
+    if commitment_of(record) is None:
+        return "legacy"
+    return "ok" if verify_commitment(record) else "tampered"
+
+
+def active_fit_record(layer: str | None = None) -> dict | None:
+    """Return the fit record `pat analyze` would use for *layer*, or ``None``.
+
+    Mirrors :func:`resolve_concurrency`'s selection: a named per-layer fit when
+    present, else the global top-level fit. Used to surface / verify the
+    commitment that actually drives a recommendation.
+    """
+    model = load_calibrated_model()
+    if not isinstance(model, dict):
+        return None
+    if layer is not None and layer != DEFAULT_LAYER_NAME:
+        layers = model.get("layers")
+        if isinstance(layers, dict) and isinstance(layers.get(layer), dict):
+            return layers[layer]
+    return model if "concurrency" in model else None
+
+
+def resolve_calibration_commitment(layer: str | None = None) -> dict:
+    """Resolve the calibration-commitment status for the active fit (fail-closed).
+
+    Returns ``{"status": ..., "digest": ...}`` describing the commitment on the
+    fit record `pat analyze` uses for *layer*. ``status`` is one of ``ok``,
+    ``legacy``, or ``uncalibrated`` (no model file / no usable fit). Raises
+    :class:`CalibrationTamperError` when the active record carries a commitment
+    that its stored parameters no longer match — the tamper signal every model
+    consumer honours before acting.
+    """
+    record = active_fit_record(layer)
+    if record is None:
+        return {"status": "uncalibrated", "digest": None}
+
+    status = commitment_status(record)
+    if status == "tampered":
+        from presidio_arch_translucency.calibrate import commitment_of  # noqa: PLC0415
+
+        raise CalibrationTamperError(
+            "calibrated model parameters do not match their stored "
+            "calibration_commitment "
+            f"(expected {commitment_of(record)}); the model file was modified "
+            "after calibration. Re-run `pat calibrate` to produce a fresh, "
+            "committed fit."
+        )
+    if status == "legacy":
+        return {"status": "legacy", "digest": None}
+
+    from presidio_arch_translucency.calibrate import commitment_of  # noqa: PLC0415
+
+    return {"status": "ok", "digest": commitment_of(record)}
+
+
 # Reserved layer name meaning "the global/top-level pooled fit" rather than a
 # named per-layer fit (v0.9.0).  ``pat calibrate`` with no ``--layer`` (or
 # ``--layer default``) writes the top-level parameters; named layers live under

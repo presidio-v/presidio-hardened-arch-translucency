@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.18.0 — Architectural Translucency Analyzer for Docker & Kubernetes — and ML training parallelism
+> v0.19.0 — Architectural Translucency Analyzer for Docker & Kubernetes, with hash-chained observations and calibration commitments.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -344,6 +344,17 @@ pat calibrate --observation 100:50:2 --observation 300:80:5
 
 Prints a per-observation prediction/residual table plus overall R² and RMSE.
 
+**Calibration commitment.** Every fit written by `pat calibrate` embeds a
+`calibration_commitment` — a SHA-256 over the calibration inputs (the observation
+set) and outputs (fitted κ/β, R²/RMSE). `pat analyze` re-hashes the stored
+parameters and **fails closed** if they no longer match the commitment: a
+model file hand-edited after calibration is rejected rather than silently
+driving a recommendation. The recommendation output carries the commitment
+digest so a recommendation is traceable to the exact parameters that produced
+it. A model file written before commitments existed has none; it is reported as
+a *legacy* (unbound) fit and used, never rejected — recalibrate to bind it. See
+[ADR-0010](docs/adr/0010-observation-chain-and-calibration-commitment.md).
+
 #### `pat calibrate --benchmark` — measure the points with Docker (v0.9.0)
 
 Don't have measured points to hand? Let `pat` measure them. Benchmark mode sweeps
@@ -399,6 +410,39 @@ pat observe --prometheus http://prometheus.monitoring.svc:9090 --layer deploymen
 
 The bearer token is read from `PAT_PROMETHEUS_TOKEN` only — never passed as a
 CLI argument and never logged.
+
+#### `pat observe verify` — tamper-evident observation history
+
+Each new observation is linked into a per-store SHA-256 **hash chain**: every
+record's hash binds its own contents, its chain position, and the previous
+record's hash. `pat observe verify` walks the chain and reports the first break,
+detecting any post-hoc edit, deletion, insertion, or reorder of the local
+history relative to the chain head.
+
+```bash
+pat observe verify                 # verify ~/.pat/observations.db
+pat observe verify --db ./obs.db   # verify a specific store
+pat observe verify --allow-legacy  # allow only an intact legacy-prefix report
+```
+
+The chain is a parallel table — the `observations` measurement schema is
+untouched, and `pat observe` records nothing new. Rows recorded *before* chaining
+existed carry no link and are reported as an **UNVERIFIABLE legacy prefix**,
+never counted as verified coverage. Existing databases keep working unchanged.
+Exit codes are machine-distinct: `0` means chain intact with full coverage, `1`
+means a chain break was found, and `2` means the chain suffix is intact but
+coverage is incomplete because legacy rows remain. `--allow-legacy` downgrades
+only exit `2` to `0`; a broken chain still exits `1`.
+
+**What the chain proves — and what it does not.** A clean chain proves the local
+history was not rewritten after the fact relative to the chain head. It does
+**not** prove the readings were honest at capture time — a source can still
+record a false measurement; the chain only makes silent *rewriting* of what was
+recorded detectable. (Numeric readings are hashed as shortest round-trip decimal
+strings, following the evidence family's float discipline — see
+[ADR-0010](docs/adr/0010-observation-chain-and-calibration-commitment.md).) This
+realizes the "evidence by cryptography, not by mutable logs" creed of the
+Computational Jurisprudence program (Stantchev, arXiv 2026).
 
 ### `pat optimize` — proactive scaling recommendation (v0.8.0)
 
@@ -948,7 +992,8 @@ independently of the CLI so a sidecar can never sign malformed content.
 | v0.15.0 | Close the loop — `pat scaler` (KEDA ScaledObject / HPA on pat's forecast) |
 | v0.16.0 | Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile |
 | v0.17.0 | Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar |
-| **v0.18.0** | **Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`)** |
+| v0.18.0 | Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`) |
+| **v0.19.0** | **Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

@@ -23,6 +23,7 @@ come from APM, load tests, or prior ``pat demo`` output.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from contextlib import suppress
@@ -35,6 +36,14 @@ from presidio_arch_translucency.model import (
     DEFAULT_LAYER_NAME,
     GLOBAL_MODEL_RELPATH,
 )
+
+#: Calibration-commitment schema tag written into each committed fit record
+#: (v0.19.0). A version tag so the re-hash rule can evolve without silently
+#: mis-verifying an older commitment.
+CALIBRATION_COMMITMENT_SCHEMA = "presidio-hardened/calibration-commitment@1"
+
+#: Key under which the commitment digest and its metadata live in a fit record.
+COMMITMENT_KEY = "calibration_commitment"
 
 # Default coordination overhead used when a single observation cannot constrain
 # beta (one point, two free parameters).
@@ -162,8 +171,119 @@ def global_model_path() -> Path:
     return Path.home() / GLOBAL_MODEL_RELPATH[0] / GLOBAL_MODEL_RELPATH[1]
 
 
+def _num_str(value: float | int) -> str:
+    """Shortest round-trip decimal string for a fitted/observed value.
+
+    The evidence family's canonical profile rejects bare floats (they are not
+    portable across encoders); α/β/κ, R²/RMSE and the observed rps/latency are
+    naturally floats, so the commitment encodes each as ``repr(float(...))`` --
+    the shortest string that round-trips to the same IEEE-754 double -- keeping
+    the digest deterministic and lossless. This mirrors the observation-chain
+    string-decimal encoding in ``observe.py``.
+    """
+    return repr(float(value))
+
+
+def _committed_content(result: CalibrationResult) -> dict[str, object]:
+    """The exact calibration inputs+outputs bound by the commitment digest.
+
+    Inputs: the observation set used (rps/latency as round-trip decimals,
+    replicas as ints). Outputs: the fitted per-layer α/β (β = ``overhead_beta``,
+    κ = ``concurrency``) and the fit metadata (R², RMSE, point count). This is
+    what ``pat analyze`` re-hashes from the model file to detect tampering.
+    """
+    return {
+        "schema": CALIBRATION_COMMITMENT_SCHEMA,
+        "concurrency": _num_str(result.concurrency),
+        "overhead_beta": _num_str(result.overhead_beta),
+        "r_squared": _num_str(result.r_squared),
+        "rmse": _num_str(result.rmse),
+        "observation_count": len(result.observations),
+        "observations": [
+            [_num_str(o.rps), _num_str(o.latency_ms), int(o.replicas)]
+            for o in result.observations
+        ],
+    }
+
+
+def _canonical_bytes(payload: object) -> bytes:
+    """Family canonical JSON (sorted keys, tight separators); floats already
+    string-encoded upstream so the bytes stay deterministic."""
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def commitment_digest(result: CalibrationResult) -> str:
+    """SHA-256 over the canonical calibration inputs+outputs (lowercase hex)."""
+    return hashlib.sha256(_canonical_bytes(_committed_content(result))).hexdigest()
+
+
+def _digest_from_record(record: dict) -> str:
+    """Re-derive the commitment digest from a *stored* fit record.
+
+    Reconstructs the committed content from the persisted parameters so a
+    consumer can detect any post-calibration edit to concurrency / overhead_beta
+    / fit metadata / observation set without re-running the fit.
+    """
+    observations = record.get("observations")
+    if not isinstance(observations, list):
+        raise CalibrationError("fit record has no observation set to re-hash")
+    content = {
+        "schema": CALIBRATION_COMMITMENT_SCHEMA,
+        "concurrency": _num_str(record["concurrency"]),
+        "overhead_beta": _num_str(record["overhead_beta"]),
+        "r_squared": _num_str(record["r_squared"]),
+        "rmse": _num_str(record["rmse"]),
+        "observation_count": len(observations),
+        "observations": [
+            [_num_str(row[0]), _num_str(row[1]), int(row[2])] for row in observations
+        ],
+    }
+    return hashlib.sha256(_canonical_bytes(content)).hexdigest()
+
+
+def commitment_of(record: object) -> str | None:
+    """Return the stored commitment digest of a fit record, or ``None``.
+
+    ``None`` means the record predates commitments (a legacy fit) -- consumers
+    report it as uncommitted rather than rejecting it.
+    """
+    if not isinstance(record, dict):
+        return None
+    commitment = record.get(COMMITMENT_KEY)
+    if isinstance(commitment, dict):
+        digest = commitment.get("digest")
+        return digest if isinstance(digest, str) else None
+    return None
+
+
+def verify_commitment(record: object) -> bool:
+    """Re-hash a stored fit record and compare to its embedded commitment.
+
+    Returns True when the record carries a commitment and the persisted
+    parameters re-hash to it (untampered). Returns False when the commitment is
+    present but the parameters no longer match it (tampered) -- the fail-closed
+    signal. Raises nothing; a *missing* commitment is a separate, legacy case
+    (use :func:`commitment_of` to distinguish uncommitted from tampered).
+    """
+    stored = commitment_of(record)
+    if stored is None:
+        return False
+    try:
+        return _digest_from_record(record) == stored  # type: ignore[arg-type]
+    except (CalibrationError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 def _fit_record(result: CalibrationResult) -> dict:
-    """Serialise a fit to the on-disk record shape (`pat analyze` reads these)."""
+    """Serialise a fit to the on-disk record shape (`pat analyze` reads these).
+
+    A NEW calibration always writes the commitment (v0.19.0): the digest binds
+    the fitted α/β and the observation set that produced them, so a consumer can
+    detect a post-calibration edit and fail closed. Legacy records written
+    before commitments simply lack the key and are reported as uncommitted.
+    """
     return {
         "concurrency": result.concurrency,
         "overhead_beta": result.overhead_beta,
@@ -173,6 +293,10 @@ def _fit_record(result: CalibrationResult) -> dict:
         "observations": [
             [o.rps, o.latency_ms, o.replicas] for o in result.observations
         ],
+        COMMITMENT_KEY: {
+            "schema": CALIBRATION_COMMITMENT_SCHEMA,
+            "digest": commitment_digest(result),
+        },
     }
 
 
