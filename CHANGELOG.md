@@ -10,6 +10,24 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-07-07
+
+### Changed
+
+- Publish the ADR-0010 evidence-hardening line as the current patch release:
+  hash-chained observations and calibration commitments remain the v0.19
+  feature set, with the accepted ADR included in the release source.
+- Remediate GitHub Actions dependency drift: `actions/checkout`,
+  `actions/setup-python`, and `astral-sh/setup-uv` are bumped, and CodeQL
+  `init` / `autobuild` / `analyze` stay pinned to the same action commit so
+  future patch updates do not split the workflow into incompatible versions.
+
+### Fixed
+
+- Remediate all 23 open CodeQL code-scanning alerts: explicit replication-layer
+  iteration/membership, non-empty Docker/URL exception handling, closed test
+  file handles, and unused local/global variables.
+
 ## [0.19.0] - 2026-07-05
 
 ### Added
@@ -480,7 +498,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.17.0...v0.18.0

@@ -44,6 +44,14 @@ class ReplicationLayer(str, Enum):
     NODE = "node"
 
 
+ALL_REPLICATION_LAYERS: Final[tuple[ReplicationLayer, ...]] = (
+    ReplicationLayer.CONTAINER,
+    ReplicationLayer.POD,
+    ReplicationLayer.DEPLOYMENT,
+    ReplicationLayer.NODE,
+)
+
+
 # ---------------------------------------------------------------------------
 # Per-replica capacity calibration (v0.7.0)
 # ---------------------------------------------------------------------------
@@ -426,7 +434,7 @@ def analyze(
 
     layer_results: list[LayerResult] = []
 
-    for layer in ReplicationLayer:
+    for layer in ALL_REPLICATION_LAYERS:
         params = LAYER_PARAMS[layer]
         best_delta = 1
         best_tp = baseline_rps

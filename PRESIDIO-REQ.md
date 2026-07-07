@@ -67,6 +67,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.17.0 | **Evidence arc · Sign the signal** — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`. Key-less daemon; signing in a sidecar | Complete (2026-06-21) |
 | v0.18.0 | **Training arc · Same question, new domain** — ML training parallelism as a domain profile (`training.py`: data/fsdp/tensor/pipeline; memory as hard constraint), `pat train-analyze`/`train-what-if`, `training-run@1` Layer-0 evidence + provenance-parents convention (ADR-0009) | Implemented + 3rd-party audited (2026-07-02, Codex); all P1/P2 findings remediated same day (`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`); founder tag/publish gate open (delta audit recommended) |
 | v0.19.0 | **Evidence-hardening arc · Prove the history, bind the fit** — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes; calibration commitments binding fitted models to source observations; ADR-0010 accepted | Shipped v0.19.0 (2026-07-05); third-party audit finding ARCH-01 remediated before release |
+| v0.19.1 | **Evidence-hardening patch release** — publish the accepted ADR-0010 line with remediated GitHub Actions pins and CodeQL code-scanning alert fixes | Release gate for v0.19.1 (2026-07-07) |
 
 ---
 

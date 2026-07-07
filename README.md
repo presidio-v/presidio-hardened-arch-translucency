@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.19.0 — Architectural Translucency Analyzer for Docker & Kubernetes, with hash-chained observations and calibration commitments.
+> v0.19.1 — Architectural Translucency Analyzer for Docker & Kubernetes, with hash-chained observations and calibration commitments.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -993,7 +993,8 @@ independently of the CLI so a sidecar can never sign malformed content.
 | v0.16.0 | Package & operate — `charts/pat-exporter` Helm chart (Deployment + ServiceMonitor + PrometheusRule + Grafana dashboard) + Dockerfile |
 | v0.17.0 | Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar |
 | v0.18.0 | Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`) |
-| **v0.19.0** | **Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations** |
+| v0.19.0 | Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations |
+| **v0.19.1** | **Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 
