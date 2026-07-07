@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.18.x | :white_check_mark: |
+| main / 0.19.x | :white_check_mark: |
 | 0.17.x  | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
@@ -55,7 +55,7 @@ Dependencies are pinned in `uv.lock` and monitored via:
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
-## Evidence Trust Boundary (v0.17.x / v0.18.x)
+## Evidence Trust Boundary (v0.17.x / v0.19.x)
 
 `pat evidence-emit` reads either an explicit `--p99-latency-ms` value or the
 latest local observation from `~/.pat/observations.db`, then emits an unsigned
@@ -79,7 +79,7 @@ by the producer; resolving and verifying the referenced payloads is the
 consumer's responsibility (presidio-evidence ADR-0002 P4). The security log
 records a SHA-256 digest of `run_id`, never the raw value.
 
-## Known Limitations (main / v0.18.x)
+## Known Limitations (main / v0.19.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -94,6 +94,8 @@ records a SHA-256 digest of `run_id`, never the raw value.
 
 Manual security audit history:
 
+- v0.19.1 release gate -- remediates the open CodeQL code-scanning alert set
+  before publishing the patch release.
 - [`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`](SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md) -- v0.18.0 third-party release audit (Codex, `presidio-third-party-audits`) remediation status.
 - [`SECURITY-AUDIT-2026-06-21-v0.17.0.md`](SECURITY-AUDIT-2026-06-21-v0.17.0.md) -- v0.17.0 third-party release audit and remediation status.
 - [`SECURITY-AUDIT-2026-06-17-v0.13.0.md`](SECURITY-AUDIT-2026-06-17-v0.13.0.md) -- v0.13.0 release-cut audit and remediation status.

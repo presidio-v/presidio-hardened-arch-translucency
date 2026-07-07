@@ -168,8 +168,9 @@ def _demo_results() -> list[demo.VariantResult]:
 
 def test_render_hpa_section_creates_plot(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    demo._render_hpa_section(_demo_results(), out, 3.0, console)
+    with (tmp_path / "out.txt").open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_hpa_section(_demo_results(), out, 3.0, console)
     hpa_out = tmp_path / "demo-results-hpa.png"
     assert hpa_out.exists()
     assert hpa_out.stat().st_size > 0
@@ -177,9 +178,10 @@ def test_render_hpa_section_creates_plot(tmp_path: Path) -> None:
 
 def test_render_hpa_section_skips_zero_throughput(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
     bad = [_vr("1 -- Single container", 0.0, 0.0)]
-    demo._render_hpa_section(bad, out, 3.0, console)
+    with (tmp_path / "out.txt").open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_hpa_section(bad, out, 3.0, console)
     assert not (tmp_path / "demo-results-hpa.png").exists()
 
 
@@ -206,27 +208,33 @@ def test_on_demand_pricing_handles_tiered_result() -> None:
 
 
 def test_render_cost_section_basic(tmp_path: Path) -> None:
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    demo._render_cost_section(_demo_results(), 0.02, console)
-    out = (tmp_path / "out.txt").read_text()
+    out_path = tmp_path / "out.txt"
+    with out_path.open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_cost_section(_demo_results(), 0.02, console)
+    out = out_path.read_text(encoding="utf-8")
     assert "Cost" in out or "cost" in out.lower() or "$" in out
 
 
 def test_render_cost_section_skips_zero_throughput(tmp_path: Path) -> None:
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
     bad = [_vr("1 -- Single container", 0.0, 0.0)]
-    demo._render_cost_section(bad, 0.02, console)
+    with (tmp_path / "out.txt").open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_cost_section(bad, 0.02, console)
 
 
 def test_render_cost_section_custom_cost(tmp_path: Path) -> None:
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    demo._render_cost_section(_demo_results(), 0.10, console)
-    out = (tmp_path / "out.txt").read_text()
+    out_path = tmp_path / "out.txt"
+    with out_path.open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_cost_section(_demo_results(), 0.10, console)
+    out = out_path.read_text(encoding="utf-8")
     assert "0.10" in out or "0.1000" in out
 
 
 def test_render_hpa_section_custom_multiplier(tmp_path: Path) -> None:
     out = tmp_path / "demo-results.png"
-    console = Console(file=open(tmp_path / "out.txt", "w"))  # noqa: SIM115
-    demo._render_hpa_section(_demo_results(), out, 5.0, console)
+    with (tmp_path / "out.txt").open("w", encoding="utf-8") as output:
+        console = Console(file=output)
+        demo._render_hpa_section(_demo_results(), out, 5.0, console)
     assert (tmp_path / "demo-results-hpa.png").exists()

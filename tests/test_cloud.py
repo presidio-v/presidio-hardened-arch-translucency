@@ -645,6 +645,8 @@ class TestGetFargateRates:
             (vcpu_rate, mem_rate), from_cache = get_fargate_rates("us-east-1")
 
         mock_api.assert_not_called()
+        assert vcpu_rate == pytest.approx(0.04048)
+        assert mem_rate == pytest.approx(0.004445)
         assert from_cache is True
 
     def test_raises_when_no_cache_and_network_fails(self, tmp_path, monkeypatch):

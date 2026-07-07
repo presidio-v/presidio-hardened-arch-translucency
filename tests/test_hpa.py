@@ -25,7 +25,7 @@ from presidio_arch_translucency.hpa import (
     save_hpa_plot,
     simulate_scale_event,
 )
-from presidio_arch_translucency.model import ReplicationLayer
+from presidio_arch_translucency.model import ALL_REPLICATION_LAYERS, ReplicationLayer
 
 runner = CliRunner()
 
@@ -131,7 +131,7 @@ def test_optimal_replicas_capped_at_max() -> None:
 
 
 def test_optimal_replicas_all_layers_positive() -> None:
-    for layer in ReplicationLayer:
+    for layer in ALL_REPLICATION_LAYERS:
         assert optimal_replicas_for_rps(100.0, 50.0, layer) >= 1
 
 
@@ -234,7 +234,7 @@ def test_timeline_last_point_in_steady() -> None:
 
 
 def test_all_layers_simulate() -> None:
-    for layer in ReplicationLayer:
+    for layer in ALL_REPLICATION_LAYERS:
         r = simulate_scale_event(50.0, 200.0, 80.0, layer)
         assert r.steady_throughput_rps > 0
 

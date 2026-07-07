@@ -36,6 +36,7 @@ from presidio_arch_translucency.hpa import (
     simulate_scale_event,
 )
 from presidio_arch_translucency.model import (
+    ALL_REPLICATION_LAYERS,
     DEFAULT_LAYER_NAME,
     REFERENCE_LATENCY_RANGE_MS,
     REFERENCE_RPS_RANGE,
@@ -1228,7 +1229,7 @@ def slo_cmd(
             params=params,
             concurrency=concurrency,
         )
-        for layer in ReplicationLayer
+        for layer in ALL_REPLICATION_LAYERS
     }
     log_security_event("SLO_INVOCATION", {"rps": rps, "p99_target_ms": p99_target_ms})
     _render_slo(results, p99_target_ms, rps, spike_rps, params, CostParams())

@@ -304,12 +304,16 @@ def _cleanup(client: object) -> None:  # type: ignore[type-arg]
             try:
                 c.stop(timeout=5)
                 c.remove(force=True)
-            except docker.errors.APIError:
-                pass
+            except docker.errors.APIError as exc:
+                _ = exc
     try:
-        client.networks.get(NETWORK_NAME).remove()  # type: ignore[union-attr]
-    except Exception:  # noqa: BLE001, S110
-        pass
+        network = client.networks.get(NETWORK_NAME)  # type: ignore[union-attr]
+    except docker.errors.NotFound:
+        return
+    try:
+        network.remove()
+    except docker.errors.APIError as exc:
+        _ = exc
 
 
 def _build_image(client: object, console: Console, force: bool = False) -> None:
@@ -360,7 +364,8 @@ def _wait_url(url: str, timeout: float = 30.0) -> bool:
                 if r.status == 200:
                     return True
         except (URLError, OSError):
-            pass
+            time.sleep(0.3)
+            continue
         time.sleep(0.3)
     return False
 

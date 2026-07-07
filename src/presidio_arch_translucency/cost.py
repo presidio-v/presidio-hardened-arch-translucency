@@ -17,20 +17,6 @@ from dataclasses import dataclass
 
 from presidio_arch_translucency.model import ReplicationLayer
 
-# ---------------------------------------------------------------------------
-# Cost parameters
-# ---------------------------------------------------------------------------
-
-# Approximate USD/replica-hour defaults — container ≈ small Fargate task,
-# pod ≈ with kubelet/kube-proxy overhead, deployment ≈ with scheduler churn,
-# node ≈ small EC2/GCE instance.
-_DEFAULT_COST: dict[ReplicationLayer, float] = {
-    ReplicationLayer.CONTAINER: 0.02,
-    ReplicationLayer.POD: 0.05,
-    ReplicationLayer.DEPLOYMENT: 0.10,
-    ReplicationLayer.NODE: 0.50,
-}
-
 
 @dataclass
 class CostParams:

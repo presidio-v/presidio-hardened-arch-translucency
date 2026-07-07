@@ -5,6 +5,7 @@ import math
 import pytest
 
 from presidio_arch_translucency.model import (
+    ALL_REPLICATION_LAYERS,
     DEFAULT_CONCURRENCY,
     LAYER_PARAMS,
     AnalysisResult,
@@ -43,7 +44,7 @@ class TestIntensityAfterReplication:
         assert i4 < i1
 
     def test_intensity_positive_always(self):
-        for layer in ReplicationLayer:
+        for layer in ALL_REPLICATION_LAYERS:
             assert intensity_after_replication(500.0, 10, layer) > 0
 
     def test_intensity_increases_with_rps(self):
@@ -68,7 +69,7 @@ class TestThroughput:
     def test_throughput_does_not_exceed_demand(self):
         rps = 300.0
         base_cap = 1000.0
-        for layer in ReplicationLayer:
+        for layer in ALL_REPLICATION_LAYERS:
             for delta in (1, 2, 4, 8):
                 tp = throughput(rps, delta, layer, base_cap)
                 assert tp <= rps + 1e-6, f"layer={layer} delta={delta} tp={tp}"
@@ -82,7 +83,7 @@ class TestThroughput:
         assert tp4 >= tp1
 
     def test_all_layers_return_positive(self):
-        for layer in ReplicationLayer:
+        for layer in ALL_REPLICATION_LAYERS:
             assert throughput(500.0, 2, layer, 300.0) >= 0
 
 
@@ -93,7 +94,7 @@ class TestThroughput:
 
 class TestResponseTimeMs:
     def test_returns_positive(self):
-        for layer in ReplicationLayer:
+        for layer in ALL_REPLICATION_LAYERS:
             rt = response_time_ms(200.0, 2, layer, 50.0, 300.0)
             assert rt > 0, f"response_time should be positive for layer={layer}"
 
@@ -143,11 +144,11 @@ class TestAnalyze:
     def test_layers_cover_all_four(self):
         result = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
         layer_names = {r.layer for r in result.layers}
-        assert layer_names == set(ReplicationLayer)
+        assert layer_names == set(ALL_REPLICATION_LAYERS)
 
     def test_recommended_layer_in_result(self):
         result = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
-        assert result.recommended_layer in ReplicationLayer
+        assert result.recommended_layer in ALL_REPLICATION_LAYERS
 
     def test_recommended_replicas_positive(self):
         result = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
@@ -177,11 +178,11 @@ class TestAnalyze:
         # Heavy workload
         r_heavy = analyze(50000.0, 200.0, ReplicationLayer.CONTAINER)
         # Both should return valid results (not necessarily different)
-        assert r_light.recommended_layer in ReplicationLayer
-        assert r_heavy.recommended_layer in ReplicationLayer
+        assert r_light.recommended_layer in ALL_REPLICATION_LAYERS
+        assert r_heavy.recommended_layer in ALL_REPLICATION_LAYERS
 
     def test_current_layer_preserved_in_result(self):
-        for layer in ReplicationLayer:
+        for layer in ALL_REPLICATION_LAYERS:
             result = analyze(300.0, 60.0, layer)
             assert result.current_layer == layer
 
@@ -196,7 +197,7 @@ class TestAnalyze:
     )
     def test_parametric_cases(self, rps, lat, layer):
         result = analyze(rps, lat, layer)
-        assert result.recommended_layer in ReplicationLayer
+        assert result.recommended_layer in ALL_REPLICATION_LAYERS
         assert result.recommended_replicas >= 1
 
 
