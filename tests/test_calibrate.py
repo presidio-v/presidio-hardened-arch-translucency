@@ -54,6 +54,31 @@ def test_parse_observation_invalid(raw: str) -> None:
         parse_observation(raw)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "nan:80:5",  # NaN rps
+        "inf:80:5",  # +inf rps
+        "-inf:80:5",  # -inf rps
+        "300:nan:5",  # NaN latency
+        "300:inf:5",  # +inf latency
+        "300:80:nan",  # NaN replicas (int parse also rejects)
+        "300:80:inf",  # inf replicas
+    ],
+)
+def test_parse_observation_rejects_non_finite(raw: str) -> None:
+    # nan <= 0 / inf <= 0 are both False, so the positivity check alone would
+    # let these smuggle through — math.isfinite must reject them.
+    with pytest.raises(CalibrationError):
+        parse_observation(raw)
+
+
+@pytest.mark.parametrize("raw", ["1000001:80:5", "300:300001:5", "300:80:10001"])
+def test_parse_observation_rejects_out_of_bounds(raw: str) -> None:
+    with pytest.raises(CalibrationError):
+        parse_observation(raw)
+
+
 # ── fit_calibration ───────────────────────────────────────────────────────────
 
 

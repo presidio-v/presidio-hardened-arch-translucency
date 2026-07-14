@@ -27,6 +27,7 @@ from presidio_arch_translucency.calibrate import (
 from presidio_arch_translucency.cli import app
 from presidio_arch_translucency.model import (
     CalibrationTamperError,
+    commitment_status,
     load_calibrated_model,
     resolve_calibration_commitment,
 )
@@ -156,6 +157,26 @@ def test_analyze_runs_on_legacy_model():
     result = _invoke("analyze", "-r", "500", "-l", "80", "-c", "container")
     assert result.exit_code == 0
     assert "legacy" in result.output.lower()
+
+
+def test_unknown_commitment_schema_is_tampered_and_rejected():
+    write_model_file(_fit())
+    path = global_model_path()
+    raw = json.loads(path.read_text())
+    raw["calibration_commitment"]["schema"] = (
+        "presidio-hardened/calibration-commitment@999"
+    )
+    path.write_text(json.dumps(raw))
+
+    model = load_calibrated_model()
+    assert commitment_of(model) is None
+    assert commitment_status(model) == "tampered"
+    with pytest.raises(CalibrationTamperError):
+        resolve_calibration_commitment()
+
+    result = _invoke("analyze", "-r", "500", "-l", "80", "-c", "container")
+    assert result.exit_code == 2
+    assert "tamper" in result.output.lower()
 
 
 def test_per_layer_commitment_roundtrips():

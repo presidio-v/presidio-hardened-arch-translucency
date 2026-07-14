@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import warnings
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -48,6 +49,20 @@ COMMITMENT_KEY = "calibration_commitment"
 # Default coordination overhead used when a single observation cannot constrain
 # beta (one point, two free parameters).
 _DEFAULT_BETA: float = 0.02
+
+# Calibration input bounds mirror the public CLI workload envelope while
+# leaving room for large benchmark fleets and whole-system power readings.
+CALIBRATION_RPS_MAX: float = 1_000_000.0
+CALIBRATION_LATENCY_MS_MAX: float = 300_000.0
+CALIBRATION_REPLICAS_MAX: int = 10_000
+CALIBRATION_WATTS_MAX: float = 1_000_000.0
+
+# Fitted-energy bounds are part of the persisted-record trust contract. Keep
+# these public so record consumers validate with the exact same limits.
+ENERGY_IDLE_W_MAX: float = 10_000.0
+ENERGY_DYN_J_PER_REQ_MAX: float = 1_000.0
+ENERGY_BETA_MAX: float = 0.45
+_MAX_DESIGN_CONDITION: float = 1.0e10
 
 
 class CalibrationError(ValueError):
@@ -76,6 +91,74 @@ class CalibrationResult:
     residuals: list[float]
 
 
+@dataclass(frozen=True)
+class EnergyObservation:
+    """One measured energy operating point (v0.20.0).
+
+    ``watts`` is the *total system* power draw at that operating point — the
+    quantity a wattmeter / RAPL / cloud power API reports — not a per-replica
+    figure; the fit separates the standing (idle) part from the per-request
+    (dynamic) part.
+    """
+
+    rps: float
+    latency_ms: float
+    replicas: int
+    watts: float
+
+
+@dataclass
+class EnergyCalibrationResult:
+    """Fitted energy parameters plus per-point predictions and fit quality.
+
+    Mirrors :class:`CalibrationResult`. ``energy_idle_w`` is the fitted standing
+    power per replica (P_idle), ``energy_dyn_j_per_req`` the dynamic joules per
+    request (e_dyn), and ``energy_beta`` (β_E) the ln-δ coordination overhead.
+    """
+
+    energy_idle_w: float  # P_idle
+    energy_dyn_j_per_req: float  # e_dyn
+    energy_beta: float  # beta_E
+    r_squared: float
+    rmse: float
+    observations: list[EnergyObservation]
+    predictions: list[float]
+    residuals: list[float]
+
+
+def _validate_observation_values(
+    rps: float, latency_ms: float, replicas: int, *, label: str
+) -> None:
+    if not (math.isfinite(rps) and math.isfinite(latency_ms)):
+        raise CalibrationError(
+            f"{label} requires finite rps and latency_ms (NaN/inf rejected)."
+        )
+    if not (
+        0 < rps <= CALIBRATION_RPS_MAX
+        and 0 < latency_ms <= CALIBRATION_LATENCY_MS_MAX
+        and 0 < replicas <= CALIBRATION_REPLICAS_MAX
+    ):
+        raise CalibrationError(
+            f"{label} requires 0 < rps <= {CALIBRATION_RPS_MAX:g}, "
+            f"0 < latency_ms <= {CALIBRATION_LATENCY_MS_MAX:g}, and "
+            f"0 < replicas <= {CALIBRATION_REPLICAS_MAX}."
+        )
+
+
+def _validate_energy_observation_values(
+    point: EnergyObservation, *, label: str
+) -> None:
+    _validate_observation_values(
+        point.rps, point.latency_ms, point.replicas, label=label
+    )
+    if not math.isfinite(point.watts):
+        raise CalibrationError(f"{label} requires finite watts (NaN/inf rejected).")
+    if not 0 < point.watts <= CALIBRATION_WATTS_MAX:
+        raise CalibrationError(
+            f"{label} requires 0 < watts <= {CALIBRATION_WATTS_MAX:g}."
+        )
+
+
 def parse_observation(raw: str) -> Observation:
     """
     Parse a ``rps:latency_ms:replicas`` triple (e.g. ``300:80:5``).
@@ -94,10 +177,9 @@ def parse_observation(raw: str) -> Observation:
         replicas = int(parts[2])
     except ValueError as exc:
         raise CalibrationError(f"Observation {raw!r} has non-numeric fields.") from exc
-    if rps <= 0 or latency_ms <= 0 or replicas <= 0:
-        raise CalibrationError(
-            f"Observation {raw!r} requires positive rps, latency_ms, and replicas."
-        )
+    _validate_observation_values(
+        rps, latency_ms, replicas, label=f"Observation {raw!r}"
+    )
     return Observation(rps=rps, latency_ms=latency_ms, replicas=replicas)
 
 
@@ -119,6 +201,13 @@ def fit_calibration(observations: list[Observation]) -> CalibrationResult:
     """
     if not observations:
         raise CalibrationError("At least one observation is required to calibrate.")
+    for index, observation in enumerate(observations, start=1):
+        _validate_observation_values(
+            observation.rps,
+            observation.latency_ms,
+            observation.replicas,
+            label=f"Observation {index}",
+        )
 
     import numpy as np  # noqa: PLC0415
     from scipy.optimize import curve_fit  # noqa: PLC0415
@@ -166,6 +255,198 @@ def fit_calibration(observations: list[Observation]) -> CalibrationResult:
     )
 
 
+def parse_energy_observation(raw: str) -> EnergyObservation:
+    """
+    Parse an ``rps:latency_ms:replicas:watts`` quad (e.g. ``300:80:5:420``).
+
+    ``watts`` is the *total system* power at that operating point. Raises
+    CalibrationError on malformed input; every field is bounded positive so a
+    stray zero/negative cannot poison the energy fit (same discipline as
+    :func:`parse_observation`).
+    """
+    parts = raw.split(":")
+    if len(parts) != 4:
+        raise CalibrationError(
+            f"Energy observation {raw!r} must be "
+            "'rps:latency_ms:replicas:watts' (e.g. 300:80:5:420)."
+        )
+    try:
+        rps = float(parts[0])
+        latency_ms = float(parts[1])
+        replicas = int(parts[2])
+        watts = float(parts[3])
+    except ValueError as exc:
+        raise CalibrationError(
+            f"Energy observation {raw!r} has non-numeric fields."
+        ) from exc
+    point = EnergyObservation(
+        rps=rps, latency_ms=latency_ms, replicas=replicas, watts=watts
+    )
+    _validate_energy_observation_values(point, label=f"Energy observation {raw!r}")
+    return point
+
+
+def predict_watts(
+    replicas: float, rps: float, p_idle: float, e_dyn: float, beta: float
+):
+    """Model-predicted total watts for one operating point (vectorisable).
+
+    ``W = P_idle·δ + e_dyn·rps·(1 + β_E·ln δ)`` — the standing draw scales with
+    the replica count, the dynamic draw with served load plus a ln-δ term.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    coordination = 1.0 + beta * np.log(np.maximum(replicas, 1.0))
+    return p_idle * replicas + e_dyn * rps * coordination
+
+
+def fit_energy_calibration(
+    points: list[EnergyObservation],
+) -> EnergyCalibrationResult:
+    """
+    Fit ``(P_idle, e_dyn, β_E)`` to measured energy *points*.
+
+    Separating standing from dynamic power needs variation in the replica count:
+
+    * **≥4 unique, identifiable points at ≥2 distinct δ** — fit all three
+      parameters with a bounded
+      ``scipy.optimize.curve_fit`` (P_idle ∈ [0, 10000] W, e_dyn ∈ [0, 1000]
+      J/req, β_E ∈ [0, 0.45]).
+    * **2–3 unique points at distinct δ** — the observations cannot estimate
+      β_E with covariance, so β_E is held at its default and a two-parameter
+      linear least-squares fit solves (P_idle, e_dyn).
+    * **1 point (or all δ equal)** — CalibrationError: a single replica count
+      cannot separate the standing floor from the per-request cost.
+    """
+    if not points:
+        raise CalibrationError("At least one energy observation is required.")
+    for index, point in enumerate(points, start=1):
+        _validate_energy_observation_values(point, label=f"Energy observation {index}")
+    if len(points) == 1:
+        raise CalibrationError(
+            "energy calibration needs at least two observations at different "
+            "replica counts to separate standing from dynamic power"
+        )
+    if len({p.replicas for p in points}) < 2:
+        raise CalibrationError(
+            "energy calibration needs observations at two or more distinct "
+            "replica counts to separate standing from dynamic power"
+        )
+    operating_points = {(p.rps, p.latency_ms, p.replicas, p.watts) for p in points}
+    if len(operating_points) != len(points):
+        raise CalibrationError(
+            "energy calibration requires unique operating points; duplicate "
+            "observations do not add identifying information"
+        )
+
+    import numpy as np  # noqa: PLC0415
+
+    replicas = np.array([float(p.replicas) for p in points], dtype=float)
+    rps = np.array([p.rps for p in points], dtype=float)
+    watts = np.array([p.watts for p in points], dtype=float)
+
+    if len(points) <= 3:
+        # With fewer than four points covariance for a three-parameter fit is
+        # undefined. Hold β_E at the default and solve the two power terms.
+        beta = _DEFAULT_BETA
+        coeff = np.column_stack(
+            (
+                replicas,
+                rps * (1.0 + beta * np.log(np.maximum(replicas, 1.0))),
+            )
+        )
+        if (
+            np.linalg.matrix_rank(coeff) < 2
+            or np.linalg.cond(coeff) > _MAX_DESIGN_CONDITION
+        ):
+            raise CalibrationError(
+                "energy observations are degenerate; cannot solve for "
+                "standing and dynamic power"
+            )
+        solution, *_ = np.linalg.lstsq(coeff, watts, rcond=None)
+        p_idle, e_dyn = float(solution[0]), float(solution[1])
+        if p_idle < 0 or e_dyn < 0:
+            raise CalibrationError(
+                "energy observations are inconsistent with the model "
+                "(solving gives negative standing or dynamic power); supply "
+                "more points or re-check the watt readings"
+            )
+    else:
+        from scipy.optimize import OptimizeWarning, curve_fit  # noqa: PLC0415
+
+        # Identifiability of W = a·δ + b·rps + c·rps·lnδ is necessary for the
+        # nonlinear (P_idle, e_dyn, β_E) parameterisation too. Normalize columns
+        # before conditioning so units do not dominate the test.
+        design = np.column_stack(
+            (replicas, rps, rps * np.log(np.maximum(replicas, 1.0)))
+        )
+        norms = np.linalg.norm(design, axis=0)
+        if np.any(norms == 0):
+            raise CalibrationError("energy observations do not identify all parameters")
+        normalized_design = design / norms
+        if (
+            np.linalg.matrix_rank(normalized_design) < 3
+            or np.linalg.cond(normalized_design) > _MAX_DESIGN_CONDITION
+        ):
+            raise CalibrationError(
+                "energy observations are rank-deficient or ill-conditioned; "
+                "vary both load and replica count"
+            )
+
+        def _model(x, p_idle, e_dyn, beta):
+            rep, load = x
+            return predict_watts(rep, load, p_idle, e_dyn, beta)
+
+        p0 = [
+            min(float(np.min(watts)) * 0.5, ENERGY_IDLE_W_MAX * (1.0 - 1e-9)),
+            min(
+                float(np.max(watts)) / float(np.max(rps)),
+                ENERGY_DYN_J_PER_REQ_MAX * (1.0 - 1e-9),
+            ),
+            _DEFAULT_BETA,
+        ]
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", OptimizeWarning)
+                popt, _ = curve_fit(
+                    _model,
+                    (replicas, rps),
+                    watts,
+                    p0=p0,
+                    bounds=(
+                        [0.0, 0.0, 0.0],
+                        [ENERGY_IDLE_W_MAX, ENERGY_DYN_J_PER_REQ_MAX, ENERGY_BETA_MAX],
+                    ),
+                    maxfev=10000,
+                )
+        except (OptimizeWarning, RuntimeError, TypeError, ValueError) as exc:
+            raise CalibrationError(
+                "energy calibration optimizer could not produce an identifiable fit"
+            ) from exc
+        p_idle, e_dyn, beta = float(popt[0]), float(popt[1]), float(popt[2])
+
+    if not all(math.isfinite(value) for value in (p_idle, e_dyn, beta)):
+        raise CalibrationError("energy calibration produced non-finite parameters")
+
+    preds = predict_watts(replicas, rps, p_idle, e_dyn, beta)
+    residuals = watts - preds
+    ss_res = float(np.sum(residuals**2))
+    ss_tot = float(np.sum((watts - np.mean(watts)) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    rmse = float(np.sqrt(np.mean(residuals**2)))
+
+    return EnergyCalibrationResult(
+        energy_idle_w=p_idle,
+        energy_dyn_j_per_req=e_dyn,
+        energy_beta=beta,
+        r_squared=r_squared,
+        rmse=rmse,
+        observations=list(points),
+        predictions=[float(p) for p in preds],
+        residuals=[float(r) for r in residuals],
+    )
+
+
 def global_model_path() -> Path:
     """Resolve ``~/.pat/model.json`` (the global calibrated-model store)."""
     return Path.home() / GLOBAL_MODEL_RELPATH[0] / GLOBAL_MODEL_RELPATH[1]
@@ -184,15 +465,24 @@ def _num_str(value: float | int) -> str:
     return repr(float(value))
 
 
-def _committed_content(result: CalibrationResult) -> dict[str, object]:
+def _committed_content(
+    result: CalibrationResult,
+    energy: EnergyCalibrationResult | None = None,
+) -> dict[str, object]:
     """The exact calibration inputs+outputs bound by the commitment digest.
 
     Inputs: the observation set used (rps/latency as round-trip decimals,
     replicas as ints). Outputs: the fitted per-layer α/β (β = ``overhead_beta``,
     κ = ``concurrency``) and the fit metadata (R², RMSE, point count). This is
     what ``pat analyze`` re-hashes from the model file to detect tampering.
+
+    Energy fields (v0.20.0) are folded in **only when an energy fit is present**:
+    when ``energy`` is ``None`` the returned content is byte-for-byte identical
+    to the v0.19 scheme, so every commitment written before v0.20 still verifies
+    ``ok`` under v0.20 code. When present, the fitted P_idle/e_dyn/β_E, the
+    energy fit metadata, and the energy observation set join the committed bytes.
     """
-    return {
+    content: dict[str, object] = {
         "schema": CALIBRATION_COMMITMENT_SCHEMA,
         "concurrency": _num_str(result.concurrency),
         "overhead_beta": _num_str(result.overhead_beta),
@@ -204,6 +494,23 @@ def _committed_content(result: CalibrationResult) -> dict[str, object]:
             for o in result.observations
         ],
     }
+    if energy is not None:
+        content["energy_idle_w"] = _num_str(energy.energy_idle_w)
+        content["energy_dyn_j_per_req"] = _num_str(energy.energy_dyn_j_per_req)
+        content["energy_beta"] = _num_str(energy.energy_beta)
+        content["energy_r_squared"] = _num_str(energy.r_squared)
+        content["energy_rmse"] = _num_str(energy.rmse)
+        content["energy_observation_count"] = len(energy.observations)
+        content["energy_observations"] = [
+            [
+                _num_str(o.rps),
+                _num_str(o.latency_ms),
+                int(o.replicas),
+                _num_str(o.watts),
+            ]
+            for o in energy.observations
+        ]
+    return content
 
 
 def _canonical_bytes(payload: object) -> bytes:
@@ -214,9 +521,18 @@ def _canonical_bytes(payload: object) -> bytes:
     ).encode("utf-8")
 
 
-def commitment_digest(result: CalibrationResult) -> str:
-    """SHA-256 over the canonical calibration inputs+outputs (lowercase hex)."""
-    return hashlib.sha256(_canonical_bytes(_committed_content(result))).hexdigest()
+def commitment_digest(
+    result: CalibrationResult,
+    energy: EnergyCalibrationResult | None = None,
+) -> str:
+    """SHA-256 over the canonical calibration inputs+outputs (lowercase hex).
+
+    When *energy* is given the digest binds the energy fit too; when it is
+    ``None`` the digest is identical to the v0.19 throughput-only commitment.
+    """
+    return hashlib.sha256(
+        _canonical_bytes(_committed_content(result, energy))
+    ).hexdigest()
 
 
 def _digest_from_record(record: dict) -> str:
@@ -229,7 +545,7 @@ def _digest_from_record(record: dict) -> str:
     observations = record.get("observations")
     if not isinstance(observations, list):
         raise CalibrationError("fit record has no observation set to re-hash")
-    content = {
+    content: dict[str, object] = {
         "schema": CALIBRATION_COMMITMENT_SCHEMA,
         "concurrency": _num_str(record["concurrency"]),
         "overhead_beta": _num_str(record["overhead_beta"]),
@@ -240,6 +556,25 @@ def _digest_from_record(record: dict) -> str:
             [_num_str(row[0]), _num_str(row[1]), int(row[2])] for row in observations
         ],
     }
+    # Energy fields join the re-hash ONLY when the record carries an energy fit
+    # (v0.20.0). A record without ``energy_idle_w`` re-hashes to the exact v0.19
+    # bytes, so pre-v0.20 commitments keep verifying under v0.20 code.
+    if "energy_idle_w" in record:
+        energy_observations = record.get("energy_observations")
+        if not isinstance(energy_observations, list):
+            raise CalibrationError(
+                "energy-bearing fit record has no energy observation set to re-hash"
+            )
+        content["energy_idle_w"] = _num_str(record["energy_idle_w"])
+        content["energy_dyn_j_per_req"] = _num_str(record["energy_dyn_j_per_req"])
+        content["energy_beta"] = _num_str(record["energy_beta"])
+        content["energy_r_squared"] = _num_str(record["energy_r_squared"])
+        content["energy_rmse"] = _num_str(record["energy_rmse"])
+        content["energy_observation_count"] = len(energy_observations)
+        content["energy_observations"] = [
+            [_num_str(row[0]), _num_str(row[1]), int(row[2]), _num_str(row[3])]
+            for row in energy_observations
+        ]
     return hashlib.sha256(_canonical_bytes(content)).hexdigest()
 
 
@@ -252,9 +587,17 @@ def commitment_of(record: object) -> str | None:
     if not isinstance(record, dict):
         return None
     commitment = record.get(COMMITMENT_KEY)
-    if isinstance(commitment, dict):
+    if (
+        isinstance(commitment, dict)
+        and commitment.get("schema") == CALIBRATION_COMMITMENT_SCHEMA
+    ):
         digest = commitment.get("digest")
-        return digest if isinstance(digest, str) else None
+        if (
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
+        ):
+            return digest
     return None
 
 
@@ -276,15 +619,23 @@ def verify_commitment(record: object) -> bool:
         return False
 
 
-def _fit_record(result: CalibrationResult) -> dict:
+def _fit_record(
+    result: CalibrationResult,
+    energy: EnergyCalibrationResult | None = None,
+) -> dict:
     """Serialise a fit to the on-disk record shape (`pat analyze` reads these).
 
     A NEW calibration always writes the commitment (v0.19.0): the digest binds
     the fitted α/β and the observation set that produced them, so a consumer can
     detect a post-calibration edit and fail closed. Legacy records written
     before commitments simply lack the key and are reported as uncommitted.
+
+    When *energy* is present (v0.20.0) the fitted P_idle/e_dyn/β_E, energy fit
+    metadata, and energy observation set are written into the SAME record, and
+    the commitment digest binds them alongside the throughput fit. Omitting
+    ``energy`` reproduces the exact v0.19 record + commitment.
     """
-    return {
+    record: dict = {
         "concurrency": result.concurrency,
         "overhead_beta": result.overhead_beta,
         "r_squared": result.r_squared,
@@ -293,11 +644,21 @@ def _fit_record(result: CalibrationResult) -> dict:
         "observations": [
             [o.rps, o.latency_ms, o.replicas] for o in result.observations
         ],
-        COMMITMENT_KEY: {
-            "schema": CALIBRATION_COMMITMENT_SCHEMA,
-            "digest": commitment_digest(result),
-        },
     }
+    if energy is not None:
+        record["energy_idle_w"] = energy.energy_idle_w
+        record["energy_dyn_j_per_req"] = energy.energy_dyn_j_per_req
+        record["energy_beta"] = energy.energy_beta
+        record["energy_r_squared"] = energy.r_squared
+        record["energy_rmse"] = energy.rmse
+        record["energy_observations"] = [
+            [o.rps, o.latency_ms, o.replicas, o.watts] for o in energy.observations
+        ]
+    record[COMMITMENT_KEY] = {
+        "schema": CALIBRATION_COMMITMENT_SCHEMA,
+        "digest": commitment_digest(result, energy),
+    }
+    return record
 
 
 def _read_existing_model(path: Path) -> dict:
@@ -325,7 +686,11 @@ def _write_private_json(path: Path, payload: dict) -> None:
         path.chmod(0o600)
 
 
-def write_model_file(result: CalibrationResult, layer: str | None = None) -> Path:
+def write_model_file(
+    result: CalibrationResult,
+    layer: str | None = None,
+    energy: EnergyCalibrationResult | None = None,
+) -> Path:
     """
     Persist *result* to ``~/.pat/model.json`` (creating ``~/.pat/`` as needed)
     and return the path.  The ``concurrency`` key is what `pat analyze` reads.
@@ -335,10 +700,14 @@ def write_model_file(result: CalibrationResult, layer: str | None = None) -> Pat
     *layer* names a service layer, the fit is upserted into
     ``model["layers"][layer]`` (v0.9.0); the global parameters and every other
     layer are preserved untouched.
+
+    An optional *energy* fit (v0.20.0) is written into the SAME record as the
+    throughput fit — an energy calibration therefore always accompanies a
+    throughput fit and their joint commitment binds both observation sets.
     """
     path = global_model_path()
     _prepare_model_path(path)
-    record = _fit_record(result)
+    record = _fit_record(result, energy)
 
     if layer is None or layer == DEFAULT_LAYER_NAME:
         # Global write: keep any previously-fitted per-layer records intact.

@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.19.1 — Architectural Translucency Analyzer for Docker & Kubernetes, with hash-chained observations and calibration commitments.
+> v0.20.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now modelling per-layer energy (Watts, J/req, EEI) it measures but never actuates.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -346,13 +346,15 @@ Prints a per-observation prediction/residual table plus overall R² and RMSE.
 
 **Calibration commitment.** Every fit written by `pat calibrate` embeds a
 `calibration_commitment` — a SHA-256 over the calibration inputs (the observation
-set) and outputs (fitted κ/β, R²/RMSE). `pat analyze` re-hashes the stored
-parameters and **fails closed** if they no longer match the commitment: a
-model file hand-edited after calibration is rejected rather than silently
-driving a recommendation. The recommendation output carries the commitment
+set) and outputs (fitted κ/β, R²/RMSE). `pat analyze`, `pat what-if` and
+`pat slo` re-hash the stored parameters and **fail closed** if they no longer
+match the commitment: a model file hand-edited after calibration is rejected
+rather than silently driving a recommendation. The recommendation output carries the commitment
 digest so a recommendation is traceable to the exact parameters that produced
 it. A model file written before commitments existed has none; it is reported as
-a *legacy* (unbound) fit and used, never rejected — recalibrate to bind it. See
+a *legacy* (unbound) throughput fit and used, never rejected — recalibrate to
+bind it. Energy fields are never accepted from a legacy record because energy
+calibration was introduced together with commitments in v0.20.0. See
 [ADR-0010](docs/adr/0010-observation-chain-and-calibration-commitment.md).
 
 #### `pat calibrate --benchmark` — measure the points with Docker (v0.9.0)
@@ -971,6 +973,65 @@ independently of the CLI so a sidecar can never sign malformed content.
 
 ---
 
+## Energy model (v0.20.0)
+
+The same translucency question — *the same measure (replication) has different
+implications at different layers* — answered for **energy**. `pat` models the
+power a layer draws serving δ replicas at throughput ω(δ):
+
+```
+E(δ):  W(δ) = idle_w·δ  +  dyn_j_per_req·ω(δ)·(1 + β_E·ln δ)
+       idle_w        = α_E · replica_power_watts            (standing floor)
+       dyn_j_per_req = (1 − α_E) · replica_power_watts / base_capacity_rps
+```
+
+Each layer carries an idle-power fraction **α_E** and a ln-δ coordination
+overhead **β_E** (a parallel table to the throughput params — the serving model
+is untouched, per ADR-0010). The insight is the idle-power **asymmetry**: a
+container adds almost no standing draw, while a *node* buys the whole server
+idle floor whether or not it does useful work.
+
+| Layer | α_E (idle fraction) | β_E (coordination) | Rationale |
+|---|---|---|---|
+| container | 0.02 | 0.005 | ~constant ≈2 W standing draw on a shared kernel |
+| pod | 0.03 | 0.010 | container + kubelet/pause bookkeeping |
+| deployment | 0.05 | 0.020 | + scheduler/etcd share |
+| node | 0.36 | 0.030 | full server idle floor (fleet idle ≈36 % of peak, 2023 servers) |
+
+> These are **MVP placeholders** encoding published idle-power ratios
+> (Tadesse/Chiasserini/Malandrino 2018; SPECpower_ssj2008), not a measurement of
+> your fleet. Calibrate them from real watt readings before trusting the
+> absolute joules; the relative container-vs-node story holds regardless.
+
+```bash
+# Analyze with the energy columns (Watts, J/req, EEI). --replica-power-watts is
+# the per-replica peak power (MVP placeholder ≈15 W):
+pat analyze --requests-per-second 500 --avg-latency-ms 80 \
+  --current-layer container --show-all --replica-power-watts 15
+```
+
+`--show-all` adds **Watts** (W(δ) at the recommended δ), **J/req** (energy per
+request) and **EEI** (Energy-Efficiency Index). EEI > 1 means replicating at
+that layer buys more throughput than it costs in energy intensity. `pat what-if`
+reports estimated power / J-per-req for the evaluated point; `pat slo` adds a
+**J/req** column (the frontier's third axis: p99 × $/req × J/req).
+
+```bash
+# Fit real energy: rps:latency_ms:replicas:watts (total system watts). Two or
+# three unique points hold β_E at its default; four or more identifiable points
+# fit β_E too. Use at least two replica counts. The energy fit is written into
+# the same model record and bound by the calibration commitment:
+pat calibrate --observation 300:80:5 --observation 500:80:6 \
+  --energy-observation 300:80:2:180 --energy-observation 500:80:5:300 \
+  --energy-observation 700:80:8:420 --energy-observation 400:80:3:240
+```
+
+**Invariant E1:** `pat` *measures, models, and evidences* energy — it **never
+actuates power**. No DVFS, no power caps, no writes to any infrastructure; the
+watt is a number to reason with, not a knob to turn.
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -994,7 +1055,8 @@ independently of the CLI so a sidecar can never sign malformed content.
 | v0.17.0 | Evidence arc · Sign the signal — `evidence_producer` + `pat evidence-emit` (L-EV-3): runtime-posture degradation as signed `evidence-ref@1`, consumed by `presidio-hardened-x402`; key-less daemon, signing in a sidecar |
 | v0.18.0 | Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`) |
 | v0.19.0 | Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations |
-| **v0.19.1** | **Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes** |
+| v0.19.1 | Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes |
+| **v0.20.0** | **Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

@@ -10,6 +10,74 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-12
+
+### Added
+
+- **Energy model ("Model the watt").** A new `energy.py` module models the
+  *energy* an architecture spends serving a workload, in parallel to the
+  throughput/latency model (ADR-0010 parallel-structure precedent — no fields
+  added to `LayerParams`). Each layer carries an idle-power fraction α_E and a
+  ln-δ coordination overhead β_E; `pat analyze` derives per-replica standing
+  power and per-request dynamic energy from a `--replica-power-watts` peak
+  (MVP-placeholder ≈15 W). The container-vs-node idle-power asymmetry — a
+  container adds almost no standing draw, a node buys the whole ~36 % server
+  idle floor — is the translucency insight for energy.
+- **Energy columns and EEI.** `pat analyze --show-all` gains **Watts**, **J/req**
+  and **EEI** (Energy-Efficiency Index) columns, and the recommendation panel
+  reports estimated watts / J-per-req / EEI at the recommended layer with a note
+  on whether the figures are MVP defaults or calibrated. EEI > 1 means
+  replicating at that layer buys more throughput than it costs in energy
+  intensity. `pat what-if` reports estimated power / J-per-req for the evaluated
+  point; `pat slo` gains a **J/req** column (the frontier's third axis:
+  p99 × $/req × J/req).
+- **Energy calibration (`pat calibrate --energy-observation`).** Repeatable
+  `rps:latency_ms:replicas:watts` energy points (total system watts) fit
+  `(P_idle, e_dyn, β_E)` — a three-parameter `scipy` fit at ≥4 unique,
+  full-rank points / ≥2 replica counts; 2–3 points hold β_E at its default and
+  fit the two power terms. Duplicate, rank-deficient, ill-conditioned, or
+  out-of-bounds sets fail closed.
+  The fit is written into the **same** model record as the throughput fit and
+  drives `pat analyze`'s energy columns in place of the MVP defaults.
+
+### Changed
+
+- **Fit record and calibration commitment extended additively.** The persisted
+  fit record and its SHA-256 calibration commitment now bind the fitted energy
+  parameters and their energy observation set **when an energy fit is present**.
+  When it is absent the committed content is byte-for-byte identical to the
+  v0.19 scheme, so **every calibration commitment written before v0.20 still
+  verifies `ok` under v0.20 code**; tampering any energy field of an
+  energy-bearing record flips it to `tampered` and `pat analyze` fails closed
+  through the existing gate. The `observations` DB schema and the
+  `evidence-ref@1` / `training-run@1` wire formats are unchanged.
+- **`what-if` and `slo` now honour the calibration-commitment tamper signal**
+  (previously only `analyze` did). Both commands consume calibrated κ — and now
+  calibrated energy — so they run the same `_resolve_commitment_or_exit` gate
+  `analyze` uses (including the cross-scope energy rule below): a model file
+  hand-edited after calibration now fails closed in `what-if`/`slo` too, rather
+  than silently driving an HPA-trough or SLO-frontier read from tampered
+  parameters. Legacy (uncommitted) and absent-model runs are unaffected.
+
+### Fixed
+
+- **Cross-scope energy tamper escape.** `pat analyze --layer <named>` gated only
+  the named layer's record, but the energy fit could fall back to the **global**
+  record — so a tampered global `energy_idle_w` rendered "calibrated"
+  Watts/J-per-req/EEI with no error. `analyze`/`what-if`/`slo` now also verify
+  the commitment of whichever record supplies the energy fit and fail closed.
+- Reject non-finite (`NaN`/`inf`) numeric fields in `parse_energy_observation`
+  and `parse_observation`: the positivity checks let them through (`nan <= 0`
+  is `False`), so a smuggled `NaN`/`inf` could reach the fit. Both parsers now
+  require every numeric field to be `math.isfinite` with a clear
+  `CalibrationError`.
+- **Third-party audit closure (ARCH-020-01 through ARCH-020-08).** Bound all
+  calibration inputs, normalize optimizer failures to clean domain errors,
+  reject duplicate/non-identifiable energy fits, ignore uncommitted legacy
+  energy coefficients, validate commitment schema/digest shape, and audit the
+  exact locked dependency set in CI. Regenerated the v0.20.0 lock with patched
+  Pillow 12.3.0.
+
 ## [0.19.1] - 2026-07-07
 
 ### Changed
@@ -498,7 +566,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.0...v0.18.1
