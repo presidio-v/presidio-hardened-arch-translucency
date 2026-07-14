@@ -128,12 +128,15 @@ def commitment_status(record: object) -> str:
     stored parameters do not re-hash to it. ``ok`` = present and matches.
     """
     from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
+        COMMITMENT_KEY,
         commitment_of,
         verify_commitment,
     )
 
-    if commitment_of(record) is None:
+    if not isinstance(record, dict) or COMMITMENT_KEY not in record:
         return "legacy"
+    if commitment_of(record) is None:
+        return "tampered"
     return "ok" if verify_commitment(record) else "tampered"
 
 

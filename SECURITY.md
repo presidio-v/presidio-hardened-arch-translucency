@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.19.x | :white_check_mark: |
+| main / 0.20.x | :white_check_mark: |
+| 0.19.x  | :white_check_mark: |
 | 0.17.x  | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
 | 0.7.x   | :white_check_mark: |
@@ -79,10 +80,20 @@ by the producer; resolving and verifying the referenced payloads is the
 consumer's responsibility (presidio-evidence ADR-0002 P4). The security log
 records a SHA-256 digest of `run_id`, never the raw value.
 
-## Known Limitations (main / v0.19.x)
+## Known Limitations (main / v0.20.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
+- The v0.20.0 energy model is analytic: per-layer α_E/β_E defaults are
+  documented MVP placeholders (literature-derived, not measured), and
+  `--replica-power-watts` / `--energy-observation` values are caller-supplied.
+  All energy inputs are bounds-checked, and fitted energy parameters are bound
+  by the calibration commitment (tampered coefficients fail closed; legacy
+  records cannot supply energy coefficients; ADR-0011),
+  but the *fidelity* of energy figures is only as good as the supplied watts —
+  measured-mode integrity arrives with the v0.21 chained `energy_observations`
+  store. Per invariant E1, pat never actuates power (no DVFS, no capping), so
+  the energy surface adds no write path to infrastructure.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
 - GCP pricing is sourced from an unofficial third-party pricelist endpoint and
   should be treated as a best-effort estimate.
@@ -94,6 +105,10 @@ records a SHA-256 digest of `run_id`, never the raw value.
 
 Manual security audit history:
 
+- v0.20.0 full functionality/security release gate (2026-07-14) -- all eight
+  third-party findings remediated: locked dependency audit, Pillow 12.3.0,
+  bounded/identifiable energy fits, committed-only energy coefficients, and
+  strict commitment-schema validation.
 - v0.19.1 release gate -- remediates the open CodeQL code-scanning alert set
   before publishing the patch release.
 - [`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`](SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md) -- v0.18.0 third-party release audit (Codex, `presidio-third-party-audits`) remediation status.

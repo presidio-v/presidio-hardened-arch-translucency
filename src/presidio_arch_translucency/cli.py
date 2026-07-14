@@ -29,6 +29,12 @@ from presidio_arch_translucency.cost import (
     trough_cost_usd,
 )
 from presidio_arch_translucency.demo import demo_command
+from presidio_arch_translucency.energy import (
+    DEFAULT_REPLICA_POWER_WATTS,
+    LayerEnergy,
+    layer_energy,
+    resolve_energy_fit_scope,
+)
 from presidio_arch_translucency.hpa import (
     ScaleEventParams,
     ScaleEventResult,
@@ -44,6 +50,7 @@ from presidio_arch_translucency.model import (
     CalibrationTamperError,
     ReplicationLayer,
     analyze,
+    base_capacity_rps,
     model_is_calibrated,
     resolve_calibration_commitment,
     resolve_concurrency,
@@ -110,6 +117,27 @@ def _resolve_commitment_or_exit(model_layer: Optional[str]) -> dict:  # noqa: UP
     except CalibrationTamperError as exc:
         err_console.print(f"[bold red]Calibration tamper detected:[/] {exc}")
         raise typer.Exit(code=2) from exc
+
+
+def _gate_commitment_with_energy(model_layer: Optional[str]) -> dict:  # noqa: UP045
+    """Gate the calibration commitment for *model_layer*, plus any cross-scope
+    energy fit (v0.20.0, P2-1).
+
+    ``--layer <named>`` gates only that record's commitment, but
+    :func:`resolve_energy_params` can fall back to the **global** record's
+    energy fit — so a tampered global ``energy_idle_w`` would otherwise render
+    as "calibrated" Watts/J-per-req/EEI with no error. When the energy fit is
+    read from a scope other than the gated one, verify that record's commitment
+    too (global scope = ``model_layer`` ``None``/``default``) and fail closed
+    identically. Returns the gated record's commitment status dict.
+    """
+    commitment = _resolve_commitment_or_exit(model_layer)
+    if (
+        model_layer not in (None, DEFAULT_LAYER_NAME)
+        and resolve_energy_fit_scope(model_layer) == "global"
+    ):
+        _resolve_commitment_or_exit(None)
+    return commitment
 
 
 def _is_help_invocation() -> bool:
@@ -191,6 +219,17 @@ def analyze_cmd(
         help="Uniform cost (USD/replica/hour). Adds cost columns to --show-all table.",
         min=0.0,
     ),
+    replica_power_watts: float = typer.Option(
+        DEFAULT_REPLICA_POWER_WATTS,
+        "--replica-power-watts",
+        help=(
+            "Per-replica peak power in watts for the energy columns "
+            f"(MVP placeholder ≈{DEFAULT_REPLICA_POWER_WATTS:.0f} W; "
+            "calibrate with `pat calibrate --energy-observation`)."
+        ),
+        min=0.1,
+        max=10000.0,
+    ),
 ) -> None:
     """
     Analyze workload and recommend the optimal replication layer.
@@ -204,6 +243,10 @@ def analyze_cmd(
         rps = sanitize_requests_per_second(requests_per_second)
         lat = sanitize_latency_ms(avg_latency_ms)
         layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+        # Reject nan/inf that Typer's numeric range does not (house style).
+        watts = sanitize_bounded_number(
+            replica_power_watts, "replica_power_watts", 0.1, 10000.0
+        )
     except InputValidationError as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
@@ -212,8 +255,10 @@ def analyze_cmd(
     _warn_if_uncalibrated()
 
     # --- Calibration-commitment gate (v0.19.0): fail closed if the model
-    #     file's stored parameters no longer match their commitment. ---
-    commitment = _resolve_commitment_or_exit(model_layer)
+    #     file's stored parameters no longer match their commitment. Also gates
+    #     a cross-scope (global) energy fit the named layer falls back to
+    #     (v0.20.0, P2-1). ---
+    commitment = _gate_commitment_with_energy(model_layer)
 
     # --- Run analysis ---
     result = analyze(
@@ -222,6 +267,21 @@ def analyze_cmd(
         current_layer=current,
         layer=model_layer,
     )
+
+    # --- Energy model (v0.20.0): compute W(δ)/J-per-req/EEI per layer from the
+    #     same throughput curve the recommendation uses. ---
+    base_cap = base_capacity_rps(rps, lat, resolve_concurrency(model_layer))
+    energies = {
+        lr.layer: layer_energy(
+            lr.layer,
+            lr.optimal_replicas,
+            rps,
+            base_cap,
+            watts,
+            model_layer,
+        )
+        for lr in result.layers
+    }
 
     # --- Presidio security event logging ---
     best = next(r for r in result.layers if r.layer == result.recommended_layer)
@@ -237,6 +297,7 @@ def analyze_cmd(
         show_all=show_all,
         uniform_cost=cost_per_replica_hour,
         commitment=commitment,
+        energies=energies,
     )
 
 
@@ -906,11 +967,37 @@ def scaler_cmd(
     typer.echo(yaml, nl=False)
 
 
+def _fmt_watts(value: float) -> str:
+    """Watts to one decimal (the energy table / panel convention)."""
+    return f"{value:.1f}"
+
+
+def _fmt_jreq(value: Optional[float]) -> str:  # noqa: UP045
+    """Joules-per-request to 3 significant figures, "—" when undefined (ω→0)."""
+    return "—" if value is None else f"{value:.3g}"
+
+
+def _fmt_eei(value: Optional[float]) -> str:  # noqa: UP045
+    """EEI to 2 decimals, "—" when undefined (division guard)."""
+    return "—" if value is None else f"{value:.2f}"
+
+
+def _energy_note(source: Optional[str]) -> str:  # noqa: UP045
+    """Provenance line for the energy figures: MVP defaults vs calibrated."""
+    if source == "calibrated":
+        return (
+            "[dim]energy model: calibrated (fitted from --energy-observation "
+            "watt readings)[/]"
+        )
+    return "[dim]energy model: MVP defaults — calibrate with --energy-observation[/]"
+
+
 def _render_results(
     result: AnalysisResult,  # type: ignore[name-defined]  # noqa: F821
     show_all: bool,
     uniform_cost: Optional[float] = None,  # noqa: UP045
     commitment: Optional[dict] = None,  # noqa: UP045
+    energies: Optional[dict] = None,  # noqa: UP045
 ) -> None:
     from presidio_arch_translucency.model import AnalysisResult  # local import for type
 
@@ -930,9 +1017,20 @@ def _render_results(
         f"[bold]Response-time Δ:[/]    [{rt_color}]"
         f"{best.response_time_change_pct:+.1f}%[/]\n"
         f"[bold]Est. throughput:[/]    {best.estimated_throughput_rps:.0f} req/s\n"
-        f"[bold]Est. response time:[/] {best.estimated_response_time_ms:.1f} ms\n\n"
-        f"[dim]{best.description}[/]"
+        f"[bold]Est. response time:[/] {best.estimated_response_time_ms:.1f} ms"
     )
+
+    best_energy: Optional[LayerEnergy] = None  # noqa: UP045
+    if energies is not None:
+        best_energy = energies.get(result.recommended_layer)
+    if best_energy is not None:
+        summary += (
+            f"\n[bold]Est. power:[/]         {_fmt_watts(best_energy.watts)} W  ·  "
+            f"J/req {_fmt_jreq(best_energy.joules_per_request)}  ·  "
+            f"EEI {_fmt_eei(best_energy.eei)}\n"
+            f"{_energy_note(best_energy.source)}"
+        )
+    summary += f"\n\n[dim]{best.description}[/]"
 
     console.print()
     console.print(
@@ -965,6 +1063,10 @@ def _render_results(
         table.add_column("Δ Throughput", justify="right")
         table.add_column("Response Time (ms)", justify="right")
         table.add_column("Δ RT", justify="right")
+        if energies is not None:
+            table.add_column("Watts", justify="right")
+            table.add_column("J/req", justify="right")
+            table.add_column("EEI", justify="right")
         if cost_params is not None:
             table.add_column("Cost/hr (USD)", justify="right")
             table.add_column("Cost/req (USD)", justify="right")
@@ -990,6 +1092,17 @@ def _render_results(
                 f"{lr.estimated_response_time_ms:.1f}",
                 f"[{rt_style}]{lr.response_time_change_pct:+.1f}%[/]",
             ]
+            if energies is not None:
+                le = energies.get(lr.layer)
+                if le is None:
+                    row.extend(["—", "—", "—"])
+                else:
+                    eei_color = (
+                        "green" if le.eei is not None and le.eei > 1.0 else "yellow"
+                    )
+                    row.append(_fmt_watts(le.watts))
+                    row.append(_fmt_jreq(le.joules_per_request))
+                    row.append(f"[{eei_color}]{_fmt_eei(le.eei)}[/]")
             if cost_params is not None:
                 hc = hourly_cost(lr.layer, lr.optimal_replicas, cost_params)
                 cpr = cost_per_request(
@@ -1004,7 +1117,14 @@ def _render_results(
             table.add_row(*row)
 
         console.print()
-        console.print(table)
+        # The energy columns widen the all-layers table past the 80-column
+        # width Rich assumes for non-TTY / captured output (pipes, CI logs, test
+        # capture); widen only that case so no header truncates. A real terminal
+        # keeps its own detected width — never force-wrap an 80/120-col TTY.
+        table_console = console
+        if not console.is_terminal:
+            table_console = Console(width=160)
+        table_console.print(table)
 
     console.print(
         f"\n[dim]Baseline: {result.baseline_throughput_rps:.0f} req/s "
@@ -1106,6 +1226,16 @@ def what_if_cmd(
         help="USD value per request. Shows estimated trough revenue cost.",
         min=0.0,
     ),
+    replica_power_watts: float = typer.Option(
+        DEFAULT_REPLICA_POWER_WATTS,
+        "--replica-power-watts",
+        help=(
+            "Per-replica peak power in watts for the energy estimate "
+            f"(MVP placeholder ≈{DEFAULT_REPLICA_POWER_WATTS:.0f} W)."
+        ),
+        min=0.1,
+        max=10000.0,
+    ),
 ) -> None:
     """
     Model an HPA scale event and show the performance trough.
@@ -1118,6 +1248,9 @@ def what_if_cmd(
         srps = sanitize_requests_per_second(spike_rps)
         lat = sanitize_latency_ms(avg_latency_ms)
         layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+        watts = sanitize_bounded_number(
+            replica_power_watts, "replica_power_watts", 0.1, 10000.0
+        )
     except InputValidationError as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
@@ -1128,11 +1261,16 @@ def what_if_cmd(
 
     layer = ReplicationLayer(layer_str)
     _warn_if_uncalibrated()
+    # --- Calibration-commitment gate (v0.20.0, P2-2): what-if now consumes
+    #     calibrated κ and energy, so it honours the tamper signal analyze does
+    #     (incl. the P2-1 cross-scope energy rule). ---
+    _gate_commitment_with_energy(model_layer)
     params = ScaleEventParams(
         hpa_poll_s=hpa_poll_s,
         pod_startup_s=pod_startup_s,
         cold_start_s=cold_start_s,
     )
+    concurrency = resolve_concurrency(model_layer)
     result = simulate_scale_event(
         rps_baseline=rps,
         rps_spike=srps,
@@ -1141,10 +1279,16 @@ def what_if_cmd(
         params=params,
         replicas_before=replicas_before,
         replicas_after=replicas_after,
-        concurrency=resolve_concurrency(model_layer),
+        concurrency=concurrency,
+    )
+    # Energy at the evaluated (steady-state) operating point: δ_after replicas
+    # serving the spike demand.
+    base_cap = base_capacity_rps(srps, lat, concurrency)
+    energy = layer_energy(
+        layer, result.replicas_after, srps, base_cap, watts, model_layer
     )
     log_security_event("WHAT_IF_INVOCATION", {"layer": layer_str, "spike_rps": srps})
-    _render_what_if(result, cost_per_req=cost_per_req)
+    _render_what_if(result, cost_per_req=cost_per_req, energy=energy)
 
     if output is not None:
         save_hpa_plot(result, output)
@@ -1212,6 +1356,10 @@ def slo_cmd(
         raise typer.Exit(code=2) from exc
 
     _warn_if_uncalibrated()
+    # --- Calibration-commitment gate (v0.20.0, P2-2): slo now consumes
+    #     calibrated κ and energy (J/req), so it honours the tamper signal
+    #     analyze does (incl. the P2-1 cross-scope energy rule). ---
+    _gate_commitment_with_energy(model_layer)
     spike_rps = rps * spike_multiplier
     params = ScaleEventParams(
         hpa_poll_s=hpa_poll_s,
@@ -1231,8 +1379,30 @@ def slo_cmd(
         )
         for layer in ALL_REPLICATION_LAYERS
     }
+    # Energy intensity (J/req) as the frontier's third axis: p99 × $/req × J/req.
+    # Uses the MVP-default per-replica peak power (slo carries no power flag).
+    base_cap = base_capacity_rps(spike_rps, lat, concurrency)
+    jreq_by_layer = {
+        layer: layer_energy(
+            layer,
+            res.replicas_after,
+            spike_rps,
+            base_cap,
+            DEFAULT_REPLICA_POWER_WATTS,
+            model_layer,
+        ).joules_per_request
+        for layer, res in results.items()
+    }
     log_security_event("SLO_INVOCATION", {"rps": rps, "p99_target_ms": p99_target_ms})
-    _render_slo(results, p99_target_ms, rps, spike_rps, params, CostParams())
+    _render_slo(
+        results,
+        p99_target_ms,
+        rps,
+        spike_rps,
+        params,
+        CostParams(),
+        jreq_by_layer=jreq_by_layer,
+    )
 
 
 @app.command("cost")
@@ -1490,6 +1660,18 @@ def calibrate_cmd(
             "Omit when using --benchmark."
         ),
     ),
+    energy_observations: Optional[list[str]] = typer.Option(  # noqa: B008, UP045
+        None,
+        "--energy-observation",
+        help=(
+            "Measured energy point as 'rps:latency_ms:replicas:watts' (total "
+            "system watts, e.g. 300:80:5:420). Repeat; 2–3 unique points hold "
+            "β_E at its default, while >=4 identifiable points fit β_E too. "
+            "At least two replica counts are required. "
+            "Fits P_idle/e_dyn/β_E into the SAME fit record — supply a "
+            "throughput fit too (--observation or --benchmark)."
+        ),
+    ),
     layer: str = typer.Option(
         DEFAULT_LAYER_NAME,
         "--layer",
@@ -1558,6 +1740,8 @@ def calibrate_cmd(
     from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
         CalibrationError,
         fit_calibration,
+        fit_energy_calibration,
+        parse_energy_observation,
         parse_observation,
         write_model_file,
     )
@@ -1565,6 +1749,7 @@ def calibrate_cmd(
     layer_name = layer.strip() or DEFAULT_LAYER_NAME
     is_named_layer = layer_name != DEFAULT_LAYER_NAME
     observations = observations or []
+    energy_observations = energy_observations or []
 
     if benchmark:
         from presidio_arch_translucency.benchmark import (  # noqa: PLC0415
@@ -1609,11 +1794,28 @@ def calibrate_cmd(
             raise typer.Exit(code=2) from exc
         n_points = len(parsed)
 
-    path = write_model_file(result, layer=layer_name if is_named_layer else None)
+    # Energy fit (v0.20.0): fitted into the SAME record as the throughput fit.
+    energy_result = None
+    if energy_observations:
+        try:
+            energy_points = [
+                parse_energy_observation(raw) for raw in energy_observations
+            ]
+            energy_result = fit_energy_calibration(energy_points)
+        except CalibrationError as exc:
+            err_console.print(f"[bold red]Energy calibration error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+    path = write_model_file(
+        result,
+        layer=layer_name if is_named_layer else None,
+        energy=energy_result,
+    )
     log_security_event(
         "CALIBRATE_INVOCATION",
         {
             "observations": n_points,
+            "energy_observations": len(energy_observations),
             "layer": layer_name,
             "mode": "benchmark" if benchmark else "analytical",
         },
@@ -1634,6 +1836,7 @@ def calibrate_cmd(
         path,
         layer=layer_name if is_named_layer else None,
         global_record=global_record,
+        energy=energy_result,
     )
 
 
@@ -2369,6 +2572,7 @@ def _render_calibration(
     path: Path,
     layer: Optional[str] = None,  # noqa: UP045
     global_record: Optional[dict] = None,  # noqa: UP045
+    energy: object = None,
 ) -> None:
     """Render fitted parameters, per-point predictions, and fit quality."""
     from presidio_arch_translucency.calibrate import (  # local import
@@ -2451,7 +2655,69 @@ def _render_calibration(
                 f"\n[dim]Global (pooled) fit:[/] κ={float(g_conc):.3f}, β={beta_str}"
             )
 
+    if energy is not None:
+        _render_energy_calibration(energy)
+
     console.print()
+
+
+def _render_energy_calibration(energy: object) -> None:
+    """Render the fitted energy parameters, per-point predictions, and quality.
+
+    Same table style as the throughput fit — the energy fit is written into the
+    same model record, so it is shown right beneath it.
+    """
+    from presidio_arch_translucency.calibrate import (  # local import
+        EnergyCalibrationResult,
+    )
+
+    assert isinstance(energy, EnergyCalibrationResult)  # noqa: S101
+
+    e_r2_color = "green" if energy.r_squared >= 0.95 else "yellow"
+    e_dyn = energy.energy_dyn_j_per_req
+    body = (
+        f"[bold]Idle power P_idle:[/]  [cyan]{energy.energy_idle_w:.2f}[/] W/replica\n"
+        f"[bold]Dyn J/req e_dyn:[/]    [cyan]{e_dyn:.4f}[/] J/req\n"
+        f"[bold]Energy β_E:[/]         [cyan]{energy.energy_beta:.4f}[/]\n"
+        f"[bold]R²:[/]                 [{e_r2_color}]{energy.r_squared:.4f}[/]\n"
+        f"[bold]RMSE:[/]               {energy.rmse:.4f} W\n\n"
+        "[dim]Fitted from measured watt readings; `pat analyze` will use these "
+        "for the energy columns instead of the MVP defaults.[/]"
+    )
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]Presidio Architectural Translucency — Energy fit[/]",
+            border_style="blue",
+        )
+    )
+
+    table = Table(
+        title="Energy fit — observed vs predicted watts",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Observed W", justify="right")
+    table.add_column("rps", justify="right")
+    table.add_column("Replicas", justify="right")
+    table.add_column("Predicted W", justify="right")
+    table.add_column("Residual", justify="right")
+
+    for obs, pred, resid in zip(
+        energy.observations, energy.predictions, energy.residuals, strict=True
+    ):
+        resid_color = "green" if abs(resid) < 0.01 * max(obs.watts, 1.0) else "yellow"
+        table.add_row(
+            f"{obs.watts:.1f}",
+            f"{obs.rps:.1f}",
+            str(obs.replicas),
+            f"{pred:.1f}",
+            f"[{resid_color}]{resid:+.2f}[/]",
+        )
+
+    console.print()
+    console.print(table)
 
 
 def _render_tiered_cost(tiered: object, result: object) -> None:
@@ -2585,6 +2851,7 @@ def _render_cost(
 def _render_what_if(
     r: ScaleEventResult,
     cost_per_req: Optional[float] = None,  # noqa: UP045
+    energy: Optional[LayerEnergy] = None,  # noqa: UP045
 ) -> None:
     spike_x = r.rps_spike / max(r.rps_baseline, 0.01)
     trough_color = "red" if r.trough_throughput_pct < 80 else "yellow"
@@ -2594,6 +2861,13 @@ def _render_what_if(
     if cost_per_req is not None:
         tc = trough_cost_usd(r.missed_requests, cost_per_req)
         trough_cost_line = f"\n  Trough cost   ~${tc:,.2f} revenue impact"
+
+    energy_line = ""
+    if energy is not None:
+        energy_line = (
+            f"\n  Est. power    {_fmt_watts(energy.watts)} W "
+            f"(J/req {_fmt_jreq(energy.joules_per_request)})"
+        )
 
     body = (
         f"[bold]Load:[/]  {r.rps_baseline:.1f} → {r.rps_spike:.1f} req/s"
@@ -2618,7 +2892,7 @@ def _render_what_if(
         f"  Throughput    {'[green]' if steady_ok else '[yellow]'}"
         f"{r.steady_throughput_rps:.1f} req/s[/]\n"
         f"  Avg latency   {r.steady_avg_latency_ms:,.0f} ms\n"
-        f"  p99 latency   {r.steady_p99_latency_ms:,.0f} ms"
+        f"  p99 latency   {r.steady_p99_latency_ms:,.0f} ms" + energy_line
     )
     console.print()
     console.print(
@@ -2669,6 +2943,7 @@ def _render_slo(
     spike_rps: float,
     params: ScaleEventParams,
     cost_params: Optional[CostParams] = None,  # noqa: UP045
+    jreq_by_layer: Optional[dict] = None,  # noqa: UP045
 ) -> None:
     console.print()
     console.print(
@@ -2687,10 +2962,12 @@ def _render_slo(
     table.add_column("Steady p99", justify="right")
     table.add_column("Trough p99", justify="right")
     table.add_column("Cost/hr (USD)", justify="right")
+    table.add_column("J/req", justify="right")
     table.add_column("SLO verdict", justify="left")
 
     best_layer = min(results.values(), key=lambda r: r.steady_p99_latency_ms)
     cp = cost_params if cost_params is not None else CostParams()
+    jreq_map = jreq_by_layer or {}
 
     for r in results.values():
         steady_ok = r.steady_p99_latency_ms <= p99_target
@@ -2728,6 +3005,7 @@ def _render_slo(
             steady_str,
             trough_str,
             cost_str,
+            _fmt_jreq(jreq_map.get(r.layer)),
             verdict,
         )
 

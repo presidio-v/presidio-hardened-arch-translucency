@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.17.0** ("Evidence arc · Sign the signal")
+- Current version: **0.20.0** ("Energy arc · Model the watt")
 
 ---
 
@@ -68,6 +68,11 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.18.0 | **Training arc · Same question, new domain** — ML training parallelism as a domain profile (`training.py`: data/fsdp/tensor/pipeline; memory as hard constraint), `pat train-analyze`/`train-what-if`, `training-run@1` Layer-0 evidence + provenance-parents convention (ADR-0009) | Implemented + 3rd-party audited (2026-07-02, Codex); all P1/P2 findings remediated same day (`SECURITY-AUDIT-2026-07-02-v0.18.0-remediation.md`); founder tag/publish gate open (delta audit recommended) |
 | v0.19.0 | **Evidence-hardening arc · Prove the history, bind the fit** — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes; calibration commitments binding fitted models to source observations; ADR-0010 accepted | Shipped v0.19.0 (2026-07-05); third-party audit finding ARCH-01 remediated before release |
 | v0.19.1 | **Evidence-hardening patch release** — publish the accepted ADR-0010 line with remediated GitHub Actions pins and CodeQL code-scanning alert fixes | Release gate for v0.19.1 (2026-07-07) |
+| v0.20.0 | **Energy arc · Model the watt** — analytic per-layer energy model (α_E/β_E, `E(δ)`), J/req + Watts + EEI in `analyze`/`what-if`/`slo`, `pat calibrate --energy-observation` fitting into the committed fit record (ADR-0011 accepted) | Implemented; third-party findings ARCH-020-01…08 remediated and release gate green (2026-07-14) |
+| v0.21.0 | Energy arc · Measure the watt — platform-gated measured mode (probe for a real power source, fail closed without one; Kepler ≥0.10.0 `kepler_container_cpu_joules_total` / RAPL / DCGM), parallel `energy_observations` chain, energy gauges + rules | Planned (respecified 2026-07-13 per L-EN-3 spike + E1a) |
+| v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity, energy-signal scaler | Planned |
+| v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` (L-TR-1) + watts per strategy, `training-run@1` optional energy fields | Planned |
+| v0.24.0 | Energy arc · Sign the watt — `energy-reading@1` Layer-0 emit carrying the chain head (discharges the ADR-0010 deferral), arc retro + position paper | Planned |
 
 ---
 
@@ -1208,6 +1213,138 @@ next step and is deferred.
 | String-decimal float encoding | Honours "no bare floats in a hash" without the precision loss of rounding — two distinct readings never collide |
 | Fail-closed only on mismatch | Present-but-wrong commitment is tamper; *absent* commitment is legacy and used — existing model files never break |
 | No strictness flag | No repo precedent for opt-in strictness; the honest-legacy default is the safe one |
+
+## Energy Arc (v0.20.0 → v0.24.0) — "Watts as a First-Class NFP"
+
+**Deliberated:** 2026-07-12 (Cowork session; raw material: the pat × SEANERGYS
+briefing in `plan/pat-seanergys-energy-arc.md`, local only). Verified baseline
+before this arc: zero occurrences of energy/watt/joule/carbon/power in README,
+CHANGELOG, or this file — the energy axis was greenfield.
+
+### Direction
+
+EuroHPC SEANERGYS (CMI monitoring / AIDAS-DAIS analytics / DSRM scheduling;
+FZ Jülich + LRZ et al.) validates the translucency question with **energy as
+the NFP** at Exascale. pat already answers the same question for throughput,
+latency, and cost in the cloud-native serving + training domains; this arc adds
+the joules axis — and pat's differentiator SEANERGYS lacks: **cryptographically
+evidenced energy readings**, converting an optimization metric into a
+regulatory artifact (EnEfG §12 / recast EED data-center KPIs, EU AI Act GPAI
+compute documentation).
+
+**Governing invariant E1:** *pat measures, models, and evidences energy; it
+never actuates power.* A1 extended to the energy domain — no DVFS, no power
+capping, no node power API writes. Anyone proposing `pat powercap` must reopen
+A1/E1 explicitly.
+
+**Corollary E1a (added 2026-07-13, from the L-EN-3 spike):** *pat never signs a
+watt it did not measure.* Modelled/analytic energy is an honest, documented
+*estimate* rendered by `analyze`/`what-if`/`slo`; it never enters the chained
+`energy_observations` store and never becomes an `energy-reading@1`. Rationale:
+Kepler on power-interface-less platforms emits plausible, monotonic,
+correctly-attributed joules that are fabricated (≈80 W attributed to one
+busybox loop on an Apple Silicon node — falsifiable without ground truth); a
+signed estimator value would be a cryptographically attested fiction offered as
+a regulatory artifact. Worse than no energy feature at all.
+
+### Arc plan (one theme per version, strict ordering)
+
+| Version | Theme | Depends on |
+|---|---|---|
+| v0.20.0 | Model the watt — analytic α_E/β_E energy model, J/req, EEI | — |
+| v0.21.0 | Measure the watt — platform-gated measured mode (E1a), chained `energy_observations` | v0.20 (params in committed fit) |
+| v0.22.0 | Budget the watt — `pat budget`, carbon intensity, energy scaler signal | v0.21 (measured/fitted energy) |
+| v0.23.0 | Train the watt — L-TR-1 + samples/s/W, `training-run@1` energy fields | v0.22 |
+| v0.24.0 | Sign the watt — `energy-reading@1` + chain-head anchoring (ADR-0010 deferral) | stable reading shape |
+
+Zero new runtime dependencies anywhere in the arc. Deliberately out of scope,
+recorded as decisions: power actuation/DVFS (E1); Slurm as a third domain
+(ADR-0009 revisit trigger is L-TR-4, not this arc); DAIS-style co-scheduling
+(belongs to L-TR-2 machinery); remote-write (ADR-0007 unchanged).
+
+## v0.20.0 — Model the watt (implemented 2026-07-12)
+
+### Direction
+
+Analytic energy as a first-class output of the existing commands — zero new
+dependencies, zero new network surface, no new stores. The translucency insight
+for energy is the **idle-power asymmetry across layers**: a container on a
+shared kernel adds ~constant ≈2 W standing draw (Tadesse/Chiasserini/Malandrino
+2018), while a new node buys the full server idle floor (fleet idle ≈36% of
+peak for 2023 servers; SPECpower_ssj2008 trend, CMG analysis). The same
+replication decision therefore has *different energy implications per layer* —
+the founding claim, now in watts.
+
+### Scope (implemented)
+
+- [x] **`energy.py`** — parallel per-layer `EnergyParams` (α_E idle fraction,
+  β_E ln-scaled coordination energy; MVP placeholders with citations, the v0.18
+  training-defaults framing). `E(δ) = P_idle·δ + e_dyn·ω(δ)·(1 + β_E·ln δ)`;
+  J/req = `E(δ)/ω(δ)`; **EEI** = (throughput ratio)/(J-per-req ratio) vs the
+  single-replica baseline (dimensionless; >1 = replication buys more throughput
+  than it costs in energy intensity). One new knob: `--replica-power-watts`
+  (default 15 W ≈ 700 W peak 2023 2-socket server / ~48 usable vCPU slices).
+- [x] **CLI** — `analyze --show-all` gains Watts / J/req / EEI columns +
+  recommendation panel line (marks defaults vs calibrated); `what-if` gains the
+  energy point estimate; `slo` frontier gains the J/req axis (p99 × $/req ×
+  J/req). No budget flags (v0.22).
+- [x] **`pat calibrate --energy-observation rps:latency_ms:replicas:watts`** —
+  fits (P_idle, e_dyn, β_E) via the house scipy pattern (≥4 unique,
+  identifiable points fit all three; 2–3 points hold β_E and fit the two power
+  terms; <2, duplicate, same-δ, rank-deficient, or ill-conditioned sets are
+  rejected). Fitted keys live in the **same fit record**, so the
+  v0.19 `calibration_commitment` binds them with zero changes to the analyze
+  gate — tampered energy coefficients fail closed (ADR-0011 §1).
+- [x] **Commitment backward compat** — a record without energy keys re-hashes
+  byte-identically to the v0.19 scheme; every existing committed fit still
+  verifies `ok`. Pinned by test.
+- [x] **Tests** — 101 new (equations, asymmetry-as-a-test, parse/fit bounds,
+  synthetic-recovery, commitment compat + energy tamper classes, CLI columns,
+  calibrate round-trip, and third-party-audit regressions). Full suite 916
+  passed, 96.60% coverage, ruff clean.
+- [x] **Pre-audit adversarial review** (same session, before third-party
+  audit): found and remediated a cross-scope tamper-escape (named-layer
+  `analyze` consuming an unverified *global* energy fit — the gate now
+  verifies the record the energy figures actually come from), extended the
+  commitment tamper gate to `what-if`/`slo` (previously `analyze`-only, per
+  the model.py "every model consumer" creed), and hardened both observation
+  parsers against non-finite floats (NaN/±inf passed positivity checks).
+
+### Deferred (recorded, not built)
+
+- L-EN-1: measured energy (Kepler/RAPL/DCGM preset + chained store) — v0.21.
+- L-EN-2: energy/carbon budgets and `pat budget` — v0.22.
+- L-EN-3: Kepler fidelity on non-RAPL hardware — **spike done 2026-07-13**
+  (results local-only in `plan/`). Verdict: gate measured mode on a real power
+  source and fail closed; never ship estimator mode. Findings: Kepler legacy
+  (≤0.9) fabricates plausible joules without a power interface (tell: empty
+  `source=""` label); Kepler ≥0.10.0 removed the estimator *and* arm64 support
+  and hard-exits without RAPL zones; the metric is now
+  `kepler_container_cpu_joules_total` (+ `zone` label), not the legacy
+  `kepler_container_joules_total`. v0.21 must therefore: probe for a readable
+  power source at `observe` start (powercap RAPL zone or DCGM) and refuse to
+  record energy rows without one; drop any sample carrying the estimator tell;
+  pin the current metric name and declare Kepler ≥0.10.0 amd64/baremetal as the
+  supported floor. Elevated to corollary E1a.
+- L-EN-4: `energy-reading@1` family vector reservation — **PR #14 open**
+  (presidio-evidence `reserve-energy-reading-v1`, 2026-07-13); both lanes
+  green. Field-naming decisions taken 2026-07-13 (drop payload-internal
+  `reading` id; `source`→`meter` with enum `rapl|kepler|dcgm`, no `analytic`
+  per E1a; `layer` XOR `strategy`; RFC3339 `window_start`/`window_end`
+  instants; add `LAYER0_READING_SCHEMA_IDS` registry constant in the same PR).
+  Answers to apply on the PR: `plan/pr14-answers.md`. Merge freezes the shape
+  v0.24 consumes.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Parallel `EnergyParams`, not new `LayerParams` fields | The serving layer-param surface is test-pinned; a parallel table mirrors ADR-0010's parallel-chain precedent and keeps the diff additive |
+| Fit (P_idle, e_dyn, β_E), display α_E | The briefing's α_E/β_E fraction form needs a peak-power anchor to fit total watts; fitting standing + dynamic power directly is identifiable from 2 distinct-δ points, and α_E stays the human-readable derived fraction |
+| Energy params in the same fit record | The v0.19 commitment digest binds them for free — fail-closed tamper detection with zero new verification code (the §3.1 "design decision that writes itself") |
+| Commitment fields conditional on presence | v0.19 records must re-hash byte-identically; additive-only evolution of a hash surface |
+| EEI vs single-replica baseline of the same layer | Cross-layer comparison stays in the J/req column; EEI answers "does replicating *here* pay for itself energetically" |
+| No energy flags on `rules`/`export`/`scaler` yet | Alerting and gauges belong to the measured domain (v0.21); modeling first keeps every number attributable to a documented equation |
 
 ## SDLC
 
