@@ -930,8 +930,6 @@ def _read_existing_model(path: Path, *, strict: bool = False) -> dict:
                 data = json.load(fh)
             if isinstance(data, dict):
                 return data
-            if strict:
-                raise CalibrationError("existing model root must be a JSON object")
     except CalibrationError:
         raise
     except (OSError, ValueError) as exc:

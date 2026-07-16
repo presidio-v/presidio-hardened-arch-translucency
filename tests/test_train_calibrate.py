@@ -235,9 +235,7 @@ def test_parse_step_log_partial_power_coverage(tmp_path):
 
 
 def test_parse_step_log_size_bound(tmp_path, monkeypatch):
-    import presidio_arch_translucency.train_calibrate as tc  # noqa: PLC0415
-
-    monkeypatch.setattr(tc, "MAX_STEP_LOG_BYTES", 10)
+    monkeypatch.setitem(parse_step_log.__globals__, "MAX_STEP_LOG_BYTES", 10)
     p = tmp_path / "log.jsonl"
     _write_log(p, [_row(0, 2.0, 20)])
     with pytest.raises(StepLogError, match="exceeds"):
@@ -245,9 +243,7 @@ def test_parse_step_log_size_bound(tmp_path, monkeypatch):
 
 
 def test_parse_step_log_line_count_bound(tmp_path, monkeypatch):
-    import presidio_arch_translucency.train_calibrate as tc  # noqa: PLC0415
-
-    monkeypatch.setattr(tc, "MAX_STEP_LOG_LINES", 2)
+    monkeypatch.setitem(parse_step_log.__globals__, "MAX_STEP_LOG_LINES", 2)
     p = tmp_path / "log.jsonl"
     _write_log(p, [_row(i, 2.0, 20) for i in range(3)])
     with pytest.raises(StepLogError, match="lines"):
@@ -496,26 +492,22 @@ def test_write_training_fit_preserves_other_sections():
 
 
 def test_write_training_fit_rejects_symlink_target(tmp_path):
-    from presidio_arch_translucency import train_calibrate as tc  # noqa: PLC0415
-
     target = tmp_path / "target.json"
     target.write_text("{}\n", encoding="utf-8")
     link = tmp_path / "model.json"
     link.symlink_to(target)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(tc, "global_model_path", lambda: link)
+        mp.setitem(write_training_fit.__globals__, "global_model_path", lambda: link)
         with pytest.raises(TrainingCalibrationError, match="symbolic link"):
             write_training_fit(ParallelismStrategy.DATA, _fit())
     assert target.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_write_training_fit_rejects_corrupt_existing_model(tmp_path):
-    from presidio_arch_translucency import train_calibrate as tc  # noqa: PLC0415
-
     path = tmp_path / "model.json"
     path.write_text("not-json\n", encoding="utf-8")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(tc, "global_model_path", lambda: path)
+        mp.setitem(write_training_fit.__globals__, "global_model_path", lambda: path)
         with pytest.raises(TrainingCalibrationError, match="could not be read"):
             write_training_fit(ParallelismStrategy.DATA, _fit())
     assert path.read_text(encoding="utf-8") == "not-json\n"
