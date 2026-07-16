@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.21.0** ("Energy arc · Measure the watt")
+- Current version: **0.22.0** ("Energy arc · Budget the watt")
 
 ---
 
@@ -70,7 +70,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.19.1 | **Evidence-hardening patch release** — publish the accepted ADR-0010 line with remediated GitHub Actions pins and CodeQL code-scanning alert fixes | Release gate for v0.19.1 (2026-07-07) |
 | v0.20.0 | **Energy arc · Model the watt** — analytic per-layer energy model (α_E/β_E, `E(δ)`), J/req + Watts + EEI in `analyze`/`what-if`/`slo`, `pat calibrate --energy-observation` fitting into the committed fit record (ADR-0011 accepted) | Implemented; third-party findings ARCH-020-01…08 remediated and release gate green (2026-07-14) |
 | v0.21.0 | Energy arc · Measure the watt — platform-gated direct-hardware mode (RAPL/DCGM; Kepler attribution refused), parallel verified `energy_observations` chain, energy gauges + rules | Implemented and third-party release gate remediated (2026-07-16) |
-| v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity, energy-signal scaler | Planned |
+| v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity (static citable snapshot + optional live via `PAT_CARBON_TOKEN`), `what-if --energy-aware` idle-vs-trough dual, `cost --carbon`, `scaler --signal energy` | Implemented; third-party findings remediated and release gate green (2026-07-16) |
 | v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` (L-TR-1) + watts per strategy, `training-run@1` optional energy fields | Planned |
 | v0.24.0 | Energy arc · Sign the watt — `energy-reading@1` Layer-0 emit carrying the chain head (discharges the ADR-0010 deferral), arc retro + position paper | Planned |
 
@@ -1438,6 +1438,80 @@ honesty bound ADR-0010 concedes; external anchoring remains v0.24.
 | Strict meter enum, no `manual` | A hand-entered watt in the measured store would be E1a's loophole; reopening it requires reopening E1a explicitly |
 | `joules ≈ watts×window_s` enforced | A signed self-inconsistent figure is an audit finding waiting to happen; tolerance-checked at validation |
 | Energy alerts in the existing group | Default `pat rules` output stays byte-identical; chart bundle sync test keeps its pin |
+
+## v0.22.0 — Budget the watt (implemented 2026-07-16)
+
+### Direction
+
+The SEANERGYS objective function, translated: **maximum output within an
+energy budget / minimum energy for demanded output**, answered per layer by
+the calibrated-or-default analytic model. Plus the carbon overlay that turns
+joules into placement-relevant gCO₂eq. Everything here is a **modelled
+estimate**: budget and carbon figures never enter the chains and never become
+evidence readings (E1/E1a); every rendered number is attributable to a
+documented equation or a cited dataset.
+
+### Scope (implemented)
+
+- [x] **`pat budget`** (new `budget.py`) — Direction 1: `--energy-budget-wh W
+  --window-h H` sweeps each layer for the max-throughput δ with `E(δ)·H ≤ W`;
+  infeasible layers excluded, not scored (the v0.18 memory precedent);
+  headroom reported. Direction 2 (default): smallest δ saturating demand,
+  ranked by Wh — "less energy for the same output". `--carbon-budget-g`
+  converts via resolved intensity (requires `--region`). Honors the
+  calibration-commitment gate exactly as `analyze` (incl. cross-scope energy
+  rule); `--json` additive.
+- [x] **`carbon.py`** — region → gCO₂eq/kWh. Default: embedded static table of
+  **location-based annual averages** (Ember CC-BY-4.0 country data + Google
+  region-carbon-info; snapshot year stated; MVP-placeholder framing).
+  Optional live: Electricity Maps behind env-only `PAT_CARBON_TOKEN` (HTTPS,
+  `auth-token` header, never logged, never cached), `~/.pat/carbon-cache.json`
+  owner-only, TTL 1 h, live→cache→static fallback that **never fails the
+  command**. Methodology documented: location-based average (not
+  market-based, not marginal) is the correct basis for cross-region placement
+  ranking. Unknown region fails closed listing known regions.
+- [x] **Intensity bounds discipline** (from pre-audit review): every intensity
+  crossing a trust boundary (live response, cache read, CLI conversion) is
+  validated finite and `0 < v ≤ 2000 gCO₂eq/kWh`; malformed/poisoned values
+  are refused and resolution falls back to the cited static snapshot.
+- [x] **`pat what-if --energy-aware`** — the idle-energy dual: standing energy
+  of warm minReplicas over the simulated window (Wh and $, via
+  `--electricity-cost-per-kwh`, default 0.12 placeholder) vs trough
+  missed-request revenue (existing `trough_cost_usd`); verdict line flips when
+  idle joules outweigh trough revenue. Off by default; default output
+  byte-identical.
+- [x] **`pat cost --carbon`** — gCO₂/req + gCO₂/hour columns and a
+  cheapest-greenest marker (documented [0,1] normalization of $/req and
+  gCO₂/req, mean combined); works across on-demand/reserved/spot (spot ×
+  carbon combined via the tiered path); intensity source annotated.
+- [x] **`pat scaler --signal energy`** — KEDA/Prometheus-Adapter trigger on
+  `pat_energy_per_request_joules{layer}` with `--energy-budget-j-per-req`
+  threshold; emit-only (A1/E1 note + EEI>1 caveat in generated YAML).
+  Deliberate deviation from the briefing's "trigger on EEI": J/req has an
+  operator-meaningful absolute budget; EEI is a target-less ratio.
+- [x] **Tests** — 109 new incl. remediation regressions (carbon resolution
+  matrix, poisoned-cache/live-response refusal, budget known-values +
+  infeasibility + tie-breaks + tamper gate, verdict flip both sides,
+  byte-identical default pins, YAML round-trips, markup-escape). Full suite
+  1149 passed, 95.63% coverage, ruff clean.
+- [x] **Pre-audit adversarial review** (same session): one root cause at four
+  sites — grid-intensity values crossed the live-response, cache-read, and
+  CLI-conversion boundaries unvalidated (crash or silent corruption on
+  poisoned values); fixed with a shared validator + `TypeError` in the
+  fallback tuple, making the "carbon-source trouble never fails the command"
+  claim true. Plus Rich-markup escaping of `--region` in error paths and
+  strengthened byte-identity pins.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Static citable table as default, live behind a token | No globally-usable no-auth live intensity API exists; a cited annual-average snapshot is honest, offline-correct, and auditable — the pricing-cache precedent extended |
+| Location-based average methodology | Market-based obscures grid physics (carbon arbitrage); marginal is for intra-day shifting, not placement ranking |
+| Budget infeasibility = exclusion | An over-budget layer is impossible under the constraint, not merely expensive — the v0.18 memory-hard-constraint semantics |
+| Idle-vs-trough behind `--energy-aware` | The flip changes a recommendation; opt-in keeps the default what-if byte-identical and the new claim explicit |
+| J/req scaler trigger, not EEI | A budget threshold must be absolute; EEI is a ratio without an operator target — deviation recorded against the briefing |
+| Intensity ceiling 2000 gCO₂eq/kWh | No real grid exceeds ~1600; the ceiling turns a poisoned figure into a refused figure |
 
 ## SDLC
 

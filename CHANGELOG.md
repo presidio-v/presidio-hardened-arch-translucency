@@ -10,6 +10,94 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-16
+
+### Added
+
+- **`pat budget` — the SEANERGYS objective in both directions ("Budget the
+  watt").** A new `budget` command and `budget.py` solver. *Direction 1*
+  (`--energy-budget-wh W --window-h H`, or `--carbon-budget-g G` with
+  `--region`): for each layer it sweeps δ = 1..max_replicas and picks the
+  feasible δ that maximises throughput while modelled `E(δ) = W(δ)·H` stays
+  within the budget, reporting achieved throughput, energy Wh, J/req, and
+  headroom; a layer whose δ=1 already exceeds the budget is reported
+  **infeasible** and excluded from the recommendation (the v0.18
+  memory-hard-constraint precedent). *Direction 2* (default): the minimum
+  modelled energy meeting demand — reuses the `analyze` sweep (same
+  base-capacity resolution, same optimal-δ, same commitment gating) and
+  recommends the layer meeting demand for the fewest watt-hours ("less energy,
+  same output"). `--region` adds gCO₂/req and gCO₂/window columns to either
+  direction; `--json` emits an additive dict including the intensity source.
+  Every figure is a **modelled estimate** — never chained, never signed (E1a).
+- **Grid carbon intensity (`carbon.py`).** Region → gCO₂eq/kWh with an embedded
+  location-based annual-average table (`CARBON_INTENSITY_DEFAULTS`, 2023
+  snapshot) covering the AWS/GCP/Azure regions the pricing modules know, plus a
+  country-level fallback. `resolve_carbon_intensity(region)` returns
+  `(intensity, source)` with `source ∈ {live, cache, static}`: with
+  `PAT_CARBON_TOKEN` set it prefers a live Electricity Maps reading (cached
+  owner-only in `~/.pat/carbon-cache.json`, TTL 3600 s), and a live failure
+  **never fails the command** — it warns and falls back to the documented static
+  snapshot. Unknown regions fail closed listing the known regions.
+  `grams_per_request` / `grams_per_hour` are exact conversions.
+- **`pat what-if --energy-aware` — the idle-energy dual (the FLIP).** After the
+  scale-event output, an "Idle energy vs trough" section weighs the standing
+  energy of warm `minReplicas` over the simulated window (idle watts × replicas
+  × window, priced with `--electricity-cost-per-kwh`, placeholder 0.12 USD/kWh)
+  against the trough's missed-request revenue loss (`--cost-per-request`), with
+  a verdict that flips: warm replicas cost more in standing energy than the
+  trough loses in revenue, or the reverse. `--region` adds a gCO₂ line. Without
+  `--energy-aware`, output is byte-identical to before (test-pinned).
+- **`pat cost --carbon` — greenest-cheapest ranking.** Per-layer gCO₂/req and
+  gCO₂/hour columns (modelled watts at each layer's recommended δ × resolved
+  intensity) plus a combined rank: cost/req and gCO₂/req are each min-max
+  normalised to [0,1] across layers, the mean is the combined score, and the
+  lowest wins a `cheapest-greenest` marker. Works on the on-demand/reserved/spot
+  tiered path too. Requires an explicit `--region`; default output (no
+  `--carbon`) is byte-identical (test-pinned).
+- **`pat scaler --signal energy`.** `VALID_SIGNALS = ("replicas", "energy")`;
+  `--signal energy` emits a KEDA trigger / Prometheus-Adapter rule querying
+  `pat_energy_per_request_joules{layer="<layer>"}` (the exact exporter gauge)
+  with the threshold from the required `--energy-budget-j-per-req`, scaling OUT
+  when modelled J/req exceeds the budget. The generated YAML carries the caveat
+  that more replicas amortise standing power only when the layer's EEI > 1, and
+  the emit-only A1/E1 note. J/req (not EEI) is the trigger because it has a
+  natural absolute budget threshold (documented deviation). Default
+  `--signal replicas` output is byte-identical.
+
+### Security
+
+- Carbon token is env-only (`PAT_CARBON_TOKEN`), never a CLI argument, never
+  logged (it travels in the `auth-token` header, not the URL); a control-char
+  token is rejected. The carbon cache is written owner-only (`0o600`), mirroring
+  the cloud pricing-cache discipline. The static intensity table is cited
+  (Ember yearly electricity data CC-BY-4.0; Google region-carbon-info) and
+  stamped with its snapshot year, and marked a documented MVP placeholder.
+- Grid-intensity values are bounds-validated (finite, `0 < v ≤ 2000
+  gCO₂eq/kWh`) at both untrusted boundaries — the live Electricity Maps
+  response and the cache read. Malformed or poisoned values (negative, zero,
+  NaN, ±∞, absurdly large) are refused: an invalid live reading is treated as a
+  fetch failure and never cached, an invalid/poisoned cache entry is dropped as
+  a miss, and resolution falls back to the cited static snapshot. The live path
+  also treats wrong-typed responses (`carbonIntensity: null` or list-shaped) as
+  fetch failures, so the command never fails on carbon-source trouble.
+- Every carbon/energy figure produced by these features is a **modelled
+  estimate** (analytic energy model × documented grid intensity). Per invariants
+  A1/E1/E1a it is emit-only, never enters the observation/energy chains, never
+  becomes an `energy-reading@1`, and is never signed.
+- Bounds validation on every new CLI parameter (`--energy-budget-wh`,
+  `--window-h` 0.01–8760, `--carbon-budget-g`, `--electricity-cost-per-kwh`
+  0.001–10, `--energy-budget-j-per-req`, `--replica-power-watts`), with nan/inf
+  rejected via `sanitize_bounded_number`. Zero new runtime dependencies (urllib
+  + stdlib).
+- Third-party release review remediations: the minimum-energy solver now refuses
+  to recommend a layer that cannot meet demand; calibrated parameters are
+  commitment-gated at their shared library boundary and in every consuming CLI;
+  energy scalers require one explicit layer; malformed, insecure, future-dated,
+  or oversized cache data is rejected; cache writes are atomic; live carbon
+  responses are bounded and redirects refused; invalid carbon ranking values
+  cannot win. Static region values are pinned to the cited Google 2023 dataset
+  (with explicitly named same-grid proxies where necessary).
+
 ## [0.21.0] - 2026-07-16
 
 ### Added
@@ -679,7 +767,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...v0.19.1

@@ -13,7 +13,9 @@ override via CostParams for their actual environment.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Optional
 
 from presidio_arch_translucency.model import ReplicationLayer
 
@@ -157,3 +159,89 @@ def build_cost_results(
         best.is_recommended = True
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Cheapest-greenest ranking (v0.22.0)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CarbonResult:
+    """Per-layer carbon columns + the combined cheapest-greenest score."""
+
+    layer: ReplicationLayer
+    grams_per_request: Optional[float]  # noqa: UP045 — modelled gCO₂/req
+    grams_per_hour: Optional[float]  # noqa: UP045 — modelled gCO₂/hour
+    combined_score: Optional[float]  # noqa: UP045 — mean of normalised cost+carbon
+    is_greenest_cheapest: bool = False
+
+
+def build_carbon_ranking(
+    cost_results: list[CostResult],
+    grams_per_request: dict[ReplicationLayer, Optional[float]],  # noqa: UP045
+    grams_per_hour: dict[ReplicationLayer, float],
+) -> list[CarbonResult]:
+    """Rank layers by a combined cheapest-greenest score.
+
+    **Normalisation (documented so it is replaceable):** ``cost_per_request`` and
+    ``gCO₂/req`` are each min-max scaled to ``[0, 1]`` across the layers that
+    have a finite value for both (min → 0, best; max → 1, worst). When a metric
+    is constant across those layers its normalised component is ``0`` for all.
+    ``combined_score = mean(normalised_cost, normalised_carbon)`` — an equal,
+    defensible weighting; the layer with the **lowest** score wins the
+    ``cheapest-greenest`` marker. Layers with an undefined J/req (no gCO₂/req) or
+    a non-finite cost are carried with ``combined_score = None`` and cannot win.
+
+    Simple and deliberately swappable — a weighted or Pareto scheme can replace
+    this without touching callers.
+    """
+
+    def _valid_nonnegative(value: object) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+        )
+
+    valid = [
+        cr
+        for cr in cost_results
+        if _valid_nonnegative(cr.cost_per_request_usd)
+        and _valid_nonnegative(grams_per_request.get(cr.layer))
+        and _valid_nonnegative(grams_per_hour.get(cr.layer))
+    ]
+    costs = [cr.cost_per_request_usd for cr in valid]
+    greens = [grams_per_request[cr.layer] for cr in valid]  # type: ignore[index]
+
+    def _norm(value: float, values: list[float]) -> float:
+        lo, hi = min(values), max(values)
+        return 0.0 if hi <= lo else (value - lo) / (hi - lo)
+
+    scores: dict[ReplicationLayer, float] = {}
+    for cr, c, g in zip(valid, costs, greens, strict=True):
+        scores[cr.layer] = (_norm(c, costs) + _norm(g, greens)) / 2.0  # type: ignore[arg-type]
+
+    winner: Optional[ReplicationLayer] = None  # noqa: UP045
+    if scores:
+        winner = min(scores, key=lambda layer: scores[layer])
+
+    return [
+        CarbonResult(
+            layer=cr.layer,
+            grams_per_request=(
+                grams_per_request.get(cr.layer)
+                if _valid_nonnegative(grams_per_request.get(cr.layer))
+                else None
+            ),
+            grams_per_hour=(
+                grams_per_hour.get(cr.layer)
+                if _valid_nonnegative(grams_per_hour.get(cr.layer))
+                else None
+            ),
+            combined_score=scores.get(cr.layer),
+            is_greenest_cheapest=(cr.layer == winner),
+        )
+        for cr in cost_results
+    ]
