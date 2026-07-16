@@ -2,17 +2,16 @@ apiVersion: v2
 name: pat-exporter
 description: |
   Read-only Prometheus exporter for the architectural-translucency model
-  (`pat export`). Packages the v0.22.0 exporter as a hardened, cluster-native
+  (`pat export`). Packages the v0.23.0 exporter as a hardened, cluster-native
   Deployment with a Prometheus-Operator ServiceMonitor, a PrometheusRule, the
   official Grafana dashboard (loaded via the Grafana sidecar), least-privilege
   RBAC, and an optional NetworkPolicy. Emit-only: the exporter never holds
   cluster write credentials and never applies changes (arc invariant A1).
 type: application
-# Chart version — bumped independently of the app. Bumped to 0.22.0 for the
-# energy-budget and carbon-aware release.
-version: 0.22.0
+# Chart version — bumped independently of the app for the training-energy release.
+version: 0.23.0
 # Application version — the `pat` release the default image tag tracks.
-appVersion: "0.22.0"
+appVersion: "0.23.0"
 keywords:
   - architectural-translucency
   - prometheus

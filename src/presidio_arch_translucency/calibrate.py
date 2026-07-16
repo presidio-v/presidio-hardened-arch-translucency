@@ -26,6 +26,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import stat
+import tempfile
 import warnings
 from contextlib import suppress
 from dataclasses import dataclass
@@ -46,6 +49,14 @@ CALIBRATION_COMMITMENT_SCHEMA = "presidio-hardened/calibration-commitment@1"
 #: Key under which the commitment digest and its metadata live in a fit record.
 COMMITMENT_KEY = "calibration_commitment"
 
+#: Training-calibration commitment schema (v0.23.0, L-TR-1). A distinct schema
+#: tag from the serving commitment so a serving verifier never re-hashes a
+#: training record (and vice-versa); the digest key is the same ``COMMITMENT_KEY``.
+TRAINING_CALIBRATION_COMMITMENT_SCHEMA = (
+    "presidio-hardened/training-calibration-commitment@1"
+)
+TRAINING_COMMITMENT_KEY = COMMITMENT_KEY
+
 # Default coordination overhead used when a single observation cannot constrain
 # beta (one point, two free parameters).
 _DEFAULT_BETA: float = 0.02
@@ -56,6 +67,7 @@ CALIBRATION_RPS_MAX: float = 1_000_000.0
 CALIBRATION_LATENCY_MS_MAX: float = 300_000.0
 CALIBRATION_REPLICAS_MAX: int = 10_000
 CALIBRATION_WATTS_MAX: float = 1_000_000.0
+MODEL_FILE_MAX_BYTES: int = 10 * 1024 * 1024
 
 # Fitted-energy bounds are part of the persisted-record trust contract. Keep
 # these public so record consumers validate with the exact same limits.
@@ -662,6 +674,186 @@ def verify_commitment(record: object) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Training-calibration commitments (v0.23.0, L-TR-1)
+#
+# A distinct commitment schema for the ``training[<strategy>]`` fit records that
+# ``pat train-calibrate`` writes. The digest binds the fitted α/β/baseline, the
+# fit metadata, the per-run observation set, and — conditional on presence — the
+# energy aggregate, following the exact _num_str string-decimal discipline of
+# the serving commitment. The result-based digest (``…_from_fields``) and the
+# record-based re-hash (``_digest_from_training_record``) build the SAME
+# canonical content so they must agree; keeping the shared builder here is the
+# single source of truth. train_calibrate.py imports the write path from here.
+# ---------------------------------------------------------------------------
+
+
+def _training_committed_content(
+    *,
+    strategy: str,
+    overhead_alpha: float,
+    overhead_beta: float,
+    baseline_samples_per_second: float,
+    r_squared: float,
+    rmse: float,
+    calibrated_at: str,
+    microbatches: int,
+    runs: list,
+    mean_power_w: float | int | None,
+    watts_per_device: float | int | None,
+) -> dict[str, object]:
+    """Canonical committed content for a training fit (all numerics string-decimal).
+
+    ``runs`` rows are ``[degree, samples_per_second, duration_s, power_or_None]``.
+    Energy keys join **only** when ``mean_power_w`` is present, so a power-free
+    record re-hashes byte-identically to the no-energy scheme (ADR-0011).
+    """
+    content: dict[str, object] = {
+        "schema": TRAINING_CALIBRATION_COMMITMENT_SCHEMA,
+        "strategy": strategy,
+        "overhead_alpha": _num_str(overhead_alpha),
+        "overhead_beta": _num_str(overhead_beta),
+        "baseline_samples_per_second": _num_str(baseline_samples_per_second),
+        "r_squared": _num_str(r_squared),
+        "rmse": _num_str(rmse),
+        "calibrated_at": calibrated_at,
+        "microbatches": int(microbatches),
+        "run_count": len(runs),
+        "runs": [
+            [
+                int(row[0]),
+                _num_str(row[1]),
+                _num_str(row[2]),
+                (None if row[3] is None else _num_str(row[3])),
+            ]
+            for row in runs
+        ],
+    }
+    if mean_power_w is not None:
+        content["mean_power_w"] = _num_str(mean_power_w)
+        content["watts_per_device"] = _num_str(watts_per_device)
+    return content
+
+
+def training_commitment_digest_from_fields(
+    *,
+    strategy: str,
+    overhead_alpha: float,
+    overhead_beta: float,
+    baseline_samples_per_second: float,
+    r_squared: float,
+    rmse: float,
+    calibrated_at: str,
+    microbatches: int,
+    runs: list,
+    mean_power_w: float | int | None = None,
+    watts_per_device: float | int | None = None,
+) -> str:
+    """SHA-256 over the canonical committed training content (lowercase hex)."""
+    return hashlib.sha256(
+        _canonical_bytes(
+            _training_committed_content(
+                strategy=strategy,
+                overhead_alpha=overhead_alpha,
+                overhead_beta=overhead_beta,
+                baseline_samples_per_second=baseline_samples_per_second,
+                r_squared=r_squared,
+                rmse=rmse,
+                calibrated_at=calibrated_at,
+                microbatches=microbatches,
+                runs=runs,
+                mean_power_w=mean_power_w,
+                watts_per_device=watts_per_device,
+            )
+        )
+    ).hexdigest()
+
+
+def _digest_from_training_record(record: dict) -> str:
+    """Re-derive a training commitment digest from a *stored* training record.
+
+    Reconstructs the committed content from the persisted fields so a consumer
+    can detect any post-calibration edit (α/β/baseline/fit metadata/runs/energy)
+    without re-running the fit. Energy keys join the re-hash only when the record
+    carries ``mean_power_w`` — a power-free record re-hashes to the no-energy
+    bytes.
+    """
+    runs = record.get("runs")
+    if not isinstance(runs, list):
+        raise CalibrationError("training fit record has no run set to re-hash")
+    mean_power = record["mean_power_w"] if "mean_power_w" in record else None
+    watts_per_device = record["watts_per_device"] if "mean_power_w" in record else None
+    return training_commitment_digest_from_fields(
+        strategy=record["strategy"],
+        overhead_alpha=record["overhead_alpha"],
+        overhead_beta=record["overhead_beta"],
+        baseline_samples_per_second=record["baseline_samples_per_second"],
+        r_squared=record["r_squared"],
+        rmse=record["rmse"],
+        calibrated_at=record["calibrated_at"],
+        microbatches=record["microbatches"],
+        runs=runs,
+        mean_power_w=mean_power,
+        watts_per_device=watts_per_device,
+    )
+
+
+def training_commitment_of(record: object) -> str | None:
+    """Return a training record's stored commitment digest, or ``None`` (legacy).
+
+    ``None`` means the record carries no *training* commitment — either a
+    hand-written / pre-v0.23 ``training[<strategy>]`` section, or a malformed /
+    wrong-schema commitment (reported as uncommitted, distinguished from tamper
+    by :func:`verify_training_commitment`).
+    """
+    if not isinstance(record, dict):
+        return None
+    commitment = record.get(TRAINING_COMMITMENT_KEY)
+    if (
+        isinstance(commitment, dict)
+        and commitment.get("schema") == TRAINING_CALIBRATION_COMMITMENT_SCHEMA
+    ):
+        digest = commitment.get("digest")
+        if (
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
+        ):
+            return digest
+    return None
+
+
+def verify_training_commitment(record: object) -> bool:
+    """Re-hash a stored training record and compare to its embedded commitment.
+
+    True when the record carries a training commitment and re-hashes to it;
+    False when present-but-mismatched (the fail-closed tamper signal). A missing
+    commitment is the separate legacy case (use :func:`training_commitment_of`).
+    """
+    stored = training_commitment_of(record)
+    if stored is None:
+        return False
+    try:
+        return _digest_from_training_record(record) == stored  # type: ignore[arg-type]
+    except (CalibrationError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def training_commitment_status(record: object) -> str:
+    """Classify a training record's commitment: ``ok`` / ``tampered`` / ``legacy``.
+
+    ``legacy`` = no training commitment stored (hand-written or pre-v0.23);
+    reported honestly, never rejected. ``tampered`` = a commitment is present but
+    the stored parameters do not re-hash to it (includes a wrong-schema or
+    malformed-digest commitment). ``ok`` = present and matches.
+    """
+    if not isinstance(record, dict) or TRAINING_COMMITMENT_KEY not in record:
+        return "legacy"
+    if training_commitment_of(record) is None:
+        return "tampered"
+    return "ok" if verify_training_commitment(record) else "tampered"
+
+
 def _fit_record(
     result: CalibrationResult,
     energy: EnergyCalibrationResult | None = None,
@@ -704,29 +896,90 @@ def _fit_record(
     return record
 
 
-def _read_existing_model(path: Path) -> dict:
-    """Return the current global model file as a dict, or ``{}`` if absent/bad."""
+def _read_existing_model(path: Path, *, strict: bool = False) -> dict:
+    """Return the current global model file as a dict.
+
+    Serving calibration retains the historical ``{}`` fallback for a malformed
+    file. Surgical callers may pass ``strict=True`` to prevent an unrelated,
+    damaged model from being silently replaced.
+    """
     try:
+        if strict:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(path, flags)
+            except FileNotFoundError:
+                return {}
+            with os.fdopen(fd, "rb") as fh:
+                info = os.fstat(fh.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise CalibrationError("existing model must be a regular file")
+                raw = fh.read(MODEL_FILE_MAX_BYTES + 1)
+            if len(raw) > MODEL_FILE_MAX_BYTES:
+                raise CalibrationError(
+                    f"existing model exceeds {MODEL_FILE_MAX_BYTES} bytes"
+                )
+            data = json.loads(raw.decode("utf-8", errors="strict"))
+            if not isinstance(data, dict):
+                raise CalibrationError("existing model root must be a JSON object")
+            return data
+        if path.is_symlink():
+            return {}
         if path.is_file():
             with path.open(encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, dict):
                 return data
-    except (OSError, ValueError):
+    except CalibrationError:
+        raise
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise CalibrationError(f"existing model could not be read: {exc}") from exc
         return {}
     return {}
 
 
 def _prepare_model_path(path: Path) -> None:
+    if path.parent.is_symlink():
+        raise CalibrationError("model directory must not be a symbolic link")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise CalibrationError("model directory must be a real directory")
+    if path.is_symlink():
+        raise CalibrationError("model path must not be a symbolic link")
     with suppress(OSError):
         path.parent.chmod(0o700)
 
 
 def _write_private_json(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    with suppress(OSError):
-        path.chmod(0o600)
+    """Atomically replace *path* with owner-only canonical JSON."""
+    if path.is_symlink():
+        raise CalibrationError("model path must not be a symbolic link")
+    encoded = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    fd = -1
+    temporary: str | None = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "wb") as fh:
+            fd = -1
+            fh.write(encoded)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        with suppress(OSError):
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temporary is not None:
+            with suppress(OSError):
+                os.unlink(temporary)
 
 
 def write_model_file(

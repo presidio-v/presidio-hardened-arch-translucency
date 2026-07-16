@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.22.0** ("Energy arc · Budget the watt")
+- Current version: **0.23.0** ("Energy arc · Train the watt")
 
 ---
 
@@ -71,7 +71,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.20.0 | **Energy arc · Model the watt** — analytic per-layer energy model (α_E/β_E, `E(δ)`), J/req + Watts + EEI in `analyze`/`what-if`/`slo`, `pat calibrate --energy-observation` fitting into the committed fit record (ADR-0011 accepted) | Implemented; third-party findings ARCH-020-01…08 remediated and release gate green (2026-07-14) |
 | v0.21.0 | Energy arc · Measure the watt — platform-gated direct-hardware mode (RAPL/DCGM; Kepler attribution refused), parallel verified `energy_observations` chain, energy gauges + rules | Implemented and third-party release gate remediated (2026-07-16) |
 | v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity (static citable snapshot + optional live via `PAT_CARBON_TOKEN`), `what-if --energy-aware` idle-vs-trough dual, `cost --carbon`, `scaler --signal energy` | Implemented; third-party findings remediated and release gate green (2026-07-16) |
-| v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` (L-TR-1) + watts per strategy, `training-run@1` optional energy fields | Planned |
+| v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` from step-time logs (discharges L-TR-1) with committed training fits, samples/s/W ranking, `training-run@1` optional energy fields (string-decimal wire) | Implemented; third-party findings remediated and release gate green (2026-07-17) |
 | v0.24.0 | Energy arc · Sign the watt — `energy-reading@1` Layer-0 emit carrying the chain head (discharges the ADR-0010 deferral), arc retro + position paper | Planned |
 
 ---
@@ -1077,9 +1077,8 @@ not the **build/train** phase of an AI use case. Distributed training is a
 textbook translucency problem: the same replication decision applied as data /
 sharded-data / tensor / pipeline parallelism yields different throughput at
 different overhead. Extending `pat` here (a) fills the suite gap, (b) turns a
-training run into a signed compliance artifact (EU AI Act Art. 12
-record-keeping, Art. 10 data-governance linkage, GPAI compute documentation)
-as a *by-product* of an optimization tool, and (c) is in peto before detailed
+training run into a signed provenance artifact that can support—but does not
+replace—applicable AI Act technical documentation, and (c) is in peto before detailed
 healthcare-workshop planning starts (~August 2026), so workshops can
 demonstrate classify → gate → train → evidence end-to-end if the pitch calls
 for it.
@@ -1229,8 +1228,8 @@ the NFP** at Exascale. pat already answers the same question for throughput,
 latency, and cost in the cloud-native serving + training domains; this arc adds
 the joules axis — and pat's differentiator SEANERGYS lacks: **cryptographically
 evidenced energy readings**, converting an optimization metric into a
-regulatory artifact (EnEfG §12 / recast EED data-center KPIs, EU AI Act GPAI
-compute documentation).
+traceable input that can support broader EnEfG management-system records and
+EU AI Act GPAI technical documentation without claiming standalone compliance.
 
 **Governing invariant E1:** *pat measures, models, and evidences energy; it
 never actuates power.* A1 extended to the energy domain — no DVFS, no power
@@ -1512,6 +1511,95 @@ documented equation or a cited dataset.
 | Idle-vs-trough behind `--energy-aware` | The flip changes a recommendation; opt-in keeps the default what-if byte-identical and the new claim explicit |
 | J/req scaler trigger, not EEI | A budget threshold must be absolute; EEI is a ratio without an operator target — deviation recorded against the briefing |
 | Intensity ceiling 2000 gCO₂eq/kWh | No real grid exceeds ~1600; the ceiling turns a poisoned figure into a refused figure |
+
+## v0.23.0 — Train the watt (implemented 2026-07-16)
+
+### Direction
+
+Discharge deferral **L-TR-1** — the v0.18 training α/β defaults stop being
+placeholders the moment a user has step-time logs — and give the training
+domain its energy dimension: **samples/s per watt** beside samples/s. The
+regulatory by-product is useful but deliberately bounded: a signed
+`training-run@1` carrying `energy_wh` / `mean_power_w` can contribute one
+provenance record to broader GPAI technical documentation. It is not, by
+itself, EU AI Act or EnEfG compliance evidence. Article 53/Annex XI require a
+broader technical-documentation set; EnEfG §12 requires continuous component
+power/energy measurement within an applicable management system.
+
+### Scope (implemented)
+
+- [x] **Step-log contract + `pat train-calibrate`** (new `train_calibrate.py`)
+  — JSON-Lines ingestion (`{"step", "duration_s", "samples", optional
+  "power_w"}`), fail-closed: 10 MB / 100k-line bounds, strict unknown-key
+  rejection, per-line errors naming the line, descriptor-bound non-symlink
+  regular-file check, bounded numeric fields, strictly increasing step ids,
+  UTF-8 strict, deep-nesting `RecursionError` re-raised as `StepLogError`
+  (pre-audit finding). Partial `power_w` coverage rejected — no silent
+  averaging over gaps.
+- [x] **Per-strategy fit** — model mirrors `scaling_efficiency` exactly incl.
+  the δ≤1 short-circuit (a fit inconsistent with the domain model it
+  calibrates was the one synthetic-recovery failure, fixed structurally) and
+  the pipeline bubble form. Every fit requires a δ=1 anchor (without it,
+  baseline/α are non-identifiable). ≥3 distinct degrees for (baseline, α, β); 2 →
+  hold β at the strategy default; pipeline ≥2 (baseline, α). Exactly-
+  determined fits carry a `saturated` flag and the CLI renders R²/RMSE as
+  uninformative rather than green (pre-audit finding: a trivial R²=1.0 must
+  not read as fit quality).
+- [x] **Committed training fits** — `training[<strategy>]` records gain a
+  `training-calibration-commitment@1` digest (string-decimal discipline);
+  `resolve_strategy_params` fails closed on a present-but-mismatched
+  commitment (`train-analyze`/`train-what-if` exit 2 — a tamper-escape in
+  `train-what-if`'s exception handling was found and fixed during the build);
+  no-commitment records stay legacy-honest (v0.18 hand-written sections keep
+  working). Training writes preserve every other model-file section; the
+  serving commitment survives byte-safe. Persistence is owner-only and atomic,
+  rejects symlink targets and malformed existing models, and a record cannot be
+  transplanted under a different strategy key while retaining trust.
+- [x] **`train-analyze` / `train-what-if` energy column** — samples/s/W from
+  fitted `mean_power_w` or `--device-power-watts` (bounds 1–2000, MVP
+  placeholder); energy-best marker distinct from the recommendation and emitted
+  only with complete comparable power for every feasible strategy; energy
+  never changes the recommendation and never excludes (memory stays the only
+  hard constraint — pinned by test). Defaults byte-identical without power
+  data.
+- [x] **`training-run@1` optional energy fields** — `energy_wh` /
+  `mean_power_w`: floats (and bools) rejected by type before any coercion;
+  int ≥ 0 and decimal strings must round-trip IEEE-754 losslessly
+  (`Decimal(s) == Decimal(repr(float(s)))`) and are normalized to the
+  canonical string repr (so an int and equivalent string have one hash) —
+  accepted grammar is Python's float grammar, documented;
+  negative zero collapses to `"0.0"` (one value, one hash — pre-audit
+  finding). When both energy and mean total run power are present, they must
+  agree with `duration_s` within 2% or 0.01 Wh. Fields included only when provided:
+  a power-free record re-hashes
+  **byte-identically** to the v0.18 family vector (pinned). Energy-bearing
+  shape self-pinned pending the family vector (L-EV-7 pattern; prompt in
+  `plan/`).
+- [x] **Tests** — full suite 1264 passed, 94.47% coverage, ruff clean.
+- [x] **Pre-audit adversarial review** (same session): P2 deep-nesting
+  ingestion escape fixed; R² saturation annotated; wire grammar documented +
+  negative-zero normalization; `write_training_fit`'s deliberate
+  non-verification of the record it supersedes documented (fresh fits consume
+  only step logs and defaults — consumers remain the fail-closed gate).
+
+### Trust boundary (restated for the audit)
+
+`energy_wh`/`mean_power_w` in a training-run record are **producer-measured
+claims** under the v0.18 trust boundary (inputs come from CLI arguments, the
+invoking process is the boundary, the sidecar signs). E1a governs pat's own
+stores and readings; a training-run's energy figures are attributed to the
+producer exactly like `duration_s` and `samples_per_second` always were —
+validated in the library fail-closed, never invented by pat.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Fit mirrors the domain model exactly (δ≤1 short-circuit) | Calibrating with a structurally different curve than the one consumed biases the baseline — correctness, not tolerance |
+| Committed training records, legacy honest | ADR-0010/0011 discipline extended verbatim; hand-written v0.18 sections must keep working |
+| Energy is a score, memory is the constraint | An infeasible point is impossible; an energy-hungry point is merely expensive — the v0.18 semantics, unchanged by the new column |
+| String-decimal energy on the wire, floats rejected by type | The family canonical profile; ints and equivalent accepted spellings normalize to one canonical hash |
+| Saturated fits flagged | R²=1.0 from an exactly-determined system is not evidence; honesty in rendering is part of the evidence posture |
 
 ## SDLC
 

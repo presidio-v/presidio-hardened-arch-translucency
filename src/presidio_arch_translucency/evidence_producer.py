@@ -22,9 +22,11 @@ from __future__ import annotations
 import hashlib
 import hmac as hmaclib
 import json
+import math
 import string
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,6 +45,7 @@ TRAINING_SCHEMA_ID = "presidio-hardened/training-run@1"
 DEFAULT_SIGNER = "presidio-hardened-arch-translucency"
 SIGNING_ALGORITHMS = ("ed25519", "hmac-sha256")
 _LOWER_HEX = frozenset(string.hexdigits.lower()[:16])
+_ENERGY_DECIMAL_MAX_CHARS = 64
 
 
 class EvidenceProducerError(ValueError):
@@ -282,9 +285,9 @@ def is_degraded(reading: Mapping[str, object]) -> bool:
 # Training-run evidence (``training-run@1``) — Layer 0, key-less.
 #
 # A training run becomes a content-addressed, signable record: parallelism
-# configuration, throughput, duration and device count (EU AI Act Art. 12
-# record-keeping / GPAI compute documentation as a by-product of the
-# optimization tool). ``parents`` implements the family payload-level
+# configuration, throughput, duration and device count. It can support broader
+# operator technical documentation but is not standalone compliance evidence.
+# ``parents`` implements the family payload-level
 # provenance convention: hashes of upstream evidence payloads (classification,
 # gate decision, dataset attestation) are attested *inside* the signed
 # content, so the frozen ``evidence-ref@1`` envelope is untouched while
@@ -337,6 +340,83 @@ def _coerce_int(value: object, name: str, *, minimum: int) -> int:
     return v
 
 
+def _coerce_energy_value(value: object, name: str) -> str:
+    """Validate an optional energy field for the wire (fail-closed, float-rejecting).
+
+    The canonical profile rejects bare floats (non-portable across encoders), so
+    a ``float`` here **raises before any coercion** — a caller with a float must
+    make the string/int decision explicitly (the wire discipline). Accepted:
+
+    * ``int >= 0`` — normalized to the same string-decimal form as strings;
+    * a decimal *string* that parses to a finite value ``>= 0`` **and** survives
+      an IEEE-754 round-trip losslessly — normalized to ``repr(float(s))``.
+
+    A decimal string that does not round-trip losslessly (``Decimal(s) !=
+    Decimal(repr(float(s)))``) is rejected as "not representable as an IEEE-754
+    round-trip decimal" rather than silently truncated.
+
+    Accepted string grammar is deliberately Python's ``float()`` grammar (so
+    scientific notation ``"1e3"``, a leading ``+``, and surrounding whitespace
+    are accepted and normalized) — normalization to ``repr(float(s))`` makes
+    every accepted spelling canonical on the wire. Negative zero (``"-0"`` /
+    ``"-0.0"``) is normalized to ``"0.0"``: two spellings of a semantically
+    identical value must not produce two different content hashes.
+    """
+    if isinstance(value, bool):
+        raise EvidenceProducerError(
+            f"{name} must be an int or decimal string, got bool"
+        )
+    if isinstance(value, float):
+        raise EvidenceProducerError(
+            f"{name} must be an int or decimal string, not a float "
+            '(floats are non-portable on the wire; pass e.g. "12.5" or an int)'
+        )
+    if isinstance(value, int):
+        if value < 0:
+            raise EvidenceProducerError(f"{name} must be >= 0, got {value}")
+        try:
+            f = float(value)
+        except OverflowError as exc:
+            raise EvidenceProducerError(f"{name} is too large for the wire") from exc
+        if not math.isfinite(f) or Decimal(value) != Decimal(repr(f)):
+            raise EvidenceProducerError(
+                f"{name}={value!r} is not representable as an IEEE-754 "
+                "round-trip decimal"
+            )
+        return repr(f)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or len(s) > _ENERGY_DECIMAL_MAX_CHARS:
+            raise EvidenceProducerError(
+                f"{name} must be a non-empty decimal string no longer than "
+                f"{_ENERGY_DECIMAL_MAX_CHARS} characters"
+            )
+        try:
+            dec = Decimal(s)
+        except (InvalidOperation, ValueError) as exc:
+            raise EvidenceProducerError(
+                f"{name} must be a decimal string, got {value!r}"
+            ) from exc
+        if not dec.is_finite():
+            raise EvidenceProducerError(f"{name} must be finite, got {value!r}")
+        if dec < 0:
+            raise EvidenceProducerError(f"{name} must be >= 0, got {value!r}")
+        f = float(s)
+        if f == 0.0:
+            # Collapse IEEE-754 negative zero: "-0.0" and "0.0" are the same
+            # energy; distinct wire strings would yield distinct content hashes.
+            f = 0.0
+        if Decimal(s) != Decimal(repr(f)):
+            raise EvidenceProducerError(
+                f"{name}={value!r} is not representable as an IEEE-754 round-trip "
+                "decimal (would lose precision on the wire)"
+            )
+        return repr(f)
+    raise EvidenceProducerError(
+        f"{name} must be an int or decimal string, got {type(value).__name__!r}"
+    )
+
+
 def _validate_parent_hash(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -361,17 +441,31 @@ def build_training_run_reading(
     parents: tuple[str, ...] | list[str] = (),
     model_hash: str | None = None,
     dataset_hash: str | None = None,
+    energy_wh: str | int | None = None,
+    mean_power_w: str | int | None = None,
     source_version: str | None = None,
     observed_at: str | None = None,
 ) -> dict:
     """Build an **unsigned** Layer-0 ``training-run@1`` record (no key held).
 
-    Integers only (the canonical profile rejects floats — round upstream).
-    ``parents`` are content hashes of upstream evidence payloads and are
-    attested inside the signed content; they are validated against the family
-    lowercase-hex discipline and included only when non-empty (fail-closed on
-    malformed hashes). ``model_hash`` / ``dataset_hash`` bind the run to its
+    Integers only for the core figures (the canonical profile rejects floats —
+    round upstream). ``parents`` are content hashes of upstream evidence payloads
+    and are attested inside the signed content; they are validated against the
+    family lowercase-hex discipline and included only when non-empty (fail-closed
+    on malformed hashes). ``model_hash`` / ``dataset_hash`` bind the run to its
     artifacts when available.
+
+    Optional energy fields (v0.23.0, additive): ``energy_wh`` (run energy in
+    watt-hours) and ``mean_power_w`` (mean total run power in watts) are **producer
+    claims / modelled estimates** under the v0.18 trust boundary — attributed as
+    such (PRESIDIO-REQ Energy Arc E1a), never observation-chain readings. Each is
+    independently optional (both-or-neither is *not* required). When both are
+    supplied, their relationship to ``duration_s`` is checked within 2% (or
+    0.01 Wh) so contradictory signable evidence fails closed. A ``float`` is
+    rejected on the wire — pass an int or a decimal string
+    (e.g. ``"12.5"``). A field is included in the attested content **only when
+    provided**, so a record with no energy hashes byte-identically to a pre-v0.23
+    record for the same core inputs.
 
     The full contract is enforced here, independently of any CLI (fail-closed:
     a sidecar must never be handed malformed signable content): valid strategy,
@@ -399,6 +493,27 @@ def build_training_run_reading(
         content["model_hash"] = _validate_parent_hash(model_hash)
     if dataset_hash is not None:
         content["dataset_hash"] = _validate_parent_hash(dataset_hash)
+    canonical_energy = (
+        _coerce_energy_value(energy_wh, "energy_wh") if energy_wh is not None else None
+    )
+    canonical_power = (
+        _coerce_energy_value(mean_power_w, "mean_power_w")
+        if mean_power_w is not None
+        else None
+    )
+    if canonical_energy is not None and canonical_power is not None:
+        expected_wh = Decimal(canonical_power) * Decimal(content["duration_s"]) / 3600
+        difference = abs(Decimal(canonical_energy) - expected_wh)
+        tolerance = max(abs(expected_wh) * Decimal("0.02"), Decimal("0.01"))
+        if difference > tolerance:
+            raise EvidenceProducerError(
+                "energy_wh and mean_power_w contradict duration_s "
+                f"(expected approximately {expected_wh} Wh)"
+            )
+    if canonical_energy is not None:
+        content["energy_wh"] = canonical_energy
+    if canonical_power is not None:
+        content["mean_power_w"] = canonical_power
     return {
         "schema": TRAINING_SCHEMA_ID,
         "attested_content": content,

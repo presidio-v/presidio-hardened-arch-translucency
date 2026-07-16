@@ -338,6 +338,186 @@ def test_training_run_content_hash_matches_family_golden_vector():
 
 
 # ---------------------------------------------------------------------------
+# training-run@1 optional energy fields (v0.23.0) — producer claims (E1a),
+# int-or-decimal-string on the wire (floats rejected), additive & conditional.
+# ---------------------------------------------------------------------------
+
+
+def _golden_energy_kwargs(**extra):
+    """The golden-vector inputs, so the no-energy hash pins byte-identity."""
+    base = dict(
+        run_id="golden-run",
+        strategy="pipeline",
+        degree=4,
+        samples_per_second=250,
+        duration_s=7200,
+        device_count=4,
+        parents=[_PARENT],
+        observed_at="2026-07-02T00:00:00+00:00",
+        source_version="test",
+    )
+    base.update(extra)
+    return base
+
+
+def test_training_run_no_energy_is_byte_identical_pin():
+    """No-energy record: energy keys omitted; hash byte-identical to pre-v0.23.
+
+    Passing ``energy_wh=None``/``mean_power_w=None`` must be indistinguishable
+    from omitting them — the additive fields never perturb the canonical bytes
+    of a power-free record (ADR-0011), so it re-hashes to the family vector.
+    """
+    reading = build_training_run_reading(
+        **_golden_energy_kwargs(energy_wh=None, mean_power_w=None)
+    )
+    content = reading["attested_content"]
+    assert "energy_wh" not in content
+    assert "mean_power_w" not in content
+    assert reading["content_hash"] == _FAMILY_TRAINING_RUN_VECTOR_HASH
+
+
+# Energy-bearing self-pin (L-EV-7 placeholder — replace with the cross-repo
+# presidio-evidence training-run/ energy family vector once that vector lands;
+# until then this pins byte-identity of THIS producer's energy-bearing canonical
+# form so a drift in the string-decimal profile is caught here).
+_FAMILY_TRAINING_RUN_ENERGY_VECTOR_HASH = (
+    "d674a11562def33ba92b54ab946d7782b1d3a111ec6a8f8f22a541788a57ffb0"
+)
+
+
+def test_training_run_energy_bearing_self_pin():
+    reading = build_training_run_reading(
+        **_golden_energy_kwargs(energy_wh="840.0", mean_power_w="420.0")
+    )
+    content = reading["attested_content"]
+    # Decimal strings normalised to the IEEE-754 round-trip repr (string on wire).
+    assert content["energy_wh"] == "840.0"
+    assert content["mean_power_w"] == "420.0"
+    assert reading["content_hash"] == _FAMILY_TRAINING_RUN_ENERGY_VECTOR_HASH
+    assert reading["content_hash"] == sha256_hex(content)
+
+
+def test_training_run_energy_int_canonicalized_to_string():
+    reading = build_training_run_reading(
+        **_golden_energy_kwargs(energy_wh=840, mean_power_w=420)
+    )
+    content = reading["attested_content"]
+    assert content["energy_wh"] == "840.0"
+    assert content["mean_power_w"] == "420.0"
+    string_reading = build_training_run_reading(
+        **_golden_energy_kwargs(energy_wh="840.0", mean_power_w="420.0")
+    )
+    assert reading["content_hash"] == string_reading["content_hash"]
+
+
+def test_training_run_energy_negative_zero_normalized():
+    """ "-0"/"-0.0" collapse to "0.0" — one energy value, one content hash."""
+    minus = build_training_run_reading(**_golden_energy_kwargs(energy_wh="-0.0"))
+    plus = build_training_run_reading(**_golden_energy_kwargs(energy_wh="0.0"))
+    assert minus["attested_content"]["energy_wh"] == "0.0"
+    assert minus["content_hash"] == plus["content_hash"]
+
+
+def test_training_run_energy_float_grammar_spellings_normalized():
+    """Python float-grammar spellings are accepted and land on one canonical
+    wire form (documented behaviour — not a strict decimal grammar)."""
+    for spelling in ("1e3", " 1000.0 ", "+1000.0", "1000.0"):
+        reading = build_training_run_reading(
+            **_golden_energy_kwargs(energy_wh=spelling)
+        )
+        assert reading["attested_content"]["energy_wh"] == "1000.0", spelling
+
+
+def test_training_run_energy_independently_optional():
+    # energy_wh alone is allowed (both-or-neither is NOT required).
+    reading = build_training_run_reading(**_golden_energy_kwargs(energy_wh=5))
+    content = reading["attested_content"]
+    assert content["energy_wh"] == "5.0"
+    assert "mean_power_w" not in content
+
+
+def test_training_run_energy_power_duration_mismatch_rejected():
+    with pytest.raises(EvidenceProducerError, match="contradict"):
+        build_training_run_reading(
+            **_golden_energy_kwargs(energy_wh="12.5", mean_power_w="420.0")
+        )
+
+
+@pytest.mark.parametrize("field", ["energy_wh", "mean_power_w"])
+def test_training_run_energy_float_rejected_on_wire(field):
+    with pytest.raises(EvidenceProducerError, match="float"):
+        build_training_run_reading(**_golden_energy_kwargs(**{field: 12.5}))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        -1,  # negative int
+        "-2.0",  # negative decimal string
+        "not-a-number",  # unparseable
+        "NaN",  # non-finite decimal string
+        "Infinity",  # non-finite decimal string
+        "1" * 65,  # bounded before Decimal parsing
+        "0.1234567890123456789",  # loses precision on IEEE-754 round-trip
+        True,  # bool rejected
+    ],
+)
+def test_training_run_energy_rejects_bad_values(bad):
+    with pytest.raises(EvidenceProducerError):
+        build_training_run_reading(**_golden_energy_kwargs(energy_wh=bad))
+
+
+def test_cli_train_evidence_emit_energy_string_decimal():
+    result = _invoke(
+        "train-evidence-emit",
+        "--run-id",
+        "run-energy",
+        "--strategy",
+        "data",
+        "--degree",
+        "2",
+        "-s",
+        "100",
+        "--duration-s",
+        "60",
+        "-n",
+        "2",
+        "--energy-wh",
+        "7.0",
+        "--mean-power-w",
+        "420.0",
+    )
+    assert result.exit_code == 0
+    content = json.loads(result.output.strip())["attested_content"]
+    assert content["energy_wh"] == "7.0"  # string-decimal on the wire
+    assert content["mean_power_w"] == "420.0"
+
+
+def test_cli_train_evidence_emit_rejects_float_energy():
+    # A bare float string that is not round-trip-lossless is rejected; a clean
+    # decimal string is accepted — the CLI passes the raw string through.
+    result = _invoke(
+        "train-evidence-emit",
+        "--run-id",
+        "run-energy-bad",
+        "--strategy",
+        "data",
+        "--degree",
+        "1",
+        "-s",
+        "10",
+        "--duration-s",
+        "1",
+        "-n",
+        "1",
+        "--energy-wh",
+        "0.1234567890123456789",
+    )
+    assert result.exit_code == 1
+    assert not result.output.strip().startswith("{")
+
+
+# ---------------------------------------------------------------------------
 # CLI (train-analyze / train-what-if / train-evidence-emit)
 # ---------------------------------------------------------------------------
 

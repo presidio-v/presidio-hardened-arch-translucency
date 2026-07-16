@@ -1,7 +1,7 @@
 # pat-exporter Helm chart
 
 Cluster-native packaging of the read-only architectural-translucency exporter
-(`pat export`). Chart 0.22.0 ships the exporter, measured/modelled energy panels,
+(`pat export`). Chart 0.23.0 ships the exporter, measured/modelled energy panels,
 and its declarative monitoring artifacts as one installable bundle.
 
 **Emit-only.** The chart deploys a read-only `/metrics` endpoint and declarative
@@ -47,7 +47,7 @@ The container image is built from the checked-out source with a digest-pinned
 base image:
 
 ```bash
-docker build --build-arg VERSION=0.22.0 -t ghcr.io/presidio-v/pat-exporter:0.22.0 .
+docker build --build-arg VERSION=0.23.0 -t ghcr.io/presidio-v/pat-exporter:0.23.0 .
 ```
 
 ## Security posture

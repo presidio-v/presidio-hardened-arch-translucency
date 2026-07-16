@@ -10,6 +10,89 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-16
+
+### Added
+
+- **`pat train-calibrate` — fit training overhead from step-time logs
+  ("Train the watt", L-TR-1).** A new `train-calibrate` command and
+  `train_calibrate.py` module. Given one JSON-Lines *step log* per run
+  (`--strategy S --run degree:path ...`), it parses run-level aggregates,
+  fits the efficiency model `tp(δ) = baseline · δ · eff(δ)` for the strategy
+  (every fit requires a δ=1 anchor; α/β strategies need ≥3 distinct degrees
+  for the full fit; exactly 2 hold β at the strategy default; pipeline needs
+  ≥2), and writes a **committed**
+  record into `~/.pat/model.json` under `training.<strategy>`. The fit model
+  mirrors `training.scaling_efficiency` exactly (a single device carries no
+  overhead, `eff(δ≤1)=1`, so a δ=1 run pins the baseline). `--json` emits the
+  fitted parameters, per-run observations, and fit quality (R²/RMSE).
+  Fail-closed on malformed logs or too-few distinct degrees (exit 2).
+- **Committed training-calibration fits.** A distinct commitment schema
+  (`presidio-hardened/training-calibration-commitment@1`) binds the fitted
+  α/β/baseline, calibration time, pipeline microbatch setting, fit metadata,
+  the per-run observation set, and — conditional on
+  presence — the energy aggregate, following the serving commitment's exact
+  string-decimal (`_num_str`) discipline. `train-analyze` / `train-what-if`
+  render a per-strategy commitment line (digest prefix for `ok`, a flag for
+  uncommitted `legacy` hand-written fits) and fail closed on tamper.
+- **`samples/s/W` ranking in `train-analyze` / `train-what-if`.** When a
+  committed training fit carries fitted per-device power — or an explicit
+  `--device-power-watts` (1–2000) is given — an additive `Samples/s/W` column
+  is shown. The energy-best *feasible* strategy is marked only when all feasible
+  strategies have comparable power; partial calibration is labelled incomplete
+  and makes no cross-strategy claim. Energy never changes the
+  recommendation and never excludes a strategy; memory stays the only hard
+  constraint. Without any power data or flag the table is byte-identical to
+  before (test-pinned).
+- **`training-run@1` optional energy fields.** `build_training_run_reading()`
+  and `train-evidence-emit` gain optional `--energy-wh` / `--mean-power-w`,
+  each independently optional and canonicalized to string-decimal wire values.
+  When both are present they must agree with `duration_s` within the documented
+  measurement tolerance. They are **producer claims / modelled estimates**
+  under the v0.18 trust boundary (Energy Arc invariant E1a), never
+  observation-chain readings. A field is added to the attested content only when
+  provided, so a record with no energy re-hashes byte-identically to a pre-v0.23
+  record for the same core inputs (family golden vector unchanged).
+
+### Security
+
+- **Training-fit tamper fails closed (ADR-0010 semantics).** A committed
+  `training[<strategy>]` record whose stored parameters no longer re-hash to
+  their embedded commitment raises `TrainingCalibrationTamperError` at the
+  shared `resolve_strategy_params` boundary and in every consuming CLI
+  (`train-analyze`, `train-what-if`) → exit 2, rather than silently falling
+  back to defaults. Tampering any bound field (α, β, baseline, R², RMSE,
+  strategy, run set, or energy aggregate) is detected. A record with **no**
+  commitment is honoured as legacy (hand-written / pre-v0.23) with unchanged
+  behaviour; the serving `calibration_commitment` is a separate schema and is
+  never touched by a training write (and vice-versa).
+- **Step-log ingestion is bounded and fail-closed.** Files must be regular,
+  non-symlink, ≤10 MB and ≤100 000 lines, read through one bounded file
+  descriptor as strict UTF-8;
+  each line must be a JSON object carrying exactly `{step, duration_s, samples,
+  power_w?}` — unknown keys are rejected (a typo'd `"power"` cannot silently
+  vanish), types and bounds are enforced (integers where required, finite
+  positive bounded numbers, NaN/±∞ refused), step ids must be strictly
+  increasing, and a malformed line raises naming its 1-based number. `power_w`
+  must be present on every line of a run or none —
+  partial coverage is an error (no silent averaging over gaps), enforced again
+  across runs at fit time.
+- **Wire floats rejected and values canonicalized for energy fields.** `energy_wh` / `mean_power_w` on
+  the `training-run@1` wire accept only an `int ≥ 0` or a decimal *string* that
+  survives an IEEE-754 round-trip losslessly (`Decimal(s) == Decimal(repr(float(s)))`,
+  else rejected as not representable); a bare `float` is refused before any
+  coercion (floats are non-portable across encoders). Integers and equivalent
+  decimal strings now land on the same canonical string and content hash.
+- **Atomic model persistence and scoped commitments.** Training-fit upserts use
+  an owner-only temporary file plus atomic replace, reject symlink targets, and
+  refuse to overwrite a malformed existing model. Consumers also verify that a
+  committed record's declared strategy matches the map key, preventing a clean
+  commitment from being transplanted across strategies.
+- The energy figures on a `training-run@1` and the fitted per-strategy power are
+  **producer claims** under the v0.18 trust boundary (E1a): attributed as such,
+  emit-only, never chained into the observation/energy stores, never turned into
+  an `energy-reading@1`, and never signed by this suite.
+
 ## [0.22.0] - 2026-07-16
 
 ### Added
@@ -379,8 +462,8 @@ throughput gain with the lowest overhead?* — extended from serving
   envelopes into a verifiable provenance DAG without touching the frozen
   `evidence-ref@1` envelope. Fail-closed validation of parent hashes against
   the family lowercase-hex discipline; floats rejected on the wire (rounded
-  upstream). EU AI Act Art. 12 record-keeping / GPAI compute documentation as
-  a by-product of the optimization tool.
+  upstream). This provenance artifact can support broader operator technical
+  documentation; it is not standalone regulatory compliance evidence.
 
 ### Security
 
@@ -767,7 +850,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...v0.20.0

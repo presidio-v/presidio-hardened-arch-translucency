@@ -4226,8 +4226,30 @@ def evidence_emit_cmd(
 # ---------------------------------------------------------------------------
 
 
-def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
-    """Render a TrainingAnalysisResult as a Rich table + recommendation panel."""
+def _samples_per_second_per_watt(r, watts_per_device: float) -> float | None:  # noqa: ANN001
+    """samples/s/W = tp / (δ × watts_per_device); None when no feasible degree."""
+    if not r.feasible or not r.optimal_degree or watts_per_device <= 0.0:
+        return None
+    return r.estimated_samples_per_second / (r.optimal_degree * watts_per_device)
+
+
+def _render_training_results(
+    result,  # noqa: ANN001
+    show_all: bool,
+    energy_info: Optional[dict] = None,  # noqa: UP045
+) -> None:
+    """Render a TrainingAnalysisResult as a Rich table + recommendation panel.
+
+    When *energy_info* is supplied (fitted per-strategy power, or an explicit
+    ``--device-power-watts`` placeholder) an additive ``Samples/s/W`` column is
+    shown; the energy-best *feasible* strategy is marked only when every
+    feasible strategy has comparable power data. Energy never changes the
+    recommendation and never excludes a strategy (memory stays the only hard
+    constraint). Without energy data the table is byte-identical to before.
+    """
+    by_strategy: dict = (energy_info or {}).get("by_strategy", {})
+    energy_best: str | None = (energy_info or {}).get("best")
+
     table = Table(
         title="Training parallelism analysis (architectural translucency)",
         box=box.SIMPLE_HEAVY,
@@ -4239,6 +4261,9 @@ def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
     table.add_column("Mem/device GB", justify="right")
     table.add_column("Feasible", justify="center")
     table.add_column("Gain %", justify="right")
+    if energy_info is not None:
+        table.add_column("Samples/s/W", justify="right")
+        table.add_column("Energy", justify="center")
 
     for r in result.strategies:
         if not show_all and not r.feasible:
@@ -4250,7 +4275,7 @@ def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
             and r.strategy == result.recommended_strategy
         )
         style = "bold green" if highlight else None
-        table.add_row(
+        row = [
             r.strategy.value,
             str(r.optimal_degree) if r.optimal_degree else "—",
             f"{r.estimated_samples_per_second:,.2f}",
@@ -4258,10 +4283,24 @@ def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
             f"{r.per_device_memory_gb:.2f}",
             marker,
             f"{r.throughput_gain_pct:+.1f}",
-            style=style,
-        )
+        ]
+        if energy_info is not None:
+            wpd = by_strategy.get(r.strategy.value)
+            spw = (
+                _samples_per_second_per_watt(r, wpd)
+                if isinstance(wpd, (int, float))
+                else None
+            )
+            row.append(f"{spw:,.4f}" if spw is not None else "—")
+            row.append("[yellow]⚡ best[/]" if r.strategy.value == energy_best else "")
+        table.add_row(*row, style=style)
 
     console.print(table)
+    if energy_info is not None and not energy_info.get("complete", False):
+        console.print(
+            "[dim]Energy ranking incomplete: samples/s/W is shown only where "
+            "power is calibrated; no cross-strategy energy-best claim is made.[/]"
+        )
 
     if result.recommended_strategy is None:
         console.print(
@@ -4289,6 +4328,316 @@ def _render_training_results(result, show_all: bool) -> None:  # noqa: ANN001
             title="Recommendation",
         )
     )
+
+
+def _build_training_energy_info(
+    result,  # noqa: ANN001
+    device_power_watts: Optional[float],  # noqa: UP045
+):
+    """Assemble the ``samples/s/W`` energy overlay for a training analysis.
+
+    Returns ``None`` when neither a fitted per-strategy power figure nor an
+    explicit ``--device-power-watts`` placeholder is available (so the table
+    stays byte-identical). Otherwise returns ``{"by_strategy": {strategy: wpd},
+    "best": strategy|None}`` where ``wpd`` is the effective per-device watts (the
+    explicit flag overrides the fitted figure). ``best`` is set only when every
+    feasible strategy has comparable power data; otherwise the overlay is
+    marked incomplete and no energy-best claim is made. Fails closed on a
+    tampered training record via ``resolve_training_energy``.
+    """
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        ParallelismStrategy,
+        resolve_training_energy,
+    )
+
+    by_strategy: dict = {}
+    for r in result.strategies:
+        wpd: float | None = None
+        if device_power_watts is not None:
+            wpd = device_power_watts
+        else:
+            fitted = resolve_training_energy(ParallelismStrategy(r.strategy.value))
+            if fitted is not None:
+                wpd = fitted["watts_per_device"]
+        if wpd is not None:
+            by_strategy[r.strategy.value] = wpd
+
+    if not by_strategy:
+        return None
+
+    feasible = [r for r in result.strategies if r.feasible and r.optimal_degree]
+    complete = all(r.strategy.value in by_strategy for r in feasible)
+    best_strategy: str | None = None
+    best_spw = -1.0
+    for r in feasible if complete else []:
+        wpd = by_strategy.get(r.strategy.value)
+        if wpd is None:
+            continue
+        spw = _samples_per_second_per_watt(r, wpd)
+        if spw is not None and spw > best_spw:
+            best_spw = spw
+            best_strategy = r.strategy.value
+    return {"by_strategy": by_strategy, "best": best_strategy, "complete": complete}
+
+
+def _training_commitment_line(statuses: list[tuple[str, dict]]) -> str:
+    """One dim line summarising per-strategy training-calibration commitments.
+
+    *statuses* is a list of ``(strategy, {"status", "digest"})`` for strategies
+    that carry a training record (``uncalibrated`` ones are omitted). ``ok``
+    shows the digest prefix; ``legacy`` flags an uncommitted hand-written fit.
+    """
+    if not statuses:
+        return (
+            "[dim]Training calibration: n/a (uncalibrated — default overhead "
+            "parameters)[/]"
+        )
+    parts = []
+    for strategy, status in statuses:
+        kind = status.get("status")
+        if kind == "ok":
+            digest = (status.get("digest") or "")[:16]
+            parts.append(f"{strategy} [green]{digest}…[/]")
+        elif kind == "legacy":
+            parts.append(f"{strategy} [yellow]legacy[/]")
+    return "[dim]Training calibration commitments: " + ", ".join(parts) + "[/]"
+
+
+def _resolve_training_commitments_or_exit(strategies) -> list[tuple[str, dict]]:  # noqa: ANN001
+    """Resolve each strategy's training commitment, failing closed on tamper.
+
+    A present-but-mismatched training commitment raises
+    ``TrainingCalibrationTamperError`` → exit 2 (same pattern as the serving
+    commitment gate). ``uncalibrated`` strategies are dropped from the summary.
+    """
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        ParallelismStrategy,
+        TrainingCalibrationTamperError,
+        resolve_training_commitment,
+    )
+
+    collected: list[tuple[str, dict]] = []
+    for strategy in strategies:
+        try:
+            status = resolve_training_commitment(ParallelismStrategy(strategy))
+        except TrainingCalibrationTamperError as exc:
+            err_console.print(f"[bold red]Training calibration tamper:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        if status["status"] != "uncalibrated":
+            collected.append((strategy, status))
+    return collected
+
+
+def _render_training_calibration(strategy: str, result, path: Path) -> None:  # noqa: ANN001
+    """Render a fitted training calibration: params, fit quality, energy, per-run."""
+    table = Table(
+        title=f"Training calibration fit ({strategy}) — observed vs predicted",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Degree δ", justify="right")
+    table.add_column("Observed samples/s", justify="right")
+    table.add_column("Predicted samples/s", justify="right")
+    table.add_column("Duration (s)", justify="right")
+    table.add_column("Power (W)", justify="right")
+    for run, pred, resid in zip(
+        result.runs, result.predictions, result.residuals, strict=True
+    ):
+        resid_color = (
+            "green"
+            if abs(resid) < 0.01 * max(run.samples_per_second, 1.0)
+            else "yellow"
+        )
+        power = f"{run.mean_power_w:,.1f}" if run.mean_power_w is not None else "—"
+        table.add_row(
+            str(run.degree),
+            f"[{resid_color}]{run.samples_per_second:,.2f}[/]",
+            f"{pred:,.2f}",
+            f"{run.duration_s:,.1f}",
+            power,
+        )
+
+    saturated = bool(getattr(result, "saturated", False))
+    r2_color = "dim" if saturated else "green" if result.r_squared >= 0.95 else "yellow"
+    r2_note = (
+        "  [dim](exactly determined fit — R²/RMSE uninformative at this run "
+        "count; add runs at more degrees to test the model)[/]"
+        if saturated
+        else ""
+    )
+    energy_lines = ""
+    if result.mean_power_w is not None:
+        energy_lines = (
+            f"[bold]Mean power:[/]         [cyan]{result.mean_power_w:,.2f}[/] W\n"
+            f"[bold]Watts/device:[/]       [cyan]{result.watts_per_device:,.2f}[/] "
+            "W/device\n"
+        )
+    body = (
+        f"[bold]Baseline:[/]           [cyan]{result.baseline_samples_per_second:,.3f}"
+        "[/] samples/s (δ=1)\n"
+        f"[bold]Overhead α:[/]         [cyan]{result.overhead_alpha:.4f}[/]\n"
+        f"[bold]Overhead β:[/]         [cyan]{result.overhead_beta:.4f}[/]\n"
+        f"{energy_lines}"
+        f"[bold]R²:[/]                 [{r2_color}]{result.r_squared:.4f}[/]{r2_note}\n"
+        f"[bold]RMSE:[/]               {result.rmse:,.4f} samples/s\n\n"
+        f"[dim]Committed and written to {path} (training.{strategy}).\n"
+        f"`pat train-analyze` / `train-what-if` now use these calibrated "
+        "overhead parameters.[/]"
+    )
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title=(
+                "[bold blue]Presidio Architectural Translucency — "
+                f"Training calibration ({strategy})[/]"
+            ),
+            border_style="blue",
+        )
+    )
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _parse_run_spec(spec: str, max_degree: int) -> tuple[int, str]:
+    """Parse a ``--run degree:path`` spec into ``(degree, path)`` (fail-closed)."""
+    if ":" not in spec:
+        raise InputValidationError(
+            f"--run {spec!r} must be 'degree:path' (e.g. 4:logs/ddp4.jsonl)"
+        )
+    degree_str, _, path = spec.partition(":")
+    try:
+        degree = int(degree_str)
+    except ValueError as exc:
+        raise InputValidationError(
+            f"--run {spec!r}: degree must be an integer, got {degree_str!r}"
+        ) from exc
+    if not (1 <= degree <= max_degree):
+        raise InputValidationError(
+            f"--run {spec!r}: degree {degree} out of range (1..{max_degree})"
+        )
+    if not path.strip():
+        raise InputValidationError(f"--run {spec!r}: empty log path")
+    return degree, path
+
+
+def _training_calibration_json(strategy: str, result, path: Path) -> dict:  # noqa: ANN001
+    payload: dict = {
+        "strategy": strategy,
+        "baseline_samples_per_second": result.baseline_samples_per_second,
+        "overhead_alpha": result.overhead_alpha,
+        "overhead_beta": result.overhead_beta,
+        "microbatches": result.microbatches,
+        "r_squared": result.r_squared,
+        "rmse": result.rmse,
+        "runs": [
+            {
+                "degree": run.degree,
+                "samples_per_second": run.samples_per_second,
+                "duration_s": run.duration_s,
+                "mean_power_w": run.mean_power_w,
+            }
+            for run in result.runs
+        ],
+        "model_path": str(path),
+    }
+    if result.mean_power_w is not None:
+        payload["mean_power_w"] = result.mean_power_w
+        payload["watts_per_device"] = result.watts_per_device
+    return payload
+
+
+@app.command("train-calibrate")
+def train_calibrate_cmd(
+    strategy: str = typer.Option(
+        ...,
+        "--strategy",
+        help="Parallelism strategy to calibrate. One of: data, fsdp, tensor, pipeline.",
+    ),
+    runs: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--run",
+        help=(
+            "A run as 'degree:path' — the parallelism degree and the JSON-Lines "
+            "step log recorded at that degree (repeat the flag). Every fit requires "
+            "a degree-1 anchor. α/β strategies "
+            "need >=3 distinct degrees for the full fit (exactly 2 hold β at the "
+            "default); pipeline needs >=2."
+        ),
+    ),
+    microbatches: Optional[int] = typer.Option(  # noqa: UP045
+        None,
+        "--microbatches",
+        help="Pipeline microbatches m (bubble model). Default: 8.",
+        min=1,
+        max=4096,
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the fitted calibration as JSON instead of a table."
+    ),
+) -> None:
+    """Fit training-overhead parameters from recorded step-time logs (L-TR-1).
+
+    Parses one JSON-Lines step log per run (see the step-log contract in
+    `train_calibrate.py`), fits ``tp(δ) = baseline · δ · eff(δ)`` for the
+    strategy, and writes a committed record into `~/.pat/model.json` under
+    `training.<strategy>`. Energy figures are aggregated when every run's log
+    carries `power_w`. Fail-closed on malformed logs or too-few distinct degrees.
+
+    \b
+      pat train-calibrate --strategy data \\
+          --run 1:logs/ddp1.jsonl --run 4:logs/ddp4.jsonl
+    """
+    from presidio_arch_translucency.train_calibrate import (  # noqa: PLC0415
+        StepLogError,
+        TrainingCalibrationError,
+        fit_training_calibration,
+        parse_step_log,
+        write_training_fit,
+    )
+    from presidio_arch_translucency.training import (  # noqa: PLC0415
+        DEFAULT_MICROBATCHES,
+        STRATEGY_PARAMS,
+        VALID_STRATEGIES,
+        ParallelismStrategy,
+    )
+
+    try:
+        strategy_str = sanitize_layer(strategy, VALID_STRATEGIES)
+        strategy_enum = ParallelismStrategy(strategy_str)
+        max_degree = STRATEGY_PARAMS[strategy_enum].max_degree
+        parsed_runs = []
+        for spec in runs:
+            degree, path = _parse_run_spec(spec, max_degree)
+            parsed_runs.append((degree, parse_step_log(path)))
+        result = fit_training_calibration(
+            strategy_enum,
+            parsed_runs,
+            microbatches=microbatches or DEFAULT_MICROBATCHES,
+        )
+        path = write_training_fit(strategy_enum, result)
+    except (InputValidationError, StepLogError, TrainingCalibrationError) as exc:
+        err_console.print(f"[bold red]Training calibration error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "TRAIN_CALIBRATE_INVOCATION",
+        {
+            "strategy": strategy_str,
+            "runs": len(parsed_runs),
+            "has_energy": result.mean_power_w is not None,
+        },
+    )
+    if as_json:
+        typer.echo(
+            json.dumps(
+                _training_calibration_json(strategy_str, result, path),
+                separators=(",", ":"),
+            )
+        )
+        return
+    _render_training_calibration(strategy_str, result, path)
 
 
 @app.command("train-analyze")
@@ -4332,6 +4681,20 @@ def train_analyze_cmd(
         "--show-all",
         help="Also list strategies with no feasible degree.",
     ),
+    device_power_watts: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--device-power-watts",
+        help=(
+            "Per-device board power in watts (MVP placeholder, 1–2000). When "
+            "given — or when a committed training fit carries fitted power — a "
+            "samples/s/W column is shown; an energy-best feasible strategy is "
+            "marked only when all feasible strategies have comparable power. "
+            "Energy never changes the recommendation or excludes a "
+            "strategy."
+        ),
+        min=1.0,
+        max=2000.0,
+    ),
 ) -> None:
     """
     Analyze a training workload and recommend the parallelism strategy.
@@ -4342,6 +4705,8 @@ def train_analyze_cmd(
     """
     from presidio_arch_translucency.training import (  # noqa: PLC0415
         DEFAULT_MICROBATCHES,
+        ORDERED_STRATEGIES,
+        TrainingCalibrationTamperError,
         TrainingDomainError,
         analyze_training,
     )
@@ -4356,6 +4721,13 @@ def train_analyze_cmd(
         device_mem = sanitize_bounded_number(
             device_memory_gb, "device_memory_gb", 1e-3, 1e6
         )
+        power = (
+            sanitize_bounded_number(
+                device_power_watts, "device_power_watts", 1.0, 2000.0
+            )
+            if device_power_watts is not None
+            else None
+        )
         result = analyze_training(
             baseline_samples_per_second=sps,
             model_memory_gb=model_mem,
@@ -4365,6 +4737,9 @@ def train_analyze_cmd(
         )
     except (InputValidationError, TrainingDomainError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except TrainingCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Training calibration tamper:[/] {exc}")
         raise typer.Exit(code=2) from exc
     log_recommendation(
         layer=(
@@ -4382,7 +4757,18 @@ def train_analyze_cmd(
             0.0,
         ),
     )
-    _render_training_results(result, show_all=show_all)
+    try:
+        energy_info = _build_training_energy_info(result, power)
+    except TrainingCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Training calibration tamper:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    _render_training_results(result, show_all=show_all, energy_info=energy_info)
+
+    statuses = _resolve_training_commitments_or_exit(
+        [s.value for s in ORDERED_STRATEGIES]
+    )
+    if statuses:
+        console.print(_training_commitment_line(statuses))
 
 
 @app.command("train-what-if")
@@ -4425,6 +4811,17 @@ def train_what_if_cmd(
         help="Pipeline microbatches m. Default: 8.",
         min=1,
     ),
+    device_power_watts: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--device-power-watts",
+        help=(
+            "Per-device board power in watts (MVP placeholder, 1–2000). When "
+            "given — or when a committed training fit carries fitted power — a "
+            "samples/s/W figure is shown. Energy is informational only."
+        ),
+        min=1.0,
+        max=2000.0,
+    ),
     as_json: bool = typer.Option(
         False, "--json", help="Emit the result as JSON instead of a table."
     ),
@@ -4438,8 +4835,11 @@ def train_what_if_cmd(
         DEFAULT_MICROBATCHES,
         VALID_STRATEGIES,
         ParallelismStrategy,
+        TrainingCalibrationTamperError,
         TrainingDomainError,
         evaluate_strategy,
+        resolve_training_commitment,
+        resolve_training_energy,
     )
 
     try:
@@ -4453,8 +4853,16 @@ def train_what_if_cmd(
         device_mem = sanitize_bounded_number(
             device_memory_gb, "device_memory_gb", 1e-3, 1e6
         )
+        power = (
+            sanitize_bounded_number(
+                device_power_watts, "device_power_watts", 1.0, 2000.0
+            )
+            if device_power_watts is not None
+            else None
+        )
+        strategy_enum = ParallelismStrategy(strategy_str)
         r = evaluate_strategy(
-            ParallelismStrategy(strategy_str),
+            strategy_enum,
             degree,
             baseline_samples_per_second=sps,
             model_memory_gb=model_mem,
@@ -4464,33 +4872,60 @@ def train_what_if_cmd(
     except (InputValidationError, TrainingDomainError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
+    except TrainingCalibrationTamperError as exc:
+        # evaluate_strategy resolves the (possibly committed) training params;
+        # a tampered training record fails closed here too (exit 2).
+        err_console.print(f"[bold red]Training calibration tamper:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    # Optional energy overlay: explicit --device-power-watts overrides a
+    # committed fitted watts/device. Fails closed on a tampered training record.
+    try:
+        watts_per_device: float | None = power
+        if watts_per_device is None:
+            fitted = resolve_training_energy(strategy_enum)
+            if fitted is not None:
+                watts_per_device = fitted["watts_per_device"]
+        commitment = resolve_training_commitment(strategy_enum)
+    except TrainingCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Training calibration tamper:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    spw = (
+        _samples_per_second_per_watt(r, watts_per_device)
+        if watts_per_device is not None
+        else None
+    )
+
     if as_json:
-        typer.echo(
-            json.dumps(
-                {
-                    "strategy": r.strategy.value,
-                    "degree": r.optimal_degree,
-                    "estimated_samples_per_second": r.estimated_samples_per_second,
-                    "scaling_efficiency_pct": r.scaling_efficiency_pct,
-                    "per_device_memory_gb": r.per_device_memory_gb,
-                    "feasible": r.feasible,
-                    "throughput_gain_pct": r.throughput_gain_pct,
-                },
-                separators=(",", ":"),
-            )
-        )
+        payload = {
+            "strategy": r.strategy.value,
+            "degree": r.optimal_degree,
+            "estimated_samples_per_second": r.estimated_samples_per_second,
+            "scaling_efficiency_pct": r.scaling_efficiency_pct,
+            "per_device_memory_gb": r.per_device_memory_gb,
+            "feasible": r.feasible,
+            "throughput_gain_pct": r.throughput_gain_pct,
+        }
+        if spw is not None:
+            payload["samples_per_second_per_watt"] = round(spw, 6)
+        typer.echo(json.dumps(payload, separators=(",", ":")))
         return
     feasibility = "[green]feasible[/]" if r.feasible else "[bold red]INFEASIBLE[/]"
+    energy_line = ""
+    if spw is not None:
+        energy_line = f"\n[dim]Energy: ≈ {spw:,.4f} samples/s/W (informational).[/]"
     console.print(
         Panel(
             f"[bold]{r.strategy.value}[/] at δ = {r.optimal_degree}: "
             f"≈ {r.estimated_samples_per_second:,.2f} samples/s "
             f"({r.throughput_gain_pct:+.1f}%, "
             f"{r.scaling_efficiency_pct:.1f}% scaling efficiency), "
-            f"{r.per_device_memory_gb:.2f} GB/device — {feasibility}.",
+            f"{r.per_device_memory_gb:.2f} GB/device — {feasibility}.{energy_line}",
             title="What-if (training)",
         )
     )
+    if commitment["status"] != "uncalibrated":
+        console.print(_training_commitment_line([(strategy_str, commitment)]))
 
 
 @app.command("train-evidence-emit")
@@ -4534,6 +4969,25 @@ def train_evidence_emit_cmd(
     dataset_hash: Optional[str] = typer.Option(  # noqa: UP045
         None, "--dataset-hash", help="Content hash of the training dataset."
     ),
+    energy_wh: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-wh",
+        help=(
+            'Run energy in watt-hours as an int or decimal STRING (e.g. "12.5"). '
+            "A producer's measured claim / modelled estimate (Energy Arc E1a), "
+            "not an observation-chain reading. Floats rejected on the wire — pass "
+            "a decimal string. Included in the attested content only when given."
+        ),
+    ),
+    mean_power_w: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--mean-power-w",
+        help=(
+            'Mean total run power in watts as an int or decimal STRING (e.g. "420.0"). '
+            "Same producer-claim discipline as --energy-wh; independently optional. "
+            "When both are supplied they must agree with --duration-s."
+        ),
+    ),
 ) -> None:
     """Emit a key-less Layer-0 training-run record as JSON.
 
@@ -4541,8 +4995,14 @@ def train_evidence_emit_cmd(
     ``training-run@1`` record to stdout. Pipe it to the signing-bridge sidecar,
     which adds the Ed25519 signature. ``--parent`` hashes chain the run to the
     upstream evidence that authorized it (classification, gate decision),
-    forming a verifiable provenance DAG across the suite — traceability
-    (EU AI Act Art. 12 record-keeping) as a data structure.
+    forming a verifiable provenance DAG across the suite. This can support
+    broader operator documentation but is not standalone compliance evidence.
+
+    Optional ``--energy-wh`` / ``--mean-power-w`` add producer-attributed energy
+    figures to the attested content (additive; absent → byte-identical to a
+    pre-v0.23 record). They are string-passed to the library, which rejects
+    floats and non-round-trip decimals on the wire. When both are present, the
+    library rejects a contradiction with the stated run duration.
     """
     from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
         EvidenceProducerError,
@@ -4567,6 +5027,8 @@ def train_evidence_emit_cmd(
             parents=tuple(parent),
             model_hash=model_hash,
             dataset_hash=dataset_hash,
+            energy_wh=energy_wh,
+            mean_power_w=mean_power_w,
         )
     except (InputValidationError, EvidenceProducerError) as exc:
         err_console.print(f"[bold red]Evidence error:[/] {exc}")
