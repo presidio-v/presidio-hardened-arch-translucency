@@ -87,6 +87,90 @@ def test_alert_group_negative_cost_budget_raises() -> None:
         build_alert_group(cost_budget=-1.0)
 
 
+# ── energy alert group (v0.21.0) ──────────────────────────────────────────────
+
+
+def test_default_alert_group_has_no_energy_rules() -> None:
+    names = _alert_names(build_alert_group())
+    assert "PatIdleEnergyWaste" not in names
+    assert "PatEnergyPerRequestOverBudget" not in names
+
+
+def test_energy_budget_adds_both_energy_alerts() -> None:
+    names = _alert_names(build_alert_group(energy_budget=0.5))
+    assert "PatEnergyPerRequestOverBudget" in names
+    assert "PatIdleEnergyWaste" in names
+
+
+def test_energy_flag_adds_only_idle_alert() -> None:
+    names = _alert_names(build_alert_group(energy=True))
+    assert "PatIdleEnergyWaste" in names
+    assert "PatEnergyPerRequestOverBudget" not in names
+
+
+def test_energy_budget_expr_and_modelled_annotation() -> None:
+    group = build_alert_group(energy_budget=0.25)
+    over = next(r for r in group.rules if r.alert == "PatEnergyPerRequestOverBudget")
+    assert over.expr == "pat_energy_per_request_joules > 0.25"
+    assert "modelled" in over.annotations["description"]
+    assert "0.25" in over.annotations["description"]
+
+
+def test_idle_energy_waste_uses_real_metrics() -> None:
+    group = build_alert_group(energy=True)
+    idle = next(r for r in group.rules if r.alert == "PatIdleEnergyWaste")
+    assert "pat_power_watts > 0" in idle.expr
+    assert "pat_predicted_recommended_replicas < pat_recommended_replicas" in idle.expr
+
+
+def test_zero_energy_budget_raises() -> None:
+    with pytest.raises(RuleError, match="must be > 0"):
+        build_alert_group(energy_budget=0.0)
+
+
+def test_negative_energy_budget_raises() -> None:
+    with pytest.raises(RuleError):
+        build_alert_group(energy_budget=-1.0)
+
+
+def test_energy_rules_yaml_round_trips() -> None:
+    text = render_rules_yaml(build_rule_groups(energy_budget=0.5))
+    assert 'alert: "PatEnergyPerRequestOverBudget"' in text
+    assert 'alert: "PatIdleEnergyWaste"' in text
+    assert "pat_energy_per_request_joules > 0.5" in text
+
+
+def test_default_rules_yaml_unchanged_without_energy() -> None:
+    # The pre-v0.21 default output must be byte-stable (chart bundle sync).
+    text = render_rules_yaml(build_rule_groups())
+    assert "PatIdleEnergyWaste" not in text
+    assert "PatEnergyPerRequestOverBudget" not in text
+
+
+def test_cli_energy_budget_renders_yaml() -> None:
+    result = invoke("rules", "--energy-budget", "0.5")
+    assert result.exit_code == 0
+    assert "PatEnergyPerRequestOverBudget" in result.output
+    assert "PatIdleEnergyWaste" in result.output
+
+
+def test_cli_energy_flag_only_idle() -> None:
+    result = invoke("rules", "--energy")
+    assert result.exit_code == 0
+    assert "PatIdleEnergyWaste" in result.output
+    assert "PatEnergyPerRequestOverBudget" not in result.output
+
+
+def test_cli_zero_energy_budget_errors() -> None:
+    result = invoke("rules", "--energy-budget", "0")
+    assert result.exit_code == 2
+
+
+def test_cli_nan_energy_budget_rejected() -> None:
+    result = invoke("rules", "--energy-budget", "nan")
+    assert result.exit_code == 2
+
+
 def test_render_minimal_alert_omits_optional_blocks() -> None:
     text = render_rules_yaml(
         [RuleGroup(name="g", rules=[Rule(alert="A", expr="up == 0")])]

@@ -151,6 +151,59 @@
       "targets": [
         { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_build_info", "legendFormat": "v{{version}}" }
       ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Power draw by layer (W) — modelled",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Modelled total power at the recommended replica count per layer (analytic energy model, not a measurement).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "watt", "custom": { "lineWidth": 2, "fillOpacity": 8 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_power_watts", "legendFormat": "{{layer}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_measured_power_watts", "legendFormat": "measured ({{layer}}/{{meter}})" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Energy per request by layer (J) — modelled",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Modelled joules per request at the recommended replica count per layer (analytic energy model).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "joule", "custom": { "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_energy_per_request_joules", "legendFormat": "{{layer}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "bargauge",
+      "title": "Energy-Efficiency Index by layer — modelled",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Throughput gain vs energy-intensity change from the single-replica baseline (EEI > 1 is a good trade). Modelled by the analytic energy model.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "decimals": 2 }, "overrides": [] },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_energy_efficiency_index", "legendFormat": "{{layer}}" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Measured power by layer/meter (W)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Most recent measured power draw per layer and meter from the chained energy-observation store. Present only when `pat observe --energy` readings exist.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "watt", "decimals": 1 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value_and_name" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "pat_measured_power_watts", "legendFormat": "{{layer}}/{{meter}}" }
+      ]
     }
   ]
 }

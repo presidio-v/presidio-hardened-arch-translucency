@@ -94,8 +94,19 @@ class TestRunDependencyAuditBranches:
 
     @patch("presidio_arch_translucency.security.subprocess.run")
     def test_audit_finds_vulnerabilities_returns_false(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="CVE-2024-0001 found")
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="CVE-2024-0001 found", stderr=""
+        )
         assert run_dependency_audit() is False
+
+    @patch("presidio_arch_translucency.security.subprocess.run")
+    def test_audit_module_absent_is_not_reported_as_vulnerability(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="python: No module named pip_audit",
+        )
+        assert run_dependency_audit() is True
 
     @patch(
         "presidio_arch_translucency.security.subprocess.run",

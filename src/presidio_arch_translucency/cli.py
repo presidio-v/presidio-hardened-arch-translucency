@@ -55,6 +55,7 @@ from presidio_arch_translucency.model import (
     resolve_calibration_commitment,
     resolve_concurrency,
 )
+from presidio_arch_translucency.observe import VALID_METERS
 from presidio_arch_translucency.security import (
     InputValidationError,
     configure_logging,
@@ -400,6 +401,17 @@ def export_cmd(
         ),
         min=0.0,
     ),
+    replica_power_watts: float = typer.Option(
+        DEFAULT_REPLICA_POWER_WATTS,
+        "--replica-power-watts",
+        help=(
+            "Per-replica peak power in watts for the MODELLED energy gauges "
+            f"(MVP placeholder ≈{DEFAULT_REPLICA_POWER_WATTS:.0f} W; same as "
+            "`pat analyze`)."
+        ),
+        min=0.1,
+        max=10000.0,
+    ),
     otlp: Optional[str] = typer.Option(  # noqa: UP045
         None,
         "--otlp",
@@ -462,6 +474,9 @@ def export_cmd(
         rps = sanitize_requests_per_second(requests_per_second)
         lat = sanitize_latency_ms(avg_latency_ms)
         layer_str = sanitize_layer(current_layer, VALID_LAYERS)
+        watts = sanitize_bounded_number(
+            replica_power_watts, "replica_power_watts", 0.1, 10000.0
+        )
     except InputValidationError as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
@@ -503,13 +518,20 @@ def export_cmd(
         )
 
     def _build_all_metrics() -> list:
+        from presidio_arch_translucency.export import (  # noqa: PLC0415
+            measured_energy_metrics,
+        )
+
         metrics = build_metrics(
             rps,
             lat,
             current,
             layer=model_layer,
             cost_per_replica_hour=cost_per_replica_hour,
+            replica_power_watts=watts,
         )
+        # Measured power gauges appear only when the energy store has readings.
+        metrics = metrics + measured_energy_metrics(db_path=db)
         if predict:
             metrics = metrics + _prediction_metrics()
         return metrics
@@ -669,6 +691,23 @@ def rules_cmd(
         ),
         min=0.0,
     ),
+    energy_budget: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-budget",
+        help=(
+            "J/request budget for the energy alert (fires on the MODELLED "
+            "pat_energy_per_request_joules gauge). Also enables the idle-energy "
+            "alert. Omit to skip the over-budget alert."
+        ),
+    ),
+    energy: bool = typer.Option(
+        False,
+        "--energy",
+        help=(
+            "Include the idle-energy-waste alert (PatIdleEnergyWaste) even without "
+            "--energy-budget."
+        ),
+    ),
     surge_ratio: float = typer.Option(
         1.2,
         "--demand-surge-ratio",
@@ -712,6 +751,16 @@ def rules_cmd(
             err_console.print(f"[bold red]Input validation error:[/] {exc}")
             raise typer.Exit(code=2) from exc
 
+    # Reject nan/inf that Typer's range does not (house style, mirrors analyze).
+    if energy_budget is not None:
+        try:
+            energy_budget = sanitize_bounded_number(
+                energy_budget, "energy_budget", 0.0, 1.0e12
+            )
+        except InputValidationError as exc:
+            err_console.print(f"[bold red]Input validation error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
     try:
         groups = build_rule_groups(
             current_layer=layer_str,
@@ -719,6 +768,8 @@ def rules_cmd(
             surge_ratio=surge_ratio,
             trend_threshold=trend_threshold,
             for_duration=for_duration,
+            energy_budget=energy_budget,
+            energy=energy,
         )
     except RuleError as exc:
         err_console.print(f"[bold red]Rules error:[/] {exc}")
@@ -729,6 +780,7 @@ def rules_cmd(
         {
             "layer": layer_str or "none",
             "cost_alert": cost_budget is not None,
+            "energy_alert": energy_budget is not None or energy,
         },
     )
     typer.echo(render_rules_yaml(groups), nl=False)
@@ -1672,6 +1724,17 @@ def calibrate_cmd(
             "throughput fit too (--observation or --benchmark)."
         ),
     ),
+    energy_from_store: bool = typer.Option(
+        False,
+        "--energy-from-store",
+        help=(
+            "Fit the energy parameters from the chained measured-energy store "
+            "(populated by `pat observe --energy`) instead of --energy-observation "
+            "quads. Filtered to --layer when a named layer is given. Still needs a "
+            "throughput fit (--observation/--benchmark). Mutually exclusive with "
+            "--energy-observation."
+        ),
+    ),
     layer: str = typer.Option(
         DEFAULT_LAYER_NAME,
         "--layer",
@@ -1739,6 +1802,7 @@ def calibrate_cmd(
     """
     from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
         CalibrationError,
+        energy_observations_from_store,
         fit_calibration,
         fit_energy_calibration,
         parse_energy_observation,
@@ -1750,6 +1814,15 @@ def calibrate_cmd(
     is_named_layer = layer_name != DEFAULT_LAYER_NAME
     observations = observations or []
     energy_observations = energy_observations or []
+
+    # Mutual exclusion (v0.21.0): the energy fit takes its inputs from EITHER
+    # explicit --energy-observation quads OR the measured store, never both.
+    if energy_observations and energy_from_store:
+        err_console.print(
+            "[bold red]Calibration error:[/] --energy-observation and "
+            "--energy-from-store are mutually exclusive; pick one energy source."
+        )
+        raise typer.Exit(code=2)
 
     if benchmark:
         from presidio_arch_translucency.benchmark import (  # noqa: PLC0415
@@ -1795,6 +1868,8 @@ def calibrate_cmd(
         n_points = len(parsed)
 
     # Energy fit (v0.20.0): fitted into the SAME record as the throughput fit.
+    # Energy inputs come from --energy-observation quads (v0.20) or, new in
+    # v0.21.0, the chained measured-energy store (--energy-from-store).
     energy_result = None
     if energy_observations:
         try:
@@ -1802,6 +1877,30 @@ def calibrate_cmd(
                 parse_energy_observation(raw) for raw in energy_observations
             ]
             energy_result = fit_energy_calibration(energy_points)
+        except CalibrationError as exc:
+            err_console.print(f"[bold red]Energy calibration error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+    elif energy_from_store:
+        from presidio_arch_translucency.observe import (  # noqa: PLC0415
+            load_verified_energy_observations,
+        )
+
+        store_layer = layer_name if is_named_layer else None
+        try:
+            rows = load_verified_energy_observations(layer=store_layer)
+        except ValueError as exc:
+            err_console.print(f"[bold red]Energy calibration error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        if not rows:
+            scope = f" for layer {store_layer!r}" if store_layer else ""
+            err_console.print(
+                "[bold red]Energy calibration error:[/] no measured energy "
+                f"observations in the store{scope}. Record some first with "
+                "[bold]pat observe --prometheus URL --energy --energy-meter …[/]."
+            )
+            raise typer.Exit(code=2)
+        try:
+            energy_result = fit_energy_calibration(energy_observations_from_store(rows))
         except CalibrationError as exc:
             err_console.print(f"[bold red]Energy calibration error:[/] {exc}")
             raise typer.Exit(code=2) from exc
@@ -1900,6 +1999,45 @@ def observe_cmd(
     limit: int = typer.Option(
         20, "--limit", help="Number of rows to show with --list.", min=1
     ),
+    energy: bool = typer.Option(
+        False,
+        "--energy",
+        help=(
+            "Measured-energy mode: scrape one watt reading from a real power "
+            "meter via --prometheus and record it to the chained energy store "
+            "(needs --energy-meter and --layer). With --list, list energy "
+            "observations instead of serving ones."
+        ),
+    ),
+    energy_meter: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-meter",
+        help=(
+            "Power meter to read (required with --energy). One of: "
+            f"{', '.join(VALID_METERS)}. An explicit meter is a claim — there is "
+            "no default; the analytic model is not a meter (ADR-0011 E1a)."
+        ),
+    ),
+    energy_window_s: float = typer.Option(
+        60.0,
+        "--energy-window-s",
+        help="Seconds the measured watts integrate over for the joules figure.",
+        min=1.0,
+        max=3600.0,
+    ),
+    energy_watts_query: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-watts-query",
+        help="Override the meter's default watts PromQL query (--energy).",
+    ),
+    energy_gate_query: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-gate-query",
+        help=(
+            "Override the meter's default power-source gate PromQL query "
+            "(--energy). The gate proves a real power interface exists (E1a)."
+        ),
+    ),
     db: Optional[Path] = typer.Option(  # noqa: UP045, B008
         None,
         "--db",
@@ -1922,6 +2060,22 @@ def observe_cmd(
         return
 
     from presidio_arch_translucency import observe as store  # noqa: PLC0415
+
+    # Measured-energy mode (v0.21.0) is a distinct additive surface; without
+    # --energy the behaviour below is byte-identical to today.
+    if energy:
+        _observe_energy(
+            prometheus=prometheus,
+            layer=layer,
+            meter=energy_meter,
+            window_s=energy_window_s,
+            watts_query=energy_watts_query,
+            gate_query=energy_gate_query,
+            list_recent=list_recent,
+            limit=limit,
+            db=db,
+        )
+        return
 
     if list_recent:
         layer_filter = layer.strip().lower() if layer else None
@@ -2019,6 +2173,120 @@ def _observe_from_prometheus(url: str, layer: str | None, db: Path | None) -> No
     )
 
 
+def _observe_energy(
+    *,
+    prometheus: str | None,
+    layer: str | None,
+    meter: str | None,
+    window_s: float,
+    watts_query: str | None,
+    gate_query: str | None,
+    list_recent: bool,
+    limit: int,
+    db: Path | None,
+) -> None:
+    """Measured-energy mode: list the energy store, or scrape+record one watt.
+
+    Recording is single-shot and E1a-gated: the platform must prove a real power
+    source before any watt is written (see
+    :func:`prometheus.fetch_energy_observation`). On any refusal NOTHING is
+    written and the command exits non-zero.
+    """
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+
+    # Validate the meter if supplied: a filter when listing, a claim when
+    # recording. Never a default — an unmeasured meter cannot enter the store.
+    meter_str: Optional[str] = None  # noqa: UP045
+    if meter is not None:
+        meter_str = meter.strip().lower()
+        if meter_str not in VALID_METERS:
+            err_console.print(
+                f"[bold red]Invalid --energy-meter {meter!r}.[/] "
+                f"One of: {', '.join(VALID_METERS)} (measured meters only)."
+            )
+            raise typer.Exit(code=2)
+
+    layer_filter = layer.strip().lower() if layer else None
+
+    if list_recent:
+        rows = store.load_energy_observations(
+            db_path=db, layer=layer_filter, meter=meter_str, limit=limit
+        )
+        total = store.count_energy_observations(
+            db_path=db, layer=layer_filter, meter=meter_str
+        )
+        log_security_event("OBSERVE_ENERGY_LIST", {"rows": len(rows)})
+        _render_energy_observations(rows, total=total)
+        return
+
+    # --- Record mode: a measured single-shot fetch from a real power meter. ---
+    if prometheus is None:
+        err_console.print(
+            "[bold red]--energy records a measured watt and needs a source.[/] "
+            "Supply --prometheus URL (the meter is scraped from Prometheus). "
+            "Nothing was recorded."
+        )
+        raise typer.Exit(code=2)
+    if meter_str is None:
+        err_console.print(
+            "[bold red]--energy requires --energy-meter[/] "
+            f"(one of: {', '.join(VALID_METERS)}). An explicit meter is a claim — "
+            "there is no default. Nothing was recorded."
+        )
+        raise typer.Exit(code=2)
+    if not layer:
+        err_console.print(
+            "[bold red]--energy requires --layer[/] "
+            f"(one of: {', '.join(VALID_LAYERS)}).\n"
+            "[dim]Prometheus does not know the replication layer — tag it.[/]"
+        )
+        raise typer.Exit(code=2)
+    try:
+        layer_str = sanitize_layer(layer, VALID_LAYERS)
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    from presidio_arch_translucency.prometheus import (  # noqa: PLC0415
+        PrometheusError,
+        fetch_energy_observation,
+    )
+
+    try:
+        eobs = fetch_energy_observation(
+            prometheus,
+            layer_str,
+            meter_str,
+            window_s=window_s,
+            watts_query=watts_query,
+            gate_query=gate_query,
+        )
+        store.record_energy_observation(eobs, db_path=db)
+    except (PrometheusError, store.EnergyObservationError) as exc:
+        err_console.print(f"[bold red]Measured-energy collection failed:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    total = store.count_energy_observations(db_path=db)
+    log_security_event(
+        "OBSERVE_ENERGY_RECORD",
+        {"layer": layer_str, "meter": meter_str, "watts": round(eobs.watts, 3)},
+    )
+    # Override marking (P1-1): warn clearly when a query override forfeited the
+    # pinned-metric attestation — the reading is permanently marked in the chain.
+    if eobs.source == "prometheus-override":
+        warn_console.print(
+            "[yellow]⚠ query override active — reading recorded with "
+            "source=prometheus-override; the pinned-metric attestation does not "
+            "apply.[/]"
+        )
+    console.print(
+        f"[green]✓ Measured[/] {eobs.layer} energy via [magenta]{eobs.meter}[/] "
+        f"([cyan]{eobs.watts:.1f} W[/] over {eobs.window_s:.0f}s = "
+        f"{eobs.joules:.0f} J, {eobs.replicas} replicas) → "
+        f"chain seq {total - 1}, {total} total in energy store.\n"
+    )
+
+
 @observe_app.command("verify")
 def observe_verify_cmd(
     db: Optional[Path] = typer.Option(  # noqa: UP045, B008
@@ -2032,51 +2300,70 @@ def observe_verify_cmd(
         help="Exit 0 when the chain is intact but legacy unchained rows remain.",
     ),
 ) -> None:
-    """Verify the observation hash chain and report the first break, if any.
+    """Verify BOTH hash chains (serving + measured energy) and report each.
 
-    Walks the per-observation hash chain (v0.19.0) and detects any post-hoc
-    edit, insertion, deletion, or reorder of chained history relative to the
-    chain head. Rows recorded before chaining existed carry no chain link and
-    are reported as an UNVERIFIABLE legacy prefix — never counted as verified.
+    Walks the per-observation serving chain (v0.19.0) and the parallel
+    measured-energy chain (v0.21.0, ADR-0011 §2), detecting any post-hoc edit,
+    insertion, deletion, or reorder relative to each chain head. Serving rows
+    recorded before chaining existed are an UNVERIFIABLE legacy prefix; the
+    energy table is new in v0.21.0, so it has no legacy prefix by construction.
 
     Honest scope: a clean chain proves the local history was not rewritten after
     the fact; it does NOT prove the readings were honest when captured. Exits 0
-    when the chain is intact and fully covered, 1 when a break is found, and 2
-    when the chain suffix is intact but coverage is incomplete. ``--allow-legacy``
-    downgrades only the incomplete-coverage exit to 0; a broken chain still exits 1.
+    when both chains are intact and fully covered, 1 when EITHER is broken, and 2
+    when a chain suffix is intact but coverage is incomplete. ``--allow-legacy``
+    downgrades only the incomplete-coverage exit to 0; a broken chain still
+    exits 1.
     """
     from presidio_arch_translucency import observe as store  # noqa: PLC0415
 
-    report = store.verify_chain(db_path=db)
+    serving, energy = store.verify_all_chains(db_path=db)
     log_security_event(
         "OBSERVE_VERIFY",
         {
-            "total": report.total,
-            "verified": report.verified,
-            "legacy": report.legacy_count,
-            "ok": report.ok,
+            "serving_total": serving.total,
+            "serving_verified": serving.verified,
+            "serving_legacy": serving.legacy_count,
+            "serving_ok": serving.ok,
+            "energy_total": energy.total,
+            "energy_verified": energy.verified,
+            "energy_ok": energy.ok,
             "allow_legacy": allow_legacy,
         },
     )
-    _render_chain_report(report)
-    if report.broken_obs_id is not None:
+    console.print("\n[bold blue]── Serving observation chain ──[/]")
+    _render_chain_report(serving, label="Observation")
+    console.print("[bold blue]── Measured energy chain ──[/]")
+    _render_chain_report(energy, label="Energy observation")
+
+    # A break in EITHER chain is exit 1 (ADR-0011 §2). Only then consider legacy.
+    if serving.broken_obs_id is not None or energy.broken_obs_id is not None:
         raise typer.Exit(code=1)
-    if not report.ok and not (allow_legacy and report.legacy_count > 0):
+    # Neither broken: incomplete coverage (only the serving chain can be legacy)
+    # is exit 2 unless --allow-legacy downgrades it.
+    incomplete = not serving.ok or not energy.ok
+    if incomplete and not allow_legacy:
         raise typer.Exit(code=2)
 
 
-def _render_chain_report(report: object) -> None:
-    """Render a ChainReport: coverage, legacy prefix, and the first break."""
+def _render_chain_report(report: object, *, label: str = "Observation") -> None:
+    """Render a ChainReport: coverage, legacy prefix, and the first break.
+
+    ``label`` names the record kind so the serving and energy sections render
+    with distinct, self-describing titles (ADR-0011 §2: "report rendering must
+    keep the per-chain legacy prefixes distinguishable").
+    """
     from presidio_arch_translucency.observe import ChainReport  # noqa: PLC0415
 
     assert isinstance(report, ChainReport)  # noqa: S101
 
+    noun = label.lower()
     if report.total == 0:
-        console.print("\n[dim]No observations recorded yet — nothing to verify.[/]\n")
+        console.print(f"\n[dim]No {noun}s recorded yet — nothing to verify.[/]\n")
         return
 
     lines = [
-        f"[bold]Observations:[/]   {report.total}",
+        f"[bold]Records:[/]         {report.total}",
         f"[bold]Chained:[/]        {report.chained}",
         f"[bold]Verified:[/]       {report.verified}",
     ]
@@ -2088,12 +2375,12 @@ def _render_chain_report(report: object) -> None:
 
     if report.broken_obs_id is not None:
         lines.append(
-            f"\n[bold red]✗ Chain broken[/] at observation id "
+            f"\n[bold red]✗ Chain broken[/] at {noun} id "
             f"{report.broken_obs_id} (seq {report.broken_seq}):\n"
             f"  {report.break_reason}"
         )
         border = "red"
-        title = "[bold red]Observation chain — BROKEN[/]"
+        title = f"[bold red]{label} chain — BROKEN[/]"
     elif report.legacy_count:
         lines.append(
             "\n[yellow]⚠ Chain intact over the chained suffix, but a legacy "
@@ -2103,7 +2390,7 @@ def _render_chain_report(report: object) -> None:
             "capture.[/]"
         )
         border = "yellow"
-        title = "[bold yellow]Observation chain — PARTIAL (legacy prefix)[/]"
+        title = f"[bold yellow]{label} chain — PARTIAL (legacy prefix)[/]"
     else:
         lines.append(
             "\n[green]✓ Chain intact[/] — no post-hoc edit, insertion, "
@@ -2113,7 +2400,7 @@ def _render_chain_report(report: object) -> None:
             "capture.[/]"
         )
         border = "green"
-        title = "[bold blue]Observation chain — verified[/]"
+        title = f"[bold blue]{label} chain — verified[/]"
 
     console.print()
     console.print(Panel("\n".join(lines), title=title, border_style=border))
@@ -2506,6 +2793,49 @@ def _render_observations(rows: list, total: int) -> None:
             f"{obs.throughput:.0f}",
             str(obs.replicas),
             obs.source,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _render_energy_observations(rows: list, total: int) -> None:
+    """Render recent measured-energy observations from the chained store."""
+    if not rows:
+        console.print(
+            "\n[dim]No measured energy observations yet. Record one with "
+            "[bold]pat observe --prometheus URL --energy --energy-meter rapl "
+            "--layer node[/].[/]\n"
+        )
+        return
+
+    table = Table(
+        title=f"Recent energy observations (showing {len(rows)} of {total})",
+        box=box.ROUNDED,
+        show_lines=False,
+    )
+    table.add_column("Timestamp (UTC)", style="dim", no_wrap=True)
+    table.add_column("Layer", style="cyan")
+    table.add_column("Meter", style="magenta")
+    table.add_column("Watts", justify="right")
+    table.add_column("Joules", justify="right")
+    table.add_column("Window s", justify="right")
+    table.add_column("req/s", justify="right")
+    table.add_column("Replicas", justify="right")
+    table.add_column("Source", style="dim")
+
+    for eobs in rows:
+        table.add_row(
+            eobs.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            eobs.layer,
+            eobs.meter,
+            f"{eobs.watts:.1f}",
+            f"{eobs.joules:.0f}",
+            f"{eobs.window_s:.0f}",
+            f"{eobs.rps:.0f}",
+            str(eobs.replicas),
+            eobs.source,
         )
 
     console.print()

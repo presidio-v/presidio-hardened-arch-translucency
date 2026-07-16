@@ -199,10 +199,16 @@ def run_dependency_audit(skip_on_error: bool = True) -> bool:
                 "Dependency CVE audit: PASSED (no known vulnerabilities)"
             )
             return True
+        if "No module named pip_audit" in result.stderr:
+            _SECURITY_LOGGER.debug(
+                "pip-audit not installed; skipping CVE check. "
+                "Install with: pip install 'presidio-hardened-arch-translucency[audit]'"
+            )
+            return True
         else:
             _SECURITY_LOGGER.warning(
                 "Dependency CVE audit: VULNERABILITIES FOUND\n%s",
-                result.stdout[:2000],  # cap output length for log safety
+                (result.stdout or result.stderr)[:2000],
             )
             log_security_event("CVE_VULNERABILITIES_DETECTED")
             return False
