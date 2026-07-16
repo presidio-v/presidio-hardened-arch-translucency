@@ -371,6 +371,7 @@ def test_live_response_size_is_bounded(monkeypatch) -> None:
 
     class _Oversized(_FakeResp):
         def __init__(self) -> None:
+            super().__init__({})
             self._payload = b"x" * (carbon.MAX_RESPONSE_BYTES + 1)
 
     monkeypatch.setattr(carbon, "_open_live", lambda *_a, **_k: _Oversized())

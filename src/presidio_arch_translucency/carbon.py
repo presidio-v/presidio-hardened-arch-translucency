@@ -290,6 +290,7 @@ def _save_cache(cache: dict) -> None:
         try:
             Path(tmp_name).unlink()
         except FileNotFoundError:
+            # Successful os.replace moved the temporary path into place.
             pass
 
 
