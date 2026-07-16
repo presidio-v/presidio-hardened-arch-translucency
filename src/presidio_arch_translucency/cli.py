@@ -16,6 +16,7 @@ from typing import Optional
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -34,6 +35,7 @@ from presidio_arch_translucency.energy import (
     LayerEnergy,
     layer_energy,
     resolve_energy_fit_scope,
+    resolve_energy_params,
 )
 from presidio_arch_translucency.hpa import (
     ScaleEventParams,
@@ -482,6 +484,7 @@ def export_cmd(
         raise typer.Exit(code=2) from exc
 
     current = ReplicationLayer(layer_str)
+    _gate_commitment_with_energy(model_layer)
 
     model_name = model.strip().lower()
     if predict and model_name not in ("sma", "arima"):
@@ -869,6 +872,7 @@ def annotate_cmd(
         raise typer.Exit(code=2) from exc
 
     current = ReplicationLayer(layer_str)
+    _resolve_commitment_or_exit(model_layer)
     result = analyze(
         requests_per_second=rps,
         avg_latency_ms=lat,
@@ -967,23 +971,47 @@ def scaler_cmd(
     max_replicas: int = typer.Option(
         10, "--max-replicas", help="Maximum replica count.", min=1
     ),
+    signal: str = typer.Option(
+        "replicas",
+        "--signal",
+        help=(
+            "Scaling signal: 'replicas' (track pat's forecast, default) or "
+            "'energy' (scale on modelled J/req vs a budget)."
+        ),
+    ),
+    energy_budget_j_per_req: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-budget-j-per-req",
+        help=(
+            "Energy budget in joules per request (required with --signal energy). "
+            "Scale OUT when modelled J/req exceeds this."
+        ),
+    ),
 ) -> None:
     """
-    Emit autoscaler config that scales a Deployment to track pat's forecast.
+    Emit autoscaler config that scales a Deployment on a pat signal.
 
-    Closes the loop: the exporter publishes pat_predicted_recommended_replicas
-    (run `pat export --predict`, scraped into Prometheus); this emits a KEDA
-    ScaledObject (default) or a Prometheus-Adapter HPA that scales --target to
-    match it. Emit-only — prints YAML to stdout; `pat` never applies or scales
-    anything.
+    Closes the loop: the exporter publishes the pat gauges (run `pat export
+    --predict`, scraped into Prometheus); this emits a KEDA ScaledObject
+    (default) or a Prometheus-Adapter HPA that scales --target. Emit-only —
+    prints YAML to stdout; `pat` never applies or scales anything.
+
+    --signal replicas (default) tracks pat_predicted_recommended_replicas.
+    --signal energy scales on pat_energy_per_request_joules vs
+    --energy-budget-j-per-req (more replicas amortise standing power only when
+    the layer's EEI > 1 — see the generated YAML comment).
 
     \b
       pat scaler -t web --prometheus-url http://prom:9090 -c container
       pat scaler -t web --prometheus-url http://prom:9090 --format prometheus-adapter
+      pat scaler -t web --prometheus-url http://prom:9090 \\
+          --signal energy --energy-budget-j-per-req 0.5 -c container
     """
     from presidio_arch_translucency.scaler import (  # noqa: PLC0415
         DEFAULT_METRIC,
+        ENERGY_METRIC,
         VALID_FORMATS,
+        VALID_SIGNALS,
         ScalerError,
         build_scaler,
         default_query,
@@ -995,26 +1023,53 @@ def scaler_cmd(
             f"{', '.join(VALID_FORMATS)}."
         )
         raise typer.Exit(code=2)
+    if signal not in VALID_SIGNALS:
+        err_console.print(
+            f"[bold red]Unknown --signal {signal!r}.[/] Use one of: "
+            f"{', '.join(VALID_SIGNALS)}."
+        )
+        raise typer.Exit(code=2)
+
+    if signal == "energy" and energy_budget_j_per_req is not None:
+        try:
+            energy_budget_j_per_req = sanitize_bounded_number(
+                energy_budget_j_per_req, "energy_budget_j_per_req", 1e-9, 1e9
+            )
+        except InputValidationError as exc:
+            err_console.print(f"[bold red]Input validation error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+    if signal == "energy" and energy_budget_j_per_req is not None and layer is None:
+        err_console.print(
+            "[bold red]--signal energy requires --current-layer/-c[/] so the "
+            "autoscaler targets one deployment-specific energy series."
+        )
+        raise typer.Exit(code=2)
+
+    active_metric = ENERGY_METRIC if signal == "energy" else DEFAULT_METRIC
 
     try:
-        effective_query = query if query else default_query(DEFAULT_METRIC, layer)
+        effective_query = query if query else default_query(active_metric, layer)
         yaml = build_scaler(
             fmt,
             target,
             prometheus_url,
             effective_query,
-            metric=DEFAULT_METRIC,
+            metric=active_metric,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             namespace=namespace,
             name=name,
+            signal=signal,
+            energy_budget_j_per_req=energy_budget_j_per_req,
         )
     except ScalerError as exc:
         err_console.print(f"[bold red]Scaler error:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
     log_security_event(
-        "SCALER_EMIT", {"format": fmt, "target": target, "layer": layer or "all"}
+        "SCALER_EMIT",
+        {"format": fmt, "target": target, "layer": layer or "all", "signal": signal},
     )
     typer.echo(yaml, nl=False)
 
@@ -1042,6 +1097,16 @@ def _energy_note(source: Optional[str]) -> str:  # noqa: UP045
             "watt readings)[/]"
         )
     return "[dim]energy model: MVP defaults — calibrate with --energy-observation[/]"
+
+
+def _fmt_wh(value: float) -> str:
+    """Watt-hours to 3 significant figures (budget table convention)."""
+    return f"{value:.3g}"
+
+
+def _fmt_grams(value: Optional[float]) -> str:  # noqa: UP045
+    """gCO₂eq to 3 significant figures, "—" when undefined."""
+    return "—" if value is None else f"{value:.3g}"
 
 
 def _render_results(
@@ -1288,6 +1353,29 @@ def what_if_cmd(
         min=0.1,
         max=10000.0,
     ),
+    energy_aware: bool = typer.Option(
+        False,
+        "--energy-aware",
+        help=(
+            "Add an idle-energy-vs-trough section: standing energy of warm "
+            "minReplicas vs the trough's revenue loss."
+        ),
+    ),
+    electricity_cost_per_kwh: float = typer.Option(
+        0.12,
+        "--electricity-cost-per-kwh",
+        help=(
+            "Electricity price in USD/kWh for --energy-aware "
+            "(placeholder average; set your tariff)."
+        ),
+        min=0.001,
+        max=10.0,
+    ),
+    region: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--region",
+        help="Cloud region for a gCO₂ line in the --energy-aware section.",
+    ),
 ) -> None:
     """
     Model an HPA scale event and show the performance trough.
@@ -1302,6 +1390,9 @@ def what_if_cmd(
         layer_str = sanitize_layer(current_layer, VALID_LAYERS)
         watts = sanitize_bounded_number(
             replica_power_watts, "replica_power_watts", 0.1, 10000.0
+        )
+        elec_cost = sanitize_bounded_number(
+            electricity_cost_per_kwh, "electricity_cost_per_kwh", 0.001, 10.0
         )
     except InputValidationError as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
@@ -1339,8 +1430,26 @@ def what_if_cmd(
     energy = layer_energy(
         layer, result.replicas_after, srps, base_cap, watts, model_layer
     )
+
+    energy_aware_data: dict | None = None
+    if energy_aware:
+        energy_aware_data = _build_energy_aware(
+            result,
+            layer,
+            watts,
+            base_cap,
+            model_layer,
+            elec_cost,
+            cost_per_req,
+            region,
+        )
     log_security_event("WHAT_IF_INVOCATION", {"layer": layer_str, "spike_rps": srps})
-    _render_what_if(result, cost_per_req=cost_per_req, energy=energy)
+    _render_what_if(
+        result,
+        cost_per_req=cost_per_req,
+        energy=energy,
+        energy_aware=energy_aware_data,
+    )
 
     if output is not None:
         save_hpa_plot(result, output)
@@ -1457,6 +1566,206 @@ def slo_cmd(
     )
 
 
+@app.command("budget")
+def budget_cmd(
+    requests_per_second: float = typer.Option(
+        ...,
+        "--requests-per-second",
+        "-r",
+        help="Observed workload in requests per second.",
+        min=0.01,
+    ),
+    avg_latency_ms: float = typer.Option(
+        ...,
+        "--avg-latency-ms",
+        "-l",
+        help="Current average response latency in milliseconds.",
+        min=0.1,
+    ),
+    model_layer: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--layer",
+        "-L",
+        help=(
+            "Service-layer label whose calibrated parameters to use "
+            "(see `pat calibrate --layer`). Falls back to the global fit."
+        ),
+    ),
+    replica_power_watts: float = typer.Option(
+        DEFAULT_REPLICA_POWER_WATTS,
+        "--replica-power-watts",
+        help=(
+            "Per-replica peak power in watts for the energy figures "
+            f"(MVP placeholder ≈{DEFAULT_REPLICA_POWER_WATTS:.0f} W)."
+        ),
+        min=0.1,
+        max=10000.0,
+    ),
+    region: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--region",
+        help=(
+            "Cloud region for carbon columns (e.g. us-east-1 / europe-north1 / "
+            "eastus). Adds gCO₂/req and gCO₂/window."
+        ),
+    ),
+    energy_budget_wh: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-budget-wh",
+        help=(
+            "Energy budget in watt-hours over --window-h. Direction 1: maximise "
+            "throughput within the budget."
+        ),
+    ),
+    window_h: float = typer.Option(
+        1.0,
+        "--window-h",
+        help="Budget window in hours (Direction 1). Bounds 0.01–8760.",
+    ),
+    carbon_budget_g: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--carbon-budget-g",
+        help=(
+            "Carbon budget in gCO₂eq (requires --region; mutually exclusive with "
+            "--energy-budget-wh). Converted to a Wh budget via grid intensity."
+        ),
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit the budget result as JSON instead of a table."
+    ),
+) -> None:
+    """
+    Budget the watt: the SEANERGYS objective in both directions.
+
+    Direction 1 (--energy-budget-wh or --carbon-budget-g): maximise throughput
+    per layer while modelled energy stays within the budget over --window-h.
+
+    Direction 2 (default): the minimum modelled energy meeting demand — the
+    least-watt-hour layer that saturates the workload ("less energy, same
+    output").
+
+    Add --region for gCO₂/req and gCO₂/window columns. All figures are MODELLED
+    estimates (analytic energy model × cited grid intensity); nothing here is
+    measured, chained, or signed (E1a).
+
+    \b
+      pat budget -r 500 -l 80 --energy-budget-wh 40 --window-h 1
+      pat budget -r 500 -l 80 --region europe-north1
+    """
+    from presidio_arch_translucency.budget import (  # noqa: PLC0415
+        solve_energy_budget,
+        solve_min_energy,
+    )
+    from presidio_arch_translucency.carbon import CarbonError, resolve_carbon_intensity
+
+    try:
+        rps = sanitize_requests_per_second(requests_per_second)
+        lat = sanitize_latency_ms(avg_latency_ms)
+        watts = sanitize_bounded_number(
+            replica_power_watts, "replica_power_watts", 0.1, 10000.0
+        )
+        win = sanitize_bounded_number(window_h, "window_h", 0.01, 8760.0)
+        if energy_budget_wh is not None:
+            energy_budget_wh = sanitize_bounded_number(
+                energy_budget_wh, "energy_budget_wh", 1e-9, 1e12
+            )
+        if carbon_budget_g is not None:
+            carbon_budget_g = sanitize_bounded_number(
+                carbon_budget_g, "carbon_budget_g", 1e-9, 1e15
+            )
+    except InputValidationError as exc:
+        err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    # --- Mutual exclusion + carbon-budget prerequisites ---
+    if energy_budget_wh is not None and carbon_budget_g is not None:
+        err_console.print(
+            "[bold red]--energy-budget-wh and --carbon-budget-g are mutually "
+            "exclusive.[/]"
+        )
+        raise typer.Exit(code=2)
+    if carbon_budget_g is not None and region is None:
+        err_console.print(
+            "[bold red]--carbon-budget-g requires --region[/] "
+            "(to convert grams → Wh via grid intensity)."
+        )
+        raise typer.Exit(code=2)
+
+    _warn_if_uncalibrated()
+    # Same tamper gate analyze uses (incl. the cross-scope energy rule).
+    commitment = _gate_commitment_with_energy(model_layer)
+
+    # --- Carbon intensity (for columns and/or carbon-budget conversion) ---
+    intensity: float | None = None
+    intensity_source: str | None = None
+    if region is not None:
+        try:
+            intensity, intensity_source = resolve_carbon_intensity(region)
+        except CarbonError as exc:
+            # escape(): the message embeds the user-supplied --region, so
+            # neutralise any Rich markup (e.g. "[blink]") in it — the region
+            # renders as literal text, never as console styling.
+            err_console.print(f"[bold red]Carbon error:[/] {escape(str(exc))}")
+            raise typer.Exit(code=2) from exc
+
+    # --- Solve ---
+    if carbon_budget_g is not None:
+        # grams → Wh: budget_wh = grams / intensity(gCO₂/kWh) × 1000 (Wh/kWh).
+        # Belt-and-suspenders: resolve_carbon_intensity is now bounds-validated
+        # and never returns ≤ 0, but guard the division anyway so any future
+        # regression surfaces as a clear CarbonError (exit 2), never a raw
+        # ZeroDivisionError traceback.
+        if intensity is None or intensity <= 0:
+            err_console.print(
+                "[bold red]Carbon error:[/] resolved grid intensity is not "
+                "positive; cannot convert a carbon budget to energy."
+            )
+            raise typer.Exit(code=2)
+        budget_wh = carbon_budget_g / intensity * 1000.0
+        report = solve_energy_budget(
+            rps,
+            lat,
+            watts,
+            budget_wh=budget_wh,
+            window_h=win,
+            model_layer=model_layer,
+            intensity_g_per_kwh=intensity,
+            intensity_source=intensity_source,
+            carbon_budget_g=carbon_budget_g,
+        )
+    elif energy_budget_wh is not None:
+        report = solve_energy_budget(
+            rps,
+            lat,
+            watts,
+            budget_wh=energy_budget_wh,
+            window_h=win,
+            model_layer=model_layer,
+            intensity_g_per_kwh=intensity,
+            intensity_source=intensity_source,
+        )
+    else:
+        report = solve_min_energy(
+            rps,
+            lat,
+            watts,
+            model_layer=model_layer,
+            window_h=win,
+            intensity_g_per_kwh=intensity,
+            intensity_source=intensity_source,
+        )
+
+    log_security_event(
+        "BUDGET_INVOCATION",
+        {"direction": report.direction, "rps": rps, "region": region or "none"},
+    )
+
+    if json_out:
+        typer.echo(json.dumps(_budget_json(report, commitment), indent=2))
+        return
+    _render_budget(report, commitment)
+
+
 @app.command("cost")
 def cost_cmd(
     requests_per_second: float = typer.Option(
@@ -1550,6 +1859,24 @@ def cost_cmd(
         "--no-cache",
         help="Bypass the local pricing cache and fetch fresh prices from the cloud provider.",  # noqa: E501
     ),
+    carbon: bool = typer.Option(
+        False,
+        "--carbon",
+        help=(
+            "Add gCO₂/req and gCO₂/hour columns and a cheapest-greenest rank "
+            "(needs --region; modelled from grid intensity)."
+        ),
+    ),
+    replica_power_watts: float = typer.Option(
+        DEFAULT_REPLICA_POWER_WATTS,
+        "--replica-power-watts",
+        help=(
+            "Per-replica peak power in watts for the --carbon columns "
+            f"(MVP placeholder ≈{DEFAULT_REPLICA_POWER_WATTS:.0f} W)."
+        ),
+        min=0.1,
+        max=10000.0,
+    ),
 ) -> None:
     """
     Cross-layer cost analysis: throughput gain vs hourly cost.
@@ -1579,7 +1906,60 @@ def cost_cmd(
 
     current = ReplicationLayer(layer_str)
     _warn_if_uncalibrated()
+    _gate_commitment_with_energy(None)
     result = analyze(requests_per_second=rps, avg_latency_ms=lat, current_layer=current)
+
+    # --- Carbon context (v0.22.0): modelled gCO₂ columns + cheapest-greenest
+    #     rank. Requires an explicit --region (fail closed on an unknown one). ---
+    carbon_ctx: dict | None = None
+    if carbon:
+        if region is None:
+            err_console.print(
+                "[bold red]--carbon requires --region[/] "
+                "(carbon intensity is resolved per region)."
+            )
+            raise typer.Exit(code=2)
+        try:
+            watts_c = sanitize_bounded_number(
+                replica_power_watts, "replica_power_watts", 0.1, 10000.0
+            )
+        except InputValidationError as exc:
+            err_console.print(f"[bold red]Input validation error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        from presidio_arch_translucency.carbon import (  # noqa: PLC0415
+            CarbonError,
+            grams_per_hour,
+            grams_per_request,
+            resolve_carbon_intensity,
+        )
+
+        try:
+            intensity_c, source_c = resolve_carbon_intensity(region)
+        except CarbonError as exc:
+            # escape(): the message embeds the user-supplied --region, so
+            # neutralise any Rich markup (e.g. "[blink]") in it — the region
+            # renders as literal text, never as console styling.
+            err_console.print(f"[bold red]Carbon error:[/] {escape(str(exc))}")
+            raise typer.Exit(code=2) from exc
+        base_cap_c = base_capacity_rps(rps, lat, resolve_concurrency(None))
+        grams_req: dict = {}
+        grams_hr: dict = {}
+        for lr in result.layers:
+            le = layer_energy(
+                lr.layer, lr.optimal_replicas, rps, base_cap_c, watts_c, None
+            )
+            grams_req[lr.layer] = (
+                grams_per_request(le.joules_per_request, intensity_c)
+                if le.joules_per_request is not None
+                else None
+            )
+            grams_hr[lr.layer] = grams_per_hour(le.watts, intensity_c)
+        carbon_ctx = {
+            "grams_req": grams_req,
+            "grams_hour": grams_hr,
+            "intensity": intensity_c,
+            "source": source_c,
+        }
 
     if cloud is not None:
         cloud_lower = cloud.lower()
@@ -1687,7 +2067,7 @@ def cost_cmd(
             raise typer.Exit(code=2) from exc
 
         log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
-        _render_tiered_cost(tiered, result)
+        _render_tiered_cost(tiered, result, carbon=carbon_ctx)
     else:
         cp = CostParams(
             cost_per_container_hour=cost_per_container_hour,
@@ -1697,7 +2077,7 @@ def cost_cmd(
         )
         cost_results = build_cost_results(result.layers, cp)
         log_security_event("COST_INVOCATION", {"layer": layer_str, "rps": rps})
-        _render_cost(cost_results, result, pricing_note=None)
+        _render_cost(cost_results, result, pricing_note=None, carbon=carbon_ctx)
 
 
 @app.command("calibrate")
@@ -2600,6 +2980,8 @@ def optimize_cmd(
             err_console.print(f"[bold red]Input validation error:[/] {exc}")
             raise typer.Exit(code=2) from exc
 
+    _resolve_commitment_or_exit(layer_filter)
+
     # ARIMA wants as much history as it can get; SMA uses the smoothing window.
     fetch_n = max(window, ARIMA_DEFAULT_HISTORY) if model_name == "arima" else window
     rows = store.latest_observations(fetch_n, db_path=db, layer=layer_filter)
@@ -3050,7 +3432,11 @@ def _render_energy_calibration(energy: object) -> None:
     console.print(table)
 
 
-def _render_tiered_cost(tiered: object, result: object) -> None:
+def _render_tiered_cost(
+    tiered: object,
+    result: object,
+    carbon: Optional[dict] = None,  # noqa: UP045
+) -> None:
     """Render on-demand + optional reserved/spot pricing tiers."""
     from presidio_arch_translucency.cloud import TieredPricingResult  # local import
 
@@ -3062,6 +3448,7 @@ def _render_tiered_cost(tiered: object, result: object) -> None:
         build_cost_results(result.layers, od.params),  # type: ignore[union-attr]
         result,
         pricing_note=od.source_description + cache_tag,
+        carbon=carbon,
     )
 
     if tiered.reserved_1yr is not None:
@@ -3072,6 +3459,7 @@ def _render_tiered_cost(tiered: object, result: object) -> None:
             build_cost_results(result.layers, r1.params),  # type: ignore[union-attr]
             result,
             pricing_note=r1.source_description + cache_tag,
+            carbon=carbon,
         )
 
     if tiered.reserved_3yr is not None:
@@ -3082,6 +3470,7 @@ def _render_tiered_cost(tiered: object, result: object) -> None:
             build_cost_results(result.layers, r3.params),  # type: ignore[union-attr]
             result,
             pricing_note=r3.source_description + cache_tag,
+            carbon=carbon,
         )
 
     if tiered.spot is not None:
@@ -3094,6 +3483,7 @@ def _render_tiered_cost(tiered: object, result: object) -> None:
             build_cost_results(result.layers, sp.params),  # type: ignore[union-attr]
             result,
             pricing_note=sp.source_description + cache_tag,
+            carbon=carbon,
         )
 
 
@@ -3101,10 +3491,19 @@ def _render_cost(
     cost_results: list,  # type: ignore[type-arg]
     result: object,
     pricing_note: Optional[str] = None,  # noqa: UP045
+    carbon: Optional[dict] = None,  # noqa: UP045
 ) -> None:
+    from presidio_arch_translucency.cost import build_carbon_ranking  # noqa: PLC0415
     from presidio_arch_translucency.model import AnalysisResult  # local import
 
     assert isinstance(result, AnalysisResult)  # noqa: S101
+
+    carbon_by_layer: dict = {}
+    if carbon is not None:
+        for cres in build_carbon_ranking(
+            cost_results, carbon["grams_req"], carbon["grams_hour"]
+        ):
+            carbon_by_layer[cres.layer] = cres
 
     best = next(r for r in cost_results if r.is_recommended)
 
@@ -3141,6 +3540,10 @@ def _render_cost(
     table.add_column("Cost/hr (USD)", justify="right")
     table.add_column("Cost/req (USD)", justify="right")
     table.add_column("ROI score", justify="right")
+    if carbon is not None:
+        table.add_column("gCO₂/req", justify="right")
+        table.add_column("gCO₂/hr", justify="right")
+        table.add_column("Greenest+Cheapest", justify="center")
     table.add_column("Best ROI", justify="center")
 
     for cr in cost_results:
@@ -3153,7 +3556,7 @@ def _render_cost(
         if is_cur:
             layer_label += " (current)"
 
-        table.add_row(
+        row: list[str] = [
             layer_label,
             str(cr.replicas),
             f"{cr.throughput_rps:.0f}",
@@ -3162,26 +3565,180 @@ def _render_cost(
             f"${cr.hourly_cost_usd:.4f}",
             format_cost_per_request(cr.cost_per_request_usd),
             f"{cr.roi_score:.1f}",
-            "[bold green]✓[/]" if is_rec else "",
-        )
+        ]
+        if carbon is not None:
+            cres = carbon_by_layer.get(cr.layer)
+            g_req = cres.grams_per_request if cres is not None else None
+            g_hr = cres.grams_per_hour if cres is not None else None
+            win = cres.is_greenest_cheapest if cres is not None else False
+            row.append(_fmt_grams(g_req))
+            row.append(_fmt_grams(g_hr))
+            row.append("[bold green]✓[/]" if win else "")
+        row.append("[bold green]✓[/]" if is_rec else "")
+        table.add_row(*row)
 
     console.print()
-    console.print(table)
+    table_console = console
+    if carbon is not None and not console.is_terminal:
+        # The carbon columns widen the table past the 80-column default Rich
+        # assumes for captured/non-TTY output; widen only that case.
+        table_console = Console(width=200)
+    table_console.print(table)
     pricing_line = f"\n[dim]Pricing source: {pricing_note}[/]" if pricing_note else ""
+    carbon_line = ""
+    if carbon is not None:
+        from presidio_arch_translucency.carbon import static_annotation  # noqa: PLC0415
+
+        ann = static_annotation(carbon["source"])
+        carbon_line = (
+            f"\n[dim]Grid intensity: {carbon['intensity']:.0f} gCO₂eq/kWh {ann}"
+            "  ·  cheapest-greenest = lowest mean of min-max-normalised "
+            "cost/req and gCO₂/req (modelled)[/]"
+        )
     console.print(
         f"\n[dim]Baseline: {result.baseline_throughput_rps:.0f} req/s "
         f"@ {result.baseline_response_time_ms:.1f} ms  "
         f"(current layer: {result.current_layer.value})[/]"
         + pricing_line
+        + carbon_line
         + "\n[dim]ROI score = throughput-gain-% / cost-per-request  "
         "(higher = better performance-per-dollar)[/]\n"
     )
+
+
+def _build_energy_aware(
+    result: ScaleEventResult,
+    layer: ReplicationLayer,
+    watts: float,
+    base_cap: float,
+    model_layer: Optional[str],  # noqa: UP045
+    elec_cost: float,
+    cost_per_req: Optional[float],  # noqa: UP045
+    region: Optional[str],  # noqa: UP045
+) -> dict:
+    """Standing-energy-vs-trough figures for the what-if --energy-aware section.
+
+    Standing energy = per-replica idle power × warm minReplicas (the pre-spike
+    floor) over the simulated window; trough side reuses ``trough_cost_usd``.
+    All modelled — never chained or signed (E1a).
+    """
+    idle_w, _dyn, _beta, source = resolve_energy_params(
+        layer, watts, base_cap, model_layer
+    )
+    min_replicas = max(result.replicas_before, 0)
+    window_s = result.timeline[-1].t_s if result.timeline else result.trough_duration_s
+    window_h = window_s / 3600.0
+    standing_watts = idle_w * min_replicas
+    standing_wh = standing_watts * window_h
+    standing_usd = standing_wh / 1000.0 * elec_cost
+    trough_usd = (
+        trough_cost_usd(result.missed_requests, cost_per_req)
+        if cost_per_req is not None
+        else None
+    )
+
+    intensity: float | None = None
+    intensity_source: str | None = None
+    standing_grams: float | None = None
+    if region is not None:
+        from presidio_arch_translucency.carbon import (  # noqa: PLC0415
+            CarbonError,
+            grams_per_hour,
+            resolve_carbon_intensity,
+        )
+
+        try:
+            intensity, intensity_source = resolve_carbon_intensity(region)
+        except CarbonError as exc:
+            # escape(): the message embeds the user-supplied --region, so
+            # neutralise any Rich markup (e.g. "[blink]") in it — the region
+            # renders as literal text, never as console styling.
+            err_console.print(f"[bold red]Carbon error:[/] {escape(str(exc))}")
+            raise typer.Exit(code=2) from exc
+        standing_grams = grams_per_hour(standing_watts, intensity) * window_h
+
+    return {
+        "min_replicas": min_replicas,
+        "idle_w_per_replica": idle_w,
+        "standing_watts": standing_watts,
+        "window_s": window_s,
+        "standing_wh": standing_wh,
+        "standing_usd": standing_usd,
+        "trough_usd": trough_usd,
+        "source": source,
+        "intensity_g_per_kwh": intensity,
+        "intensity_source": intensity_source,
+        "standing_grams": standing_grams,
+    }
+
+
+def _render_energy_aware(data: dict) -> None:
+    """Render the idle-energy-vs-trough section + verdict (the FLIP)."""
+    from presidio_arch_translucency.carbon import static_annotation  # noqa: PLC0415
+
+    standing_usd = data["standing_usd"]
+    trough_usd = data["trough_usd"]
+
+    lines = [
+        "[bold]STANDING ENERGY[/]  (warm minReplicas over the simulated window)",
+        f"  minReplicas   {data['min_replicas']}",
+        f"  Idle power    {_fmt_watts(data['idle_w_per_replica'])} W/replica "
+        f"→ {_fmt_watts(data['standing_watts'])} W",
+        f"  Window        {data['window_s']:.0f} s",
+        f"  Standing E    {_fmt_wh(data['standing_wh'])} Wh  (~${standing_usd:,.4f})",
+    ]
+    if data["intensity_g_per_kwh"] is not None:
+        ann = static_annotation(data["intensity_source"] or "static")
+        lines.append(
+            f"  Standing CO₂  {_fmt_grams(data['standing_grams'])} gCO₂eq "
+            f"[dim]@ {data['intensity_g_per_kwh']:.0f} gCO₂eq/kWh {ann}[/]"
+        )
+
+    lines.append("")
+    lines.append("[bold]TROUGH[/]  (revenue lost while pods spin up)")
+    if trough_usd is None:
+        lines.append(
+            "  [yellow]Add --cost-per-request to compare against standing energy.[/]"
+        )
+    else:
+        lines.append(f"  Trough cost   ~${trough_usd:,.4f} revenue impact")
+
+    lines.append("")
+    if trough_usd is None:
+        verdict = "[dim]Verdict needs --cost-per-request to weigh the two sides.[/]"
+    elif standing_usd > trough_usd:
+        verdict = (
+            f"[bold yellow]Warm replicas cost more in standing energy "
+            f"(${standing_usd:,.4f}) than the trough loses in revenue "
+            f"(${trough_usd:,.4f}).[/]\n"
+            "Scaling minReplicas down (or to zero) is the greener, cheaper choice."
+        )
+    else:
+        verdict = (
+            f"[bold green]The trough loses more in revenue (${trough_usd:,.4f}) "
+            f"than warm replicas cost in standing energy "
+            f"(${standing_usd:,.4f}).[/]\n"
+            "Keeping minReplicas warm is justified."
+        )
+    lines.append(verdict)
+    lines.append(f"\n{_energy_note(data['source'])}")
+
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="[bold blue]Idle energy vs trough[/]",
+            border_style="blue",
+        )
+    )
+    console.print()
 
 
 def _render_what_if(
     r: ScaleEventResult,
     cost_per_req: Optional[float] = None,  # noqa: UP045
     energy: Optional[LayerEnergy] = None,  # noqa: UP045
+    energy_aware: Optional[dict] = None,  # noqa: UP045
 ) -> None:
     spike_x = r.rps_spike / max(r.rps_baseline, 0.01)
     trough_color = "red" if r.trough_throughput_pct < 80 else "yellow"
@@ -3264,6 +3821,9 @@ def _render_what_if(
     console.print()
     console.print(table)
     console.print()
+
+    if energy_aware is not None:
+        _render_energy_aware(energy_aware)
 
 
 def _render_slo(
@@ -3392,6 +3952,195 @@ def _render_slo(
         )
     )
     console.print()
+
+
+def _budget_carbon_caption(report: object) -> str:
+    """Grid-intensity provenance caption for a budget render (or '')."""
+    intensity = getattr(report, "intensity_g_per_kwh", None)
+    if intensity is None:
+        return ""
+    from presidio_arch_translucency.carbon import static_annotation  # noqa: PLC0415
+
+    ann = static_annotation(getattr(report, "intensity_source", None) or "static")
+    return f"\n[dim]Grid intensity: {intensity:.0f} gCO₂eq/kWh {ann}[/]"
+
+
+def _budget_json(report: object, commitment: Optional[dict]) -> dict:  # noqa: UP045
+    """Additive JSON view of a :class:`budget.BudgetReport`."""
+    layers = [
+        {
+            "layer": r.layer.value,
+            "replicas": r.replicas,
+            "throughput_rps": r.throughput_rps,
+            "energy_wh": r.energy_wh,
+            "joules_per_request": r.joules_per_request,
+            "eei": r.eei,
+            "headroom_wh": r.headroom_wh,
+            "feasible": r.feasible,
+            "energy_source": r.source,
+            "grams_per_request": r.grams_per_request,
+            "grams_per_window": r.grams_per_window,
+        }
+        for r in report.layers  # type: ignore[attr-defined]
+    ]
+    out: dict = {
+        "direction": report.direction,  # type: ignore[attr-defined]
+        "window_h": report.window_h,  # type: ignore[attr-defined]
+        "budget_wh": report.budget_wh,  # type: ignore[attr-defined]
+        "carbon_budget_g": report.carbon_budget_g,  # type: ignore[attr-defined]
+        "recommended_layer": (
+            report.recommended.value  # type: ignore[attr-defined]
+            if report.recommended is not None  # type: ignore[attr-defined]
+            else None
+        ),
+        "layers": layers,
+        "commitment": commitment,
+    }
+    if report.intensity_g_per_kwh is not None:  # type: ignore[attr-defined]
+        out["intensity_g_per_kwh"] = report.intensity_g_per_kwh  # type: ignore[attr-defined]
+        out["intensity_source"] = report.intensity_source  # type: ignore[attr-defined]
+    return out
+
+
+def _render_budget(report: object, commitment: Optional[dict]) -> None:  # noqa: UP045
+    """Render a :class:`budget.BudgetReport` (house table + recommendation panel)."""
+    from presidio_arch_translucency.budget import BudgetReport  # noqa: PLC0415
+
+    assert isinstance(report, BudgetReport)  # noqa: S101
+
+    is_dir1 = report.direction == "max-output"
+    has_carbon = report.intensity_g_per_kwh is not None
+    src = report.layers[0].source if report.layers else "default"
+
+    console.print()
+    if is_dir1:
+        header = (
+            f"[bold]Energy budget:[/] {_fmt_wh(report.budget_wh or 0.0)} Wh "
+            f"over {report.window_h:g} h"
+        )
+        if report.carbon_budget_g is not None:
+            header += (
+                f"  [dim](from {_fmt_grams(report.carbon_budget_g)} gCO₂eq @ "
+                f"{report.intensity_g_per_kwh:.0f} gCO₂eq/kWh)[/]"
+            )
+        header += "\n[dim]Direction 1 — maximise throughput within the budget[/]"
+    else:
+        header = (
+            "[bold]Minimum energy meeting demand[/]  "
+            f"(window {report.window_h:g} h)\n"
+            "[dim]Direction 2 — least watt-hours that saturate the workload[/]"
+        )
+    console.print(header)
+
+    table = Table(box=box.ROUNDED, show_lines=True)
+    table.add_column("Layer", style="cyan", no_wrap=True)
+    table.add_column("Replicas", justify="right")
+    table.add_column("Throughput (req/s)", justify="right")
+    table.add_column("Energy (Wh)", justify="right")
+    table.add_column("J/req", justify="right")
+    if is_dir1:
+        table.add_column("Headroom (Wh)", justify="right")
+    else:
+        table.add_column("EEI", justify="right")
+    if has_carbon:
+        table.add_column("gCO₂/req", justify="right")
+        table.add_column("gCO₂/win", justify="right")
+    table.add_column("Verdict", justify="left")
+
+    for r in report.layers:
+        is_rec = report.recommended is not None and r.layer == report.recommended
+        row: list[str] = [
+            r.layer.value,
+            str(r.replicas),
+            f"{r.throughput_rps:.0f}",
+            _fmt_wh(r.energy_wh),
+            _fmt_jreq(r.joules_per_request),
+        ]
+        if is_dir1:
+            row.append(_fmt_wh(r.headroom_wh) if r.headroom_wh is not None else "—")
+        else:
+            row.append(_fmt_eei(r.eei))
+        if has_carbon:
+            row.append(_fmt_grams(r.grams_per_request))
+            row.append(_fmt_grams(r.grams_per_window))
+        if not r.feasible:
+            verdict = "[red]infeasible ✗[/]"
+        elif is_rec:
+            verdict = "[bold green]✓ recommended[/]"
+        else:
+            verdict = "[green]feasible[/]" if is_dir1 else ""
+        row.append(verdict)
+        table.add_row(*row)
+
+    console.print()
+    table_console = console if console.is_terminal else Console(width=170)
+    table_console.print(table)
+
+    # --- Recommendation panel ---
+    rec = None
+    if report.recommended is not None:
+        rec = next(r for r in report.layers if r.layer == report.recommended)
+
+    if rec is None:
+        if is_dir1:
+            body = (
+                "[bold red]No layer fits the budget.[/]\n"
+                "Even a single replica exceeds the energy budget at every layer.\n"
+                "Raise --energy-budget-wh / --carbon-budget-g, shorten "
+                "--window-h, or reduce --replica-power-watts."
+            )
+        else:
+            body = (
+                "[bold red]No layer can meet the requested demand.[/]\n"
+                "Every layer reaches its maximum replica count before saturating "
+                "the workload. Reduce demand, increase per-replica capacity via "
+                "calibration, or reconsider the architecture."
+            )
+    elif is_dir1:
+        body = (
+            f"[bold]Recommended layer:[/]   [cyan]{rec.layer.value}[/]\n"
+            f"[bold]Feasible replicas:[/]   [cyan]{rec.replicas}[/]\n"
+            f"[bold]Achieved throughput:[/] {rec.throughput_rps:.0f} req/s\n"
+            f"[bold]Energy used:[/]         {_fmt_wh(rec.energy_wh)} Wh "
+            f"(headroom {_fmt_wh(rec.headroom_wh or 0.0)} Wh)\n"
+            f"[bold]J/req:[/]               {_fmt_jreq(rec.joules_per_request)}"
+        )
+        if has_carbon:
+            body += (
+                f"\n[bold]gCO₂/req:[/]            "
+                f"{_fmt_grams(rec.grams_per_request)}  ·  "
+                f"gCO₂/window {_fmt_grams(rec.grams_per_window)}"
+            )
+    else:
+        body = (
+            f"[bold]Recommended layer:[/]   [cyan]{rec.layer.value}[/] "
+            "(least energy for the demand)\n"
+            f"[bold]Replicas:[/]            [cyan]{rec.replicas}[/]\n"
+            f"[bold]Throughput:[/]          {rec.throughput_rps:.0f} req/s\n"
+            f"[bold]Energy:[/]              {_fmt_wh(rec.energy_wh)} Wh"
+            f"  ·  J/req {_fmt_jreq(rec.joules_per_request)}"
+            f"  ·  EEI {_fmt_eei(rec.eei)}"
+        )
+        if has_carbon:
+            body += (
+                f"\n[bold]gCO₂/req:[/]            "
+                f"{_fmt_grams(rec.grams_per_request)}  ·  "
+                f"gCO₂/window {_fmt_grams(rec.grams_per_window)}"
+            )
+    body += f"\n{_energy_note(src)}"
+
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold blue]Presidio Architectural Translucency — Energy Budget[/]",
+            border_style="blue",
+        )
+    )
+    caption = _budget_carbon_caption(report)
+    if caption:
+        console.print(caption)
+    console.print(_commitment_line(commitment) + "\n")
 
 
 @app.command("evidence-emit")

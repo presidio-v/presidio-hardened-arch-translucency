@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Semantic version to publish (for example 0.21.0)
+        description: Semantic version to publish (for example 0.22.0)
         required: true
         type: string
 

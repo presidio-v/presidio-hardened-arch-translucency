@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.21.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now recording platform-gated **measured** watts in a parallel hash chain — pat never signs a watt it did not measure (E1a).
+> v0.22.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now budgeting the watt: `pat budget` computes the most output within an energy/carbon budget (or the least energy for a given output), with region carbon intensity and an energy-signal scaler — all modelled, never signed (E1a).
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -1116,6 +1116,123 @@ enter the store.**
 
 ---
 
+## Energy & carbon budgeting (v0.22.0)
+
+The arc's conceptual payoff: the SEANERGYS objective function — *compute the most
+you can within an energy budget*, and *spend the least energy for a given output*
+— plus carbon awareness. Everything here is a **modelled estimate** (the analytic
+energy model × a documented grid-intensity figure); per invariants A1/E1/E1a it
+is emit-only, never enters the observation/energy chains, and is never signed.
+
+### `pat budget` — both directions
+
+*Direction 2* (default) — the minimum modelled energy that still meets demand
+("less energy, same output"). Reuses the `analyze` sweep and honours the
+calibration commitment exactly:
+
+```bash
+pat budget -r 500 -l 80
+```
+
+```
+Minimum energy meeting demand  (window 1 h)
+Direction 2 — least watt-hours that saturate the workload
+┏━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━┓
+┃ Layer      ┃ Replicas ┃ Energy (Wh) ┃ J/req ┃  EEI ┃
+┃ container  ┃        6 ┃          76 ┃ 0.152 ┃ 5.04 ┃  ✓ recommended
+┃ node       ┃        7 ┃        88.6 ┃ 0.177 ┃ 5.57 ┃
+┗━━━━━━━━━━━━┻━━━━━━━━━━┻━━━━━━━━━━━━━┻━━━━━━━┻━━━━━━┛
+```
+
+*Direction 1* — maximise throughput while modelled `E(δ) = W(δ)·H` stays within a
+watt-hour (or carbon) budget over a window. A layer whose single replica already
+exceeds the budget is reported **infeasible** and excluded from the
+recommendation:
+
+```bash
+pat budget -r 500 -l 80 --energy-budget-wh 40 --window-h 1
+pat budget -r 500 -l 80 --carbon-budget-g 3300 --region eu-central-1   # grams → Wh
+```
+
+Add `--region` for gCO₂/req and gCO₂/window columns to either direction, and
+`--json` for an additive machine-readable result (with the intensity source).
+
+### Grid carbon intensity
+
+Region → gCO₂eq/kWh, resolved as **location-based annual average** — the right
+basis for cross-region placement ranking (market-based accounting obscures grid
+physics; marginal intensity answers a different, intra-day question). The
+embedded table is a **documented MVP-placeholder snapshot** (2023), coherent with
+[Ember](https://ember-energy.org/) yearly country averages (CC-BY-4.0) and
+Google's `region-carbon-info` 2023 dataset — Nordic regions ≈ 46, Germany
+≈ 345, Virginia ≈ 322, Singapore ≈ 369 gCO₂eq/kWh. Set `PAT_CARBON_TOKEN` (env
+only, never a flag, never logged) to prefer a live Electricity Maps reading,
+cached atomically and owner-only in `~/.pat/carbon-cache.json` (TTL 1 h); redirects
+are refused so the token cannot be forwarded to another host, response bodies are
+bounded, and a live failure never
+fails the command — it warns and falls back to the static snapshot. Every
+untrusted intensity (a live response or a cache entry) is bounds-validated —
+finite and `0 < v ≤ 2000 gCO₂eq/kWh` — so a malformed or poisoned value is
+refused and resolution falls back to the cited static snapshot. Unknown regions
+fail closed.
+
+### `pat what-if --energy-aware` — the idle-energy flip
+
+Weighs the standing energy of warm `minReplicas` over the simulated window
+against the trough's missed-request revenue loss, with a verdict that flips:
+
+```bash
+pat what-if -r 300 -s 900 -l 80 -c node --energy-aware \
+  --cost-per-request 0.001 --electricity-cost-per-kwh 0.12 --region eu-central-1
+```
+
+```
+Idle energy vs trough
+STANDING ENERGY  (warm minReplicas over the simulated window)
+  Standing E    0.47 Wh  (~$0.0001)
+  Standing CO₂  0.17 gCO₂eq @ 345 gCO₂eq/kWh (static 2023 average)
+TROUGH
+  Trough cost   ~$9.0900 revenue impact
+The trough loses more in revenue ($9.0900) than warm replicas cost in
+standing energy ($0.0001). Keeping minReplicas warm is justified.
+```
+
+Without `--energy-aware`, the output is byte-identical to before.
+
+### `pat cost --carbon` — greenest + cheapest
+
+Adds gCO₂/req and gCO₂/hour columns (modelled watts × resolved intensity) and a
+combined **cheapest-greenest** rank: cost/req and gCO₂/req are each min-max
+normalised to [0,1] across layers, and the layer with the lowest mean wins.
+Requires an explicit `--region`; works on the spot/reserved tiered paths too.
+
+```bash
+pat cost -r 500 -l 80 -c container --carbon --region eu-central-1
+```
+
+### `pat scaler --signal energy`
+
+Emit-only KEDA / Prometheus-Adapter config that scales OUT when the modelled
+`pat_energy_per_request_joules` gauge exceeds a J/req budget:
+
+```bash
+pat scaler -t web --prometheus-url http://prom:9090 \
+  --signal energy --energy-budget-j-per-req 0.5 -c container
+```
+
+```yaml
+# ...
+#   query: max(pat_energy_per_request_joules{layer="container"})
+#   threshold: "0.5"
+# Caveat: adding replicas amortises standing power only when the layer's EEI > 1.
+# Emit-only (A1/E1): pat models and emits, it never actuates power.
+```
+
+J/req (not EEI) is the trigger because it has a natural absolute budget
+threshold. The default `--signal replicas` is unchanged.
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -1141,7 +1258,8 @@ enter the store.**
 | v0.19.0 | Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations |
 | v0.19.1 | Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes |
 | v0.20.0 | Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1) |
-| **v0.21.0** | **Measure the watt — measured-energy store + parallel hash chain (`pat observe --energy`, `verify` walks both chains), platform-gated fail-closed direct hardware presets (RAPL/DCGM; Kepler attribution is refused), verified read-only consumers, `pat calibrate --energy-from-store`, modelled + measured exporter gauges, energy alert rules** |
+| v0.21.0 | Measure the watt — measured-energy store + parallel hash chain (`pat observe --energy`, `verify` walks both chains), platform-gated fail-closed direct hardware presets (RAPL/DCGM; Kepler attribution is refused), verified read-only consumers, `pat calibrate --energy-from-store`, modelled + measured exporter gauges, energy alert rules |
+| **v0.22.0** | **Budget the watt — `pat budget` (max output within a Wh/carbon budget, or least energy for the demand), region carbon intensity (`carbon.py`, live Electricity Maps + static snapshot), `pat what-if --energy-aware` idle-vs-trough flip, `pat cost --carbon` cheapest-greenest rank, `pat scaler --signal energy`; all modelled, never signed (E1a)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

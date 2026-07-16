@@ -218,6 +218,11 @@ def resolve_concurrency(layer: str | None = None) -> float:
     if model is None:
         return DEFAULT_CONCURRENCY
 
+    # Enforce the commitment at the lowest shared consumer boundary. CLI
+    # commands render a friendly error too, but library callers must not be
+    # able to consume a present-but-tampered fit merely by bypassing the CLI.
+    resolve_calibration_commitment(layer)
+
     if layer is not None and layer != DEFAULT_LAYER_NAME:
         layers = model.get("layers")
         if isinstance(layers, dict):

@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.21.x | :white_check_mark: |
+| main / 0.22.x | :white_check_mark: |
+| 0.21.x  | :white_check_mark: |
 | 0.20.x  | :white_check_mark: |
 | 0.19.x  | :white_check_mark: |
 | 0.17.x  | :white_check_mark: |
@@ -100,7 +101,24 @@ the full energy chain from a read-only SQLite snapshot before consuming rows.
 The token/HTTPS discipline of the serving Prometheus source applies unchanged;
 the strict meter enum has no `manual`/`analytic` member.
 
-## Known Limitations (main / v0.21.x)
+**Carbon & budget figures (v0.22.0).** `pat budget`, `cost --carbon`, and
+`what-if --energy-aware` render **modelled estimates** — they never enter the
+observation chains and never become evidence readings (E1/E1a). Grid carbon
+intensity resolves live→cache→static: the live Electricity Maps path is
+env-token-only (`PAT_CARBON_TOKEN`, HTTPS, never logged, never cached), the
+cache (`~/.pat/carbon-cache.json`) is owner-only, and every intensity crossing
+a trust boundary is bounds-validated (finite, `0 < v ≤ 2000 gCO₂eq/kWh`) —
+poisoned cache entries or malformed live responses are refused and resolution
+falls back to the cited static snapshot without failing the command. The
+cache is written atomically and rejects symlinks, non-owner permissions,
+wrong-owner files, oversized input, non-object JSON, and future timestamps.
+Live responses are size-bounded and redirects are refused to prevent forwarding
+the env-only token to another origin. The
+static table is a documented annual-average snapshot (Ember CC-BY-4.0 /
+Google region data, location-based methodology); treat carbon rankings as
+placement guidance, not accounting-grade Scope 2 figures.
+
+## Known Limitations (main / v0.22.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -125,6 +143,10 @@ the strict meter enum has no `manual`/`analytic` member.
 
 Manual security audit history:
 
+- v0.22.0 full functionality/security release gate (2026-07-16) -- all findings
+  remediated: infeasible recommendations, commitment bypasses, ambiguous energy
+  scaling, carbon-cache poisoning/permissions/atomicity, redirect and response
+  bounds, invalid ranking values, and release metadata drift.
 - v0.21.0 full functionality/security release gate (2026-07-16) -- all eleven
   third-party findings remediated: direct-hardware-only measurement, sealed
   collection API, read-only verified consumers, synchronized windows/lockfile,
