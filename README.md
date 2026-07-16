@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.20.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now modelling per-layer energy (Watts, J/req, EEI) it measures but never actuates.
+> v0.21.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now recording platform-gated **measured** watts in a parallel hash chain — pat never signs a watt it did not measure (E1a).
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -1032,6 +1032,90 @@ watt is a number to reason with, not a knob to turn.
 
 ---
 
+## Measured energy (v0.21.0)
+
+The energy model above is the honest *modelled* answer. v0.21.0 adds **measured**
+watts: readings from a real power meter, stored in a parallel hash-chained table
+(`energy_observations`) alongside the serving observation chain. The governing
+rule (ADR-0011 §2 amendment, corollary **E1a**) is blunt: **pat never signs a
+watt it did not measure** — the chain only ever receives measured watts; the
+analytic model never enters it, and there is no `analytic` meter.
+
+```bash
+# Scrape one gated watt reading from a real meter and record it (chained).
+# --energy-meter is required (no default — an explicit meter is a claim):
+pat observe --prometheus https://prometheus.monitoring.svc:9090 \
+  --energy --energy-meter rapl --layer node --energy-window-s 60
+```
+
+Measured mode is **platform-gated and fail-closed**. Before any watt is recorded,
+pat runs the meter's *gate query* and refuses when no real power interface is
+present — on a host without one, nothing is written:
+
+```
+Measured-energy collection failed: no real power source detected: rapl gate
+query 'sum by (path) (increase(node_rapl_package_joules_total[60s]))' returned no
+series. This platform exposes no real power interface (readable RAPL zone / DCGM
+device); pat refuses to sign an unmeasured watt (ADR-0011 E1a). Nothing was
+recorded.
+```
+
+The gate proves a real power interface for **every supported meter**: it refuses
+unless at least one gate series carries a non-empty identity label for that
+interface (rapl→`path`, dcgm→`gpu`). Estimator **value tells** are refused *at
+the door*, not detected after the fact: any series carrying
+`components_power_source="estimator"` or `cpu_architecture="unknown"` (matched
+after `strip()`+`casefold()`, so casing/whitespace variants cannot slip through)
+is dropped. Kepler is refused regardless of labels: current Kepler can use a
+synthetic CPU meter and proportionally attributes node energy to workloads, so
+its metric/zone shape is not proof that a workload watt was directly measured.
+
+| Meter | Pinned metric (supported floor) | Gate label |
+|---|---|---|
+| `rapl` | `node_rapl_package_joules_total` — node-exporter RAPL package domain | `path` |
+| `dcgm` | `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` — DCGM exporter, millijoules (÷1000 → W) | `gpu` |
+
+The preset uses `increase(counter[window]) / window`, where `window` is the
+same whole-second `--energy-window-s` stored in the record. This binds the
+PromQL measurement interval to the reported joules window.
+
+The gate and watts queries are overridable (`--energy-watts-query`,
+`--energy-gate-query`). Overriding **either** away from the meter's pinned preset
+forfeits the pinned-metric attestation: the reading is recorded with
+`source=prometheus-override` (not `prometheus`) and the CLI warns accordingly.
+Because `source` is hash-chained, an overridden reading is permanently
+distinguishable from a preset-attested one. Note the honesty bound either way:
+the gate and the watts value come from separate instant queries (different scrape
+instants, and with overrides potentially different metrics), so the gate proves a
+real power interface exists at gate time but does not bind the watts sample to the
+gated series — the same capture-time bound ADR-0010 concedes for the chain.
+
+The supported record API accepts only process-local observations sealed by this
+collector. That capability prevents ordinary library callers from minting a
+clean `source=prometheus` chain from arbitrary values; it is an API boundary,
+not cryptographic remote attestation. Calibration and exporter consumers open
+the store read-only, verify the complete energy chain in the same database
+snapshot, validate every decoded row, and refuse tampered or incomplete data.
+
+`pat observe verify` now walks **both** chains and reports each:
+
+```
+── Serving observation chain ──
+   Observation chain — verified
+── Measured energy chain ──
+   Energy observation chain — verified
+```
+
+Exit 0 when both are intact and covered, 1 when either is broken, 2 on
+incomplete coverage. Fit the energy parameters straight from the chained store
+with `pat calibrate --energy-from-store` (mutually exclusive with
+`--energy-observation`), and export the latest measured watt per (layer, meter)
+as the `pat_measured_power_watts` gauge — labelled *measured*, distinct from the
+*modelled* `pat_power_watts`. E1a in one sentence: **an unmeasured watt cannot
+enter the store.**
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -1056,7 +1140,8 @@ watt is a number to reason with, not a knob to turn.
 | v0.18.0 | Training arc · Same question, new domain — ML training parallelism (`pat train-analyze`/`train-what-if`: data / fsdp / tensor / pipeline, memory as hard constraint) + `training-run@1` evidence with provenance parents (`pat train-evidence-emit`) |
 | v0.19.0 | Evidence-hardening arc — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes + calibration commitments binding fitted models to their source observations |
 | v0.19.1 | Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes |
-| **v0.20.0** | **Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1)** |
+| v0.20.0 | Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1) |
+| **v0.21.0** | **Measure the watt — measured-energy store + parallel hash chain (`pat observe --energy`, `verify` walks both chains), platform-gated fail-closed direct hardware presets (RAPL/DCGM; Kepler attribution is refused), verified read-only consumers, `pat calibrate --energy-from-store`, modelled + measured exporter gauges, energy alert rules** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

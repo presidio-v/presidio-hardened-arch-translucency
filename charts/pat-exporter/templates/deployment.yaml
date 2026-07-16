@@ -48,6 +48,13 @@ spec:
             - --layer
             - {{ . | quote }}
             {{- end }}
+            # Per-replica peak power for the MODELLED energy gauges (always on).
+            - --replica-power-watts
+            - {{ .Values.workload.replicaPowerWatts | quote }}
+            {{- if .Values.observationStore.enabled }}
+            - --db
+            - {{ .Values.observationStore.dbPath | quote }}
+            {{- end }}
             - --host
             - 0.0.0.0
             - --port
@@ -82,6 +89,19 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.observationStore.enabled }}
+          volumeMounts:
+            - name: observation-store
+              mountPath: {{ .Values.observationStore.mountPath | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.observationStore.enabled }}
+      volumes:
+        - name: observation-store
+          persistentVolumeClaim:
+            claimName: {{ required "observationStore.existingClaim is required when observationStore.enabled=true" .Values.observationStore.existingClaim | quote }}
+            readOnly: true
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

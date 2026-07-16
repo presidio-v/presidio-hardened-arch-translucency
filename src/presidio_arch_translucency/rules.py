@@ -106,6 +106,8 @@ def build_alert_group(
     surge_ratio: float = DEFAULT_SURGE_RATIO,
     trend_threshold: float = DEFAULT_TREND_THRESHOLD,
     for_duration: str = DEFAULT_FOR,
+    energy_budget: float | None = None,
+    energy: bool = False,
 ) -> RuleGroup:
     """
     Alerting rules over the recording rules and raw exporter metrics.
@@ -115,6 +117,13 @@ def build_alert_group(
     alert only when *current_layer* is given, and a cost-budget alert only when
     *cost_budget* is given (the cost metric exists only under
     ``--cost-per-replica-hour``).
+
+    Energy alerts (v0.21.0) form an optional group, gated exactly like the cost
+    alert: when *energy_budget* is given OR *energy* is set,
+    ``PatIdleEnergyWaste`` is always included, and ``PatEnergyPerRequestOverBudget``
+    additionally when a budget is supplied. Both fire on the exporter's MODELLED
+    energy gauges (the annotations say so). Without either flag the emitted rule
+    file is byte-identical to the pre-v0.21 output.
     """
     _validate_duration(for_duration, "--for")
     rules: list[Rule] = [
@@ -200,7 +209,73 @@ def build_alert_group(
             )
         )
 
+    if energy_budget is not None or energy:
+        rules.extend(
+            _energy_alert_rules(energy_budget=energy_budget, for_duration=for_duration)
+        )
+
     return RuleGroup(name="pat.alerts", rules=rules)
+
+
+def _energy_alert_rules(energy_budget: float | None, for_duration: str) -> list[Rule]:
+    """The optional energy alert group (v0.21.0).
+
+    ``PatIdleEnergyWaste`` is always present in the group; the over-budget alert
+    joins it only when a budget is supplied. Both alert on MODELLED energy
+    gauges — the annotations state this so an operator never mistakes a model
+    output for a signed measurement (ADR-0011 E1a).
+
+    ``PatIdleEnergyWaste`` expresses "standing energy with falling demand:
+    replicas exceed what demand needs" using the metric pair the exporter
+    actually exposes. There is no running-replica-count metric (the exporter is
+    emit-only and models a supplied workload), so we compose the *prediction vs
+    recommendation* pair: modelled power is being drawn while the demand forecast
+    recommends fewer replicas than the current analytic recommendation. The
+    forecast series exist only under ``pat export --predict``, so the alert is
+    silent (no false positive) when forecasting is off.
+    """
+    rules: list[Rule] = []
+    if energy_budget is not None:
+        if energy_budget <= 0:
+            raise RuleError("--energy-budget must be > 0")
+        rules.append(
+            Rule(
+                alert="PatEnergyPerRequestOverBudget",
+                expr=f"pat_energy_per_request_joules > {_num(energy_budget)}",
+                for_=for_duration,
+                labels={"severity": "warning"},
+                annotations={
+                    "summary": "Energy per request over budget (modelled)",
+                    "description": (
+                        "pat_energy_per_request_joules for {{ $labels.layer }} is "
+                        "{{ $value }} J/request (budget "
+                        f"{_num(energy_budget)} J/request, modelled by the analytic "
+                        f"energy model) for {for_duration}."
+                    ),
+                },
+            )
+        )
+    rules.append(
+        Rule(
+            alert="PatIdleEnergyWaste",
+            expr=(
+                "pat_power_watts > 0 and "
+                "pat_predicted_recommended_replicas < pat_recommended_replicas"
+            ),
+            for_=for_duration,
+            labels={"severity": "warning"},
+            annotations={
+                "summary": "Standing energy with falling demand",
+                "description": (
+                    "pat draws modelled power for {{ $labels.layer }} while the "
+                    "demand forecast recommends fewer replicas than the current "
+                    f"recommendation for {for_duration}: replicas exceed what "
+                    "demand needs. Consider scaling in to reclaim idle energy."
+                ),
+            },
+        )
+    )
+    return rules
 
 
 def build_rule_groups(
@@ -209,6 +284,8 @@ def build_rule_groups(
     surge_ratio: float = DEFAULT_SURGE_RATIO,
     trend_threshold: float = DEFAULT_TREND_THRESHOLD,
     for_duration: str = DEFAULT_FOR,
+    energy_budget: float | None = None,
+    energy: bool = False,
 ) -> list[RuleGroup]:
     """Build the full recording + alerting rule groups."""
     return [
@@ -219,6 +296,8 @@ def build_rule_groups(
             surge_ratio=surge_ratio,
             trend_threshold=trend_threshold,
             for_duration=for_duration,
+            energy_budget=energy_budget,
+            energy=energy,
         ),
     ]
 

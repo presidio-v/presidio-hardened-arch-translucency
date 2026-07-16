@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.20.0** ("Energy arc · Model the watt")
+- Current version: **0.21.0** ("Energy arc · Measure the watt")
 
 ---
 
@@ -69,7 +69,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.19.0 | **Evidence-hardening arc · Prove the history, bind the fit** — hash-chained observations (`pat observe verify`) with strict tamper vs legacy exit codes; calibration commitments binding fitted models to source observations; ADR-0010 accepted | Shipped v0.19.0 (2026-07-05); third-party audit finding ARCH-01 remediated before release |
 | v0.19.1 | **Evidence-hardening patch release** — publish the accepted ADR-0010 line with remediated GitHub Actions pins and CodeQL code-scanning alert fixes | Release gate for v0.19.1 (2026-07-07) |
 | v0.20.0 | **Energy arc · Model the watt** — analytic per-layer energy model (α_E/β_E, `E(δ)`), J/req + Watts + EEI in `analyze`/`what-if`/`slo`, `pat calibrate --energy-observation` fitting into the committed fit record (ADR-0011 accepted) | Implemented; third-party findings ARCH-020-01…08 remediated and release gate green (2026-07-14) |
-| v0.21.0 | Energy arc · Measure the watt — platform-gated measured mode (probe for a real power source, fail closed without one; Kepler ≥0.10.0 `kepler_container_cpu_joules_total` / RAPL / DCGM), parallel `energy_observations` chain, energy gauges + rules | Planned (respecified 2026-07-13 per L-EN-3 spike + E1a) |
+| v0.21.0 | Energy arc · Measure the watt — platform-gated direct-hardware mode (RAPL/DCGM; Kepler attribution refused), parallel verified `energy_observations` chain, energy gauges + rules | Implemented and third-party release gate remediated (2026-07-16) |
 | v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity, energy-signal scaler | Planned |
 | v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` (L-TR-1) + watts per strategy, `training-run@1` optional energy fields | Planned |
 | v0.24.0 | Energy arc · Sign the watt — `energy-reading@1` Layer-0 emit carrying the chain head (discharges the ADR-0010 deferral), arc retro + position paper | Planned |
@@ -1312,11 +1312,11 @@ the founding claim, now in watts.
 
 ### Deferred (recorded, not built)
 
-- L-EN-1: measured energy (Kepler/RAPL/DCGM preset + chained store) — v0.21.
+- L-EN-1: measured energy (RAPL/DCGM preset + chained store) — v0.21.
 - L-EN-2: energy/carbon budgets and `pat budget` — v0.22.
 - L-EN-3: Kepler fidelity on non-RAPL hardware — **spike done 2026-07-13**
   (results local-only in `plan/`). Verdict: gate measured mode on a real power
-  source and fail closed; never ship estimator mode. Findings: Kepler legacy
+  source and fail closed; never ship estimator or attribution mode. Findings: Kepler legacy
   (≤0.9) fabricates plausible joules without a power interface (tell: empty
   `source=""` label); Kepler ≥0.10.0 removed the estimator *and* arm64 support
   and hard-exits without RAPL zones; the metric is now
@@ -1324,12 +1324,16 @@ the founding claim, now in watts.
   `kepler_container_joules_total`. v0.21 must therefore: probe for a readable
   power source at `observe` start (powercap RAPL zone or DCGM) and refuse to
   record energy rows without one; drop any sample carrying the estimator tell;
-  pin the current metric name and declare Kepler ≥0.10.0 amd64/baremetal as the
-  supported floor. Elevated to corollary E1a.
+  initially appeared suitable after the v0.10 reboot. The v0.21 third-party
+  audit invalidated that conclusion: current Kepler still supports a synthetic
+  CPU meter and workload energy is proportional attribution, while metric/zone
+  shape does not distinguish it. The release therefore refuses Kepler and
+  admits direct node-exporter RAPL/DCGM counters only. Elevated to E1a.
 - L-EN-4: `energy-reading@1` family vector reservation — **PR #14 open**
   (presidio-evidence `reserve-energy-reading-v1`, 2026-07-13); both lanes
   green. Field-naming decisions taken 2026-07-13 (drop payload-internal
-  `reading` id; `source`→`meter` with enum `rapl|kepler|dcgm`, no `analytic`
+  `reading` id; `source`→`meter` with family enum `rapl|kepler|dcgm`, while this
+  producer deliberately emits only direct `rapl|dcgm`, no `analytic`
   per E1a; `layer` XOR `strategy`; RFC3339 `window_start`/`window_end`
   instants; add `LAYER0_READING_SCHEMA_IDS` registry constant in the same PR).
   Answers to apply on the PR: `plan/pr14-answers.md`. Merge freezes the shape
@@ -1345,6 +1349,95 @@ the founding claim, now in watts.
 | Commitment fields conditional on presence | v0.19 records must re-hash byte-identically; additive-only evolution of a hash surface |
 | EEI vs single-replica baseline of the same layer | Cross-layer comparison stays in the J/req column; EEI answers "does replicating *here* pay for itself energetically" |
 | No energy flags on `rules`/`export`/`scaler` yet | Alerting and gauges belong to the measured domain (v0.21); modeling first keeps every number attributable to a documented equation |
+
+## v0.21.0 — Measure the watt (implemented 2026-07-16)
+
+### Direction
+
+The CMI analog: real joules enter the store — under corollary E1a, *pat never
+signs a watt it did not measure*. Everything measured flows through the
+existing Prometheus source (single-shot D2, `PAT_PROMETHEUS_TOKEN` env-only,
+HTTPS-with-token, urllib-only — the security surface already existed); pat
+gains no local power-reading code. The ADR-0011 §2 amendment's "probe for a
+real power source" is interpreted for the remote source as a **gate query**:
+the cluster proves it has a power interface by exposing real
+zone/path/gpu-labelled counters under the pinned metric names. No usable gated
+series ⇒ exit non-zero, nothing written.
+
+### Scope (implemented)
+
+- [x] **Parallel measured store** — `energy_observations` +
+  `energy_observation_chain` in the same `~/.pat/observations.db` (same 0700/
+  0600 discipline), hash-chained with the byte-identical ADR-0010 rule
+  (`SHA-256(canonical({content, prev_hash, seq}))`, genesis `"0"*64`,
+  string-decimal numerics). All nine fields bound: timestamp, watts, joules,
+  window_s, rps, layer, replicas, meter, source. `meter` is a strict enum
+  (`rapl|dcgm`) — deliberately no `manual`, `analytic`, or attributed meter (E1a).
+  `joules ≈ watts×window_s` enforced at validation.
+- [x] **`pat observe --prometheus URL --energy --energy-meter rapl|dcgm`**
+  — single-shot capture through the E1a gate: pinned metric names
+  (`node_rapl_package_joules_total` + `path`;
+  `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` mJ + `gpu`), gate-label proof for
+  **every** supported meter, estimator value-tells refused normalized
+  (`components_power_source="estimator"`, `cpu_architecture="unknown"`).
+- [x] **Query overrides are chain-marked.** Overriding the gate or watts query
+  records the reading with `source="prometheus-override"` (hash-chained, so
+  permanently distinguishable from a preset-attested reading) + a CLI warning.
+  The pinned-metric attestation never silently extends to operator queries.
+- [x] **Collector-sealed persistence + verified consumers.** The public record
+  API accepts only process-local collector-sealed observations (an API boundary,
+  not remote attestation). Calibration/export open existing storage read-only,
+  verify the entire chain in the same snapshot, validate decoded rows, and fail
+  closed on tampering; a missing store is empty and creates no HOME state.
+- [x] **Window/query consistency.** RAPL/DCGM watts use
+  `increase(counter[window]) / window` with the same bounded whole-second window
+  recorded in joules, preventing measurement-range drift.
+- [x] **`pat observe verify`** walks both chains (two report sections); exit
+  codes per ADR-0011 §2: break in either ⇒ 1, legacy-incomplete ⇒ 2,
+  `--allow-legacy` downgrades only 2.
+- [x] **`pat calibrate --energy-from-store`** — fits the v0.20 energy model
+  from measured rows (≥2 distinct δ), same committed fit record, mutual
+  exclusion with `--energy-observation`; DB values re-validated on read.
+- [x] **Exporter** — modelled gauges `pat_energy_per_request_joules`,
+  `pat_power_watts`, `pat_energy_efficiency_index` (HELP marks them
+  *modelled*) + `pat_measured_power_watts{layer,meter}` (HELP *measured*,
+  emitted only when the store has rows). Grafana energy panel row + sync test;
+  Helm chart pass-through (chart 0.21.0).
+- [x] **`pat rules --energy-budget <J/req>`** — `PatEnergyPerRequestOverBudget`
+  (mirrors the cost-budget gate) + `PatIdleEnergyWaste` (standing energy with
+  falling demand — the SEANERGYS "job not using its allocation", translated);
+  default rules output byte-identical without the flag.
+- [x] **Tests** — 135 new (store/chain tamper classes per table, gate refusal
+  matrix incl. tell normalization and per-meter label proof, override
+  marking + chain-hash distinction, verify exit-code matrix, calibrate
+  round-trip + non-numeric-store hardening, exporter/rules/grafana/chart).
+  Full remediated suite 1048 passed, 95.99% coverage, ruff clean.
+- [x] **Pre-audit adversarial review** (same session): found the gate
+  overridable without trace (fixed via chain-marked `prometheus-override`
+  source), and incomplete gate-label proof. The third-party audit additionally
+  found Kepler attribution/synthetic-meter ambiguity, unverified consumer reads,
+  a caller-mintable persistence path, fixed PromQL windows, read-only Helm
+  failure, stale lock/release metadata, and absent container publication. All
+  are remediated in the 2026-07-16 release gate.
+
+### Bounded claim (no overclaiming)
+
+The gate proves a real power interface exists on the cluster **at gate time**;
+gate and watts are separate instant queries, so the gate does not bind the
+specific watts sample to the gated series. This rides on the same capture-time
+honesty bound ADR-0010 concedes; external anchoring remains v0.24.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Gate query as the platform probe | pat has no cluster-local execution; the remote source proves its power interface by exposing real labelled counters under pinned names — fail-closed without them |
+| Overrides marked, not forbidden | Renamed metrics are legitimate; an override that silently kept the preset attestation would be the E1a loophole. `source="prometheus-override"` is hashed into the chain — honesty is structural, not procedural |
+| Kepler refused; RAPL/DCGM only | Kepler's synthetic CPU meter and proportional workload attribution share the normal metric/zone shape, so labels cannot prove a direct measurement |
+| Collector seal + read-only verified load | Ordinary callers cannot mint preset-labelled records through the public API, and downstream model/export paths never consume broken chains; the local seal is not remote attestation |
+| Strict meter enum, no `manual` | A hand-entered watt in the measured store would be E1a's loophole; reopening it requires reopening E1a explicitly |
+| `joules ≈ watts×window_s` enforced | A signed self-inconsistent figure is an audit finding waiting to happen; tolerance-checked at validation |
+| Energy alerts in the existing group | Default `pat rules` output stays byte-identical; chart bundle sync test keeps its pin |
 
 ## SDLC
 

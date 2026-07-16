@@ -14,6 +14,11 @@ workload:
   currentLayer: container
   # Optional calibrated service-layer label (--layer). Empty = global fit.
   modelLayer: ""
+  # Per-replica peak power (W) for the MODELLED energy gauges
+  # (--replica-power-watts): pat_power_watts / pat_energy_per_request_joules /
+  # pat_energy_efficiency_index. MVP placeholder ~15 W; calibrate with
+  # `pat calibrate --energy-observation` / `--energy-from-store`.
+  replicaPowerWatts: 15
 
 # -- Forecast metrics (`pat export --predict`). Off by default: prediction
 # needs a populated observation store (`pat observe`) mounted into the pod,
@@ -25,14 +30,23 @@ predict:
   horizonMinutes: 10
   layer: ""         # observation layer to forecast from; empty = currentLayer
 
+# -- Optional read-only observation store. The default exporter requires no
+# writable HOME and emits modelled gauges only. Mount an existing PVC to expose
+# verified measured-energy gauges and/or enable prediction. The exporter opens
+# this database read-only and refuses tampered or incomplete energy chains.
+observationStore:
+  enabled: false
+  existingClaim: ""
+  mountPath: /var/lib/pat
+  dbPath: /var/lib/pat/observations.db
+
 # -- Cost metrics (`pat export --cost-per-replica-hour`). Empty = disabled.
 costPerReplicaHour: ""
 
 image:
   repository: ghcr.io/presidio-v/pat-exporter
   # Empty tag defaults to the chart appVersion (see _helpers.tpl). The chart
-  # appVersion intentionally stays 0.16.0 until a chart/image release is cut;
-  # override this only when you have built and published a matching newer image.
+  # appVersion tracks the signed application release.
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

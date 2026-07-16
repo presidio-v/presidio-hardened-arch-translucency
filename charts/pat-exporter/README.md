@@ -1,13 +1,8 @@
 # pat-exporter Helm chart
 
 Cluster-native packaging of the read-only architectural-translucency exporter
-(`pat export`). This is step seven — **"Package & operate"** (v0.16.0) — of the
-monitoring-integration arc: it ships the exporter and its declarative monitoring
-artifacts as one installable bundle.
-
-`v0.17.0` is an evidence/library release, not a chart release. This chart and
-its default image tag remain `0.16.0` until a chart/image release is cut
-deliberately.
+(`pat export`). Chart 0.21.0 ships the exporter, measured/modelled energy panels,
+and its declarative monitoring artifacts as one installable bundle.
 
 **Emit-only.** The chart deploys a read-only `/metrics` endpoint and declarative
 objects (ServiceMonitor, PrometheusRule, dashboard ConfigMap). The exporter
@@ -48,11 +43,11 @@ helm install pat ./charts/pat-exporter -n monitoring \
   --set dashboard.enabled=true
 ```
 
-The container image is built from the repo `Dockerfile`. Pin `PAT_VERSION` when
-building the image expected by this chart:
+The container image is built from the checked-out source with a digest-pinned
+base image:
 
 ```bash
-docker build --build-arg PAT_VERSION=0.16.0 -t ghcr.io/presidio-v/pat-exporter:0.16.0 .
+docker build --build-arg VERSION=0.21.0 -t ghcr.io/presidio-v/pat-exporter:0.21.0 .
 ```
 
 ## Security posture
@@ -64,6 +59,9 @@ docker build --build-arg PAT_VERSION=0.16.0 -t ghcr.io/presidio-v/pat-exporter:0
 - **Network**: optional NetworkPolicy closes every port except `metrics`.
 - The exporter binds `0.0.0.0` inside the pod (required to be scraped) but
   serves only `GET /metrics` and `/healthz` — there is no mutation path.
+- The default deployment creates no observation database and works with a
+  read-only root filesystem. An optional existing PVC is mounted read-only;
+  energy rows are consumed only after full chain verification.
 
 ## Key values
 
@@ -75,6 +73,8 @@ See [`values.yaml`](values.yaml) for the full list. Most-used:
 | `workload.avgLatencyMs` | `80` | `pat export -l` |
 | `workload.currentLayer` | `container` | `pat export -c` |
 | `predict.enabled` | `false` | Needs a mounted observation store. |
+| `observationStore.enabled` | `false` | Mount an existing PVC read-only. |
+| `observationStore.existingClaim` | `""` | Required when the store is enabled. |
 | `costPerReplicaHour` | `""` | Adds cost gauges when set. |
 | `serviceMonitor.enabled` | `false` | Prometheus Operator. |
 | `prometheusRule.enabled` | `false` | Prometheus Operator. |

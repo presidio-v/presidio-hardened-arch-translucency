@@ -64,20 +64,25 @@ in either chain yielding exit 1.
 receives **measured** watts — *pat never signs a watt it did not measure*.
 Concretely, v0.21 measured mode is platform-gated and fail-closed:
 
-- At `pat observe` start, probe for a real power source (a readable
-  `/sys/class/powercap/intel-rapl*` zone, or DCGM for accelerators). Absent
+- At `pat observe` start, probe for a direct hardware power source (a readable
+  node-exporter RAPL counter, or DCGM for accelerators). Absent
   one, exit non-zero with a clear "no power source on this platform" message
   and write **no** rows to `energy_observations`. No estimator fallback, no
-  fidelity-warning mode: Kepler's legacy estimator emits plausible, monotonic,
-  correctly-attributed joules that are fabricated on power-interface-less
-  platforms, and a signed estimate would weaponise exactly the capture-time
+  fidelity-warning mode: attributed or synthetic workload joules are not direct
+  measurements, and a signed estimate would weaponise exactly the capture-time
   honesty gap ADR-0010 concedes.
-- Reject the estimator tell explicitly: drop any sample carrying `source=""`,
+- Reject estimator tells explicitly: drop any sample carrying
   `components_power_source="estimator"`, or `cpu_architecture="unknown"` —
   refused at the door, not detected after the fact.
-- Pin the current metric name `kepler_container_cpu_joules_total` (+ `zone`
-  label); minimum supported Kepler ≥0.10.0, amd64/baremetal. The legacy
-  `kepler_container_joules_total` name is not scraped.
+- Pin node-exporter's `node_rapl_package_joules_total` and DCGM's
+  `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`. Kepler is not accepted: current
+  releases support a synthetic CPU meter and proportionally attribute node
+  energy to workloads, while retaining an indistinguishable metric/zone shape.
+- Derive watts with `increase(counter[window]) / window`, using the exact same
+  whole-second window stored in the observation.
+- Require a process-local collector seal at the public persistence API, and
+  require consumers to verify the complete chain from a read-only SQLite
+  snapshot. The seal narrows the supported API; it is not remote attestation.
 - The analytic model (§1) remains the honest cross-platform answer and is
   always labelled as modelled — it never enters the chain and never becomes an
   `energy-reading@1` (the family enum deliberately has no `"analytic"` meter).

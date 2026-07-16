@@ -1,4 +1,4 @@
-"""Tests for the ``pat-exporter`` Helm chart (v0.16.0, "Package & operate").
+"""Tests for the ``pat-exporter`` Helm chart (v0.21.0).
 
 The chart is the seventh step of the monitoring-integration arc — cluster-native
 packaging of the read-only ``pat export`` endpoint. CI has no Helm binary, so
@@ -42,10 +42,10 @@ def test_chart_yaml_present_and_v2() -> None:
     assert re.search(r"^apiVersion:\s*v2\s*$", chart, re.MULTILINE)
     assert re.search(r"^name:\s*pat-exporter\s*$", chart, re.MULTILINE)
     assert re.search(r"^type:\s*application\s*$", chart, re.MULTILINE)
-    # Chart + appVersion stay at 0.16.0: v0.17.0 is an evidence/library
-    # release, not a pat-exporter chart/image release.
-    assert re.search(r"^version:\s*0\.16\.0\s*$", chart, re.MULTILINE)
-    assert re.search(r'^appVersion:\s*"0\.16\.0"\s*$', chart, re.MULTILINE)
+    # Chart + appVersion bumped to 0.21.0 for the "Measure the watt" release
+    # (deployment gains --replica-power-watts; bundled dashboard gains energy row).
+    assert re.search(r"^version:\s*0\.21\.0\s*$", chart, re.MULTILINE)
+    assert re.search(r'^appVersion:\s*"0\.21\.0"\s*$', chart, re.MULTILINE)
 
 
 def test_expected_template_files_exist() -> None:
@@ -144,6 +144,16 @@ def test_predict_and_cost_are_gated() -> None:
     values = _read("values.yaml")
     # Prediction is off by default (needs a populated observation store).
     assert re.search(r"predict:\s*\n\s*enabled:\s*false", values)
+
+
+def test_observation_store_is_optional_and_read_only() -> None:
+    dep = _read("templates/deployment.yaml")
+    values = _read("values.yaml")
+    assert re.search(r"observationStore:\s*\n\s*enabled:\s*false", values)
+    assert "{{- if .Values.observationStore.enabled }}" in dep
+    assert "observationStore.existingClaim is required" in dep
+    assert "readOnly: true" in dep
+    assert "- --db" in dep
 
 
 # ── operator/sidecar artifacts gated off by default ───────────────────────────

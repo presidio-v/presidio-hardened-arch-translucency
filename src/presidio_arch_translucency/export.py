@@ -27,7 +27,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from presidio_arch_translucency.model import ReplicationLayer, analyze
+from presidio_arch_translucency.energy import (
+    DEFAULT_REPLICA_POWER_WATTS,
+    layer_energy,
+)
+from presidio_arch_translucency.model import (
+    ReplicationLayer,
+    analyze,
+    base_capacity_rps,
+    resolve_concurrency,
+)
 
 # Prometheus text exposition content type (format version 0.0.4).
 CONTENT_TYPE_METRICS = "text/plain; version=0.0.4; charset=utf-8"
@@ -113,6 +122,7 @@ def build_metrics(
     current_layer: ReplicationLayer,
     layer: str | None = None,
     cost_per_replica_hour: float | None = None,
+    replica_power_watts: float = DEFAULT_REPLICA_POWER_WATTS,
 ) -> list[Metric]:
     """
     Build the exporter's metric set from a single architectural-translucency
@@ -123,6 +133,13 @@ def build_metrics(
     ``pat_layer_recommended``. When *cost_per_replica_hour* is given, per-layer
     cost gauges (``pat_cost_per_request``, ``pat_hourly_cost_usd``) are added
     using that uniform replica cost.
+
+    Per-layer energy gauges (``pat_energy_per_request_joules``,
+    ``pat_power_watts``, ``pat_energy_efficiency_index``) are always included —
+    they are MODELLED outputs of the analytic energy model (v0.20.0), computed
+    from the same analysis with :data:`DEFAULT_REPLICA_POWER_WATTS` exactly as
+    ``pat analyze`` does. Their HELP text says so; a *measured* watt only ever
+    reaches ``pat_measured_power_watts`` (see :func:`measured_energy_metrics`).
     """
     result = analyze(
         requests_per_second=requests_per_second,
@@ -193,7 +210,108 @@ def build_metrics(
     if cost_per_replica_hour is not None:
         metrics.extend(_cost_metrics(result, cost_per_replica_hour))
 
+    metrics.extend(
+        _energy_metrics(
+            result, requests_per_second, avg_latency_ms, layer, replica_power_watts
+        )
+    )
+
     return metrics
+
+
+def _energy_metrics(
+    result: object,
+    requests_per_second: float,
+    avg_latency_ms: float,
+    model_layer: str | None,
+    replica_power_watts: float,
+) -> list[Metric]:
+    """MODELLED per-layer energy gauges from the analytic energy model.
+
+    Uses :func:`energy.layer_energy` over the same analysis result, so the
+    exported energy figures match what ``pat analyze`` renders. A layer whose
+    model yields ``None`` (J/req or EEI undefined at zero throughput) contributes
+    no sample for that gauge — an honest gap, not a fabricated 0. HELP text marks
+    every gauge as modelled (E1a hygiene: these are model outputs, never signed
+    measurements).
+    """
+    base_cap = base_capacity_rps(
+        requests_per_second, avg_latency_ms, resolve_concurrency(model_layer)
+    )
+    jreq: list[Sample] = []
+    watts: list[Sample] = []
+    eei: list[Sample] = []
+    for lr in result.layers:  # type: ignore[attr-defined]
+        le = layer_energy(
+            lr.layer,
+            lr.optimal_replicas,
+            requests_per_second,
+            base_cap,
+            replica_power_watts,
+            model_layer,
+        )
+        labels = {"layer": lr.layer.value}
+        watts.append(Sample(labels, le.watts))
+        if le.joules_per_request is not None:
+            jreq.append(Sample(labels, le.joules_per_request))
+        if le.eei is not None:
+            eei.append(Sample(labels, le.eei))
+    return [
+        Metric(
+            "pat_energy_per_request_joules",
+            "Energy per request (joules) at the recommended replica count per "
+            "layer — modelled (analytic energy model).",
+            jreq,
+        ),
+        Metric(
+            "pat_power_watts",
+            "Total power draw (watts) at the recommended replica count per layer "
+            "— modelled (analytic energy model).",
+            watts,
+        ),
+        Metric(
+            "pat_energy_efficiency_index",
+            "Energy-Efficiency Index (throughput gain vs energy-intensity change "
+            "from the single-replica baseline) per layer — modelled (analytic "
+            "energy model).",
+            eei,
+        ),
+    ]
+
+
+def measured_energy_metrics(db_path: object = None) -> list[Metric]:
+    """The most recent MEASURED power per (layer, meter) from the energy store.
+
+    Reads the chained ``energy_observations`` store and emits one
+    ``pat_measured_power_watts`` sample per (layer, meter) at its latest reading.
+    HELP marks these MEASURED — a real watt from a real meter, distinct from the
+    modelled gauges — so a dashboard or alert never confuses a model output with
+    a signed measurement (E1a). Returns ``[]`` when the store holds no energy
+    observations, so the series appears only when a measurement backs it.
+    """
+    from presidio_arch_translucency.observe import (  # noqa: PLC0415
+        load_verified_energy_observations,
+    )
+
+    rows = load_verified_energy_observations(db_path=db_path)
+    if not rows:
+        return []
+    # Rows are oldest-first, so the last write for a key is its most recent.
+    latest: dict[tuple[str, str], object] = {}
+    for eobs in rows:
+        latest[(eobs.layer, eobs.meter)] = eobs
+    samples = [
+        Sample({"layer": e.layer, "meter": e.meter}, e.watts)  # type: ignore[attr-defined]
+        for e in latest.values()
+    ]
+    return [
+        Metric(
+            "pat_measured_power_watts",
+            "Most recent measured power draw (watts) per layer and meter — "
+            "measured (chained energy observation store).",
+            samples,
+        )
+    ]
 
 
 def _cost_metrics(result: object, cost_per_replica_hour: float) -> list[Metric]:

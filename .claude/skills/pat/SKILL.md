@@ -75,8 +75,8 @@ ADR-0006, optional token from `PAT_OTLP_TOKEN`). `pat export --pushgateway <url>
 scales the deployment to track `pat_predicted_recommended_replicas` — emit-only.
 The Helm chart under `charts/pat-exporter` deploys the read-only exporter and
 optional ServiceMonitor, PrometheusRule, Grafana dashboard ConfigMap, and
-NetworkPolicy. The chart is a v0.16.0 packaging artifact; its default image tag
-intentionally follows the chart `appVersion` unless a new chart release is cut.
+NetworkPolicy. Chart 0.21.0 follows its `appVersion`; an existing observation
+store can be mounted read-only for verified measured-energy and prediction data.
 `pat evidence-emit --p99-target-ms <ms>` emits unsigned Layer-0 SLO readings
 from an explicit `--p99-latency-ms` or the latest stored observation. Pipe that
 JSON to the signing bridge; downstream consumers act only after verifying the

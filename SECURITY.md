@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.20.x | :white_check_mark: |
+| main / 0.21.x | :white_check_mark: |
+| 0.20.x  | :white_check_mark: |
 | 0.19.x  | :white_check_mark: |
 | 0.17.x  | :white_check_mark: |
 | 0.8.x   | :white_check_mark: |
@@ -80,7 +81,26 @@ by the producer; resolving and verifying the referenced payloads is the
 consumer's responsibility (presidio-evidence ADR-0002 P4). The security log
 records a SHA-256 digest of `run_id`, never the raw value.
 
-## Known Limitations (main / v0.20.x)
+**Measured energy (v0.21.0).** `pat observe --energy` records watts scraped
+from Prometheus into a second hash chain (`energy_observations`), under
+corollary E1a: *pat never signs a watt it did not measure*. The platform gate
+is fail-closed — no gated series under the pinned direct-hardware metric names
+(node-exporter RAPL or DCGM)
+means nothing is written; estimator value-tells are refused (normalized); a
+gate/watts **query override is permanently marked in the chained record**
+(`source="prometheus-override"`), so an operator-supplied query can never
+masquerade as a preset-attested measurement. Bounded claim: the gate proves a
+power interface exists at gate time; it does not bind the watts sample to the
+gated series, and the chain does not prove capture-time honesty (ADR-0010
+bound). Kepler is rejected because its supported synthetic CPU meter and
+workload attribution cannot be distinguished by metric/label shape from direct
+measurement. The public persistence API requires a process-local collector seal;
+this is an API capability, not remote attestation. Export and calibration verify
+the full energy chain from a read-only SQLite snapshot before consuming rows.
+The token/HTTPS discipline of the serving Prometheus source applies unchanged;
+the strict meter enum has no `manual`/`analytic` member.
+
+## Known Limitations (main / v0.21.x)
 
 - The simulation model uses calibrated coefficients, not live telemetry.
   Production use should be validated against actual cluster metrics.
@@ -100,11 +120,15 @@ records a SHA-256 digest of `run_id`, never the raw value.
 - `pat demo` is for local demonstration only. It binds published ports to
   loopback, but the workload is CPU-bound and must not be exposed through a
   reverse proxy or public Docker host.
-- Docker image base-tag digest pinning remains a separate supply-chain task that
-  requires selecting and maintaining verified upstream digests.
+- Container images use a digest-pinned Python base, build the checked-out release
+  source, and are published to GHCR with multi-architecture provenance.
 
 Manual security audit history:
 
+- v0.21.0 full functionality/security release gate (2026-07-16) -- all eleven
+  third-party findings remediated: direct-hardware-only measurement, sealed
+  collection API, read-only verified consumers, synchronized windows/lockfile,
+  hardened Helm persistence, and attested container publication.
 - v0.20.0 full functionality/security release gate (2026-07-14) -- all eight
   third-party findings remediated: locked dependency audit, Pillow 12.3.0,
   bounded/identifiable energy fits, committed-only energy coefficients, and

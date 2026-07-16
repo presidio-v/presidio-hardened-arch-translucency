@@ -55,7 +55,40 @@ def _exporter_metric_universe() -> set[str]:
         arima_order=(1, 1, 1),
     )
     names |= {m.name for m in prediction_metrics_from_result(arima_result)}
+    # Measured-energy gauge (v0.21.0): emitted only when the chained energy store
+    # has readings, so seed a temp store to surface its name in the universe.
+    names |= _measured_energy_metric_names()
     return names
+
+
+def _measured_energy_metric_names() -> set[str]:
+    """Names the measured-energy exporter path can emit (v0.21.0)."""
+    import tempfile
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from presidio_arch_translucency.export import measured_energy_metrics
+    from presidio_arch_translucency.observe import (
+        EnergyObservation,
+        _record_energy_observation_unchecked,
+    )
+
+    db = Path(tempfile.mkdtemp()) / "energy.db"
+    _record_energy_observation_unchecked(
+        EnergyObservation(
+            datetime.now(timezone.utc),
+            120.0,
+            7200.0,
+            60.0,
+            500.0,
+            "node",
+            4,
+            "rapl",
+            "prometheus",
+        ),
+        db_path=db,
+    )
+    return {m.name for m in measured_energy_metrics(db_path=db)}
 
 
 def _referenced_metrics() -> set[str]:

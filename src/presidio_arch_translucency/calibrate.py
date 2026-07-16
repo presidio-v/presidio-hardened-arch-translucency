@@ -255,6 +255,49 @@ def fit_calibration(observations: list[Observation]) -> CalibrationResult:
     )
 
 
+#: Placeholder latency for store-sourced energy fits. The energy model is
+#: latency-free (:func:`predict_watts` uses only replicas / rps / watts), but
+#: :class:`EnergyObservation` carries a latency field for parity with the
+#: ``--energy-observation`` quad and its shared validator requires ``> 0``.
+#: Measured-energy store rows have no latency, so this fixed non-zero sentinel
+#: satisfies the validator without ever entering the fit math.
+ENERGY_STORE_FIT_LATENCY_MS: float = 1.0
+
+
+def energy_observations_from_store(rows: list) -> list[EnergyObservation]:
+    """Map measured-energy store rows to energy-fit inputs (v0.21.0).
+
+    Each *row* is an ``observe.EnergyObservation`` (a chained, measured watt).
+    Only ``rps`` / ``replicas`` / ``watts`` drive the energy fit; latency is
+    supplied as :data:`ENERGY_STORE_FIT_LATENCY_MS` purely to satisfy the shared
+    validator (the energy model does not use it). The resulting objects feed
+    :func:`fit_energy_calibration` unchanged, so a store-sourced fit produces a
+    record byte-identical in shape to a ``--energy-observation`` fit — the
+    commitment binds it exactly the same way.
+
+    Numeric coercion is wrapped: a store row whose ``rps`` / ``replicas`` /
+    ``watts`` is non-numeric (e.g. a TEXT value in the DB) raises a clear
+    :class:`CalibrationError` rather than surfacing a bare ``ValueError``
+    traceback from ``float()`` / ``int()`` (P3).
+    """
+    mapped: list[EnergyObservation] = []
+    for row in rows:
+        try:
+            point = EnergyObservation(
+                rps=float(row.rps),
+                latency_ms=ENERGY_STORE_FIT_LATENCY_MS,
+                replicas=int(row.replicas),
+                watts=float(row.watts),
+            )
+        except (TypeError, ValueError) as exc:
+            raise CalibrationError(
+                "energy store row has non-numeric rps/replicas/watts "
+                f"(rps={row.rps!r}, replicas={row.replicas!r}, watts={row.watts!r})"
+            ) from exc
+        mapped.append(point)
+    return mapped
+
+
 def parse_energy_observation(raw: str) -> EnergyObservation:
     """
     Parse an ``rps:latency_ms:replicas:watts`` quad (e.g. ``300:80:5:420``).

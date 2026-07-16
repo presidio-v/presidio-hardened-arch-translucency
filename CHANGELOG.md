@@ -10,6 +10,119 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-16
+
+### Added
+
+- **Measured-energy store + parallel chain ("Measure the watt").** A new
+  `energy_observations` table (with its `energy_observation_chain`) stores
+  **measured** watt readings, hash-chained with the identical ADR-0010
+  discipline as the serving chain: `record_hash = SHA-256(canonical({content,
+  prev_hash, seq}))`, genesis `"0"*64`, numerics as round-trip decimal strings,
+  chain link appended in the same transaction as the insert. The `observations`
+  measurement schema and its chain are untouched (additive-only); the energy
+  table is new, so it carries no legacy prefix by construction. `EnergyObservation`
+  validates watts/joules/rps ≥ 0 finite, window_s > 0, replicas ≥ 1, and a strict
+  `meter ∈ {rapl, dcgm}` enum — deliberately **no** `manual`, `analytic`, or
+  attributed workload meter. The public record API accepts only observations
+  sealed by the supported collector; a private unchecked primitive exists only
+  for tests and migrations (ADR-0011 §2 amendment, corollary E1a).
+- **Prometheus energy source with meter presets + the E1a platform gate.**
+  `prometheus.instant_query_vector` returns every series with its label set;
+  `fetch_energy_observation` runs a fail-closed platform gate before recording
+  any watt — it refuses (distinct "no real power source detected" message,
+  nothing written) when the meter's gate query returns no series, when any series
+  lacks the hardware identity label (`path` for RAPL, `gpu` for DCGM), or carries
+  an estimator tell. A missing watts metric is refused rather than recorded as a
+  fabricated `0`. Presets pin node-exporter RAPL and DCGM hardware counters and
+  derive watts with `increase(counter[window]) / window`; the PromQL range and
+  recorded energy window therefore cannot diverge. Kepler is explicitly refused:
+  current Kepler supports a synthetic CPU meter and attributes node energy to
+  workloads, so its series shape is not proof of direct measurement.
+- **`pat observe --energy`.** Single-shot measured-energy mode:
+  `pat observe --prometheus URL --energy --energy-meter rapl|dcgm
+  [--energy-window-s 60] [--energy-watts-query …] [--energy-gate-query …]
+  --layer …` scrapes one gated watt reading and records it (chained), printing a
+  one-line confirmation with meter, watts, window, and chain seq. `--energy-meter`
+  is required with `--energy` (no default — an explicit meter is a claim).
+  `pat observe --list --energy` lists the energy store. Without `--energy`,
+  behaviour is byte-identical to before.
+- **`pat observe verify` walks BOTH chains.** Renders a serving section and an
+  energy section; exits 0 when both are intact and covered, 1 when either is
+  broken, 2 on incomplete coverage (only the serving chain can carry a legacy
+  prefix). `--allow-legacy` still downgrades only the exit-2 case.
+- **`pat calibrate --energy-from-store [--layer X]`.** Fits the energy
+  parameters from the chained measured-energy store instead of
+  `--energy-observation` quads (mutually exclusive with it), writing the same
+  committed record shape — existing calibration commitments verify and
+  tamper-fail unchanged.
+- **Exporter energy gauges.** `pat export` gains three **modelled** per-layer
+  gauges (`pat_energy_per_request_joules`, `pat_power_watts`,
+  `pat_energy_efficiency_index`) from the analytic energy model — HELP text says
+  "modelled (analytic energy model)" — plus one **measured** gauge
+  `pat_measured_power_watts{layer,meter}` from the latest energy observation per
+  (layer, meter), emitted only when the store has readings (HELP "measured
+  (chained energy observation store)"). A new `--replica-power-watts` flag mirrors
+  `pat analyze`.
+- **Verified, read-only energy consumption.** Calibration and exporter consumers
+  open an existing database read-only, verify complete energy-chain coverage in
+  the same SQLite snapshot, validate decoded rows, and fail closed on tampering
+  or malformed content. A missing store is empty and never creates `~/.pat`, so
+  the hardened Helm deployment works with a read-only root filesystem.
+- **Rules: energy alerts.** `pat rules --energy-budget <J/req>` emits
+  `PatEnergyPerRequestOverBudget` on the modelled `pat_energy_per_request_joules`
+  gauge (annotation states the budget and that the metric is modelled);
+  `--energy-budget` or the new `--energy` flag also emits `PatIdleEnergyWaste`
+  ("standing energy with falling demand: replicas exceed what demand needs",
+  composed from `pat_power_watts` and the prediction-vs-recommendation replica
+  pair). Default `pat rules` output is unchanged.
+- **Grafana + Helm.** The dashboard gains an Energy panel row (modelled watts,
+  J/req, EEI, and measured watts when present); the `pat-exporter` chart passes
+  `workload.replicaPowerWatts` through to the deployment and bundles the updated
+  dashboard (chart bumped to 0.21.0).
+
+### Security
+
+- **The platform gate and estimator-tell rejection are the security property of
+  measured mode (ADR-0011 §2 amendment, corollary E1a: *pat never signs a watt
+  it did not measure*).** Measured energy is platform-gated and fail-closed: on
+  a host with no real power interface the gate refuses and writes **no** rows —
+  there is no estimator fallback and no fidelity-warning mode, because Kepler's
+  workload energy may be synthetic or proportionally attributed rather than a
+  direct hardware measurement; signing it would weaponise exactly the
+  capture-time honesty gap ADR-0010 concedes. The chained energy store makes
+  post-hoc rewriting of the recorded watts detectable; it does not attest
+  capture-time honesty (external anchoring of chain heads remains a later
+  deliverable). The gate proves a real power interface exists on the cluster at
+  gate time; the gate and watts values come from separate instant queries, so it
+  does not bind the watts sample to the gated series — the same capture-time
+  bound.
+- **The gate label-proof applies to every supported meter.** A real power interface is
+  proven only when at least one gate series carries a non-empty identity label
+  for that interface — rapl→`path`, dcgm→`gpu`. If every returned series lacks
+  it, the gate refuses.
+- **Value-tells are refused (normalized).** A gate series carrying `components_power_source =
+  "estimator"` or `cpu_architecture = "unknown"` is refused at the door, matched
+  after `strip()` + `casefold()` so casing/whitespace variants cannot slip
+  through. Kepler is rejected independently of labels because neither its metric
+  name nor zone shape distinguishes a direct hardware meter from its supported
+  synthetic/attribution modes.
+- **Query overrides are permanently marked in the chain.** When a caller
+  overrides either the gate query or the watts query away from the meter's pinned
+  preset, the reading is recorded with `source = "prometheus-override"` instead
+  of `"prometheus"`, and the CLI warns that the pinned-metric attestation does
+  not apply. Because `source` is hash-chained, an overridden reading is
+  permanently distinguishable from a preset-attested one.
+- **Recorded energy is checked for internal consistency.** `EnergyObservation`
+  validation enforces `joules ≈ watts × window_s` (relative tolerance 1e-6),
+  refusing a record whose energy does not match its measured power over the
+  window.
+- **Metric names and release artifacts are pinned.** Presets pin
+  `node_rapl_package_joules_total` and
+  `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`. The Helm chart defaults to the 0.21.0
+  image, the Docker build uses a digest-pinned base and checked-out source, and a
+  release workflow publishes multi-architecture GHCR images with provenance.
+
 ## [0.20.0] - 2026-07-12
 
 ### Added
@@ -566,7 +679,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.18.1...v0.19.0
