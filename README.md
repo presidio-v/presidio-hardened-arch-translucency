@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.22.0 — Architectural Translucency Analyzer for Docker & Kubernetes, now budgeting the watt: `pat budget` computes the most output within an energy/carbon budget (or the least energy for a given output), with region carbon intensity and an energy-signal scaler — all modelled, never signed (E1a).
+> v0.23.0 — Architectural Translucency Analyzer for Docker, Kubernetes, and distributed training: calibrate training overhead from bounded step logs, compare samples/s/W, and emit producer-attributed training energy evidence.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -957,8 +957,8 @@ record** (run id, strategy, degree, samples/s, duration, devices, optional
 model/dataset hashes) for the same signing-bridge sidecar as `evidence-emit`.
 The payload may carry `parents` — content hashes of the upstream evidence that
 authorized the run (classification, gate decision) — attested *inside* the
-signed content, so evidence forms a verifiable provenance DAG
-(EU AI Act Art. 12 record-keeping as a by-product):
+signed content, so evidence forms a verifiable provenance DAG that can support
+broader operator documentation:
 
 ```bash
 pat train-evidence-emit --run-id run-2026-07-02-001 --strategy fsdp --degree 8 \
@@ -970,6 +970,75 @@ pat train-evidence-emit --run-id run-2026-07-02-001 --strategy fsdp --degree 8 \
 All inputs are validated fail-closed (finite numbers only, printable bounded
 run ids, lowercase-hex parent hashes); the library enforces the same contract
 independently of the CLI so a sidecar can never sign malformed content.
+
+### Training energy (v0.23.0) — "Train the watt"
+
+Rather than hand-editing the `training` section, **calibrate** the α/β overhead
+from measured runs. `pat train-calibrate` fits `tp(δ) = baseline · δ · eff(δ)`
+from one JSON-Lines **step log** per run and writes a *committed*
+`training.<strategy>` record (a post-calibration edit is detected and fails
+closed, exactly like `pat calibrate` for serving).
+
+A step log is JSON Lines — one optimizer step per line, carrying exactly these
+keys (unknown keys are rejected so a typo'd `"power"` cannot silently vanish;
+`power_w` is optional but must be present on **every** line of a run or none):
+
+```jsonl
+{"step": 0, "duration_s": 2.01, "samples": 512, "power_w": 430.0}
+{"step": 1, "duration_s": 1.98, "samples": 512, "power_w": 428.5}
+```
+
+The run aggregate a fit consumes is `samples_per_second = total_samples /
+total_duration_s`; the energy aggregate is the duration-weighted mean of
+`power_w`. Step ids must be strictly increasing. Files are descriptor-bound,
+non-symlink regular files (≤10 MB, ≤100 000 lines, strict UTF-8); numeric fields
+are bounded and every malformed line fails closed naming its 1-based number.
+
+```bash
+# Fit the DDP overhead from three step logs at δ = 1, 2, 4
+# (α/β strategies need ≥3 distinct degrees for the full fit; pipeline needs ≥2):
+pat train-calibrate --strategy data \
+  --run 1:logs/ddp1.jsonl --run 2:logs/ddp2.jsonl --run 4:logs/ddp4.jsonl
+```
+
+Every fit requires a δ=1 run, which uniquely anchors the single-device baseline.
+When every run's log carried `power_w`, the fit also records fitted watts per
+device. `train-analyze` / `train-what-if` then add a **`Samples/s/W`** column
+and, only when every feasible strategy has comparable power data, mark the
+energy-best strategy (`⚡ best`) — a marker distinct
+from the throughput recommendation. Energy is informational only: it never
+changes the recommendation and never excludes a strategy (memory stays the only
+hard constraint), and without any fitted power or an explicit
+`--device-power-watts N` (1–2000) the table is byte-identical to before.
+
+```bash
+# Rank strategies by throughput AND samples/s/W (fitted power, or a placeholder):
+pat train-analyze -s 120 -m 40 -d 24 -n 8 --device-power-watts 400 --show-all
+```
+
+A `training-run@1` evidence record can also carry the run's energy as
+**producer-attributed** figures (a measured claim or modelled estimate, never an
+observation-chain reading — Energy Arc invariant E1a). Pass them as an int or a
+decimal **string** (bare floats are rejected as non-portable on the wire); both
+forms canonicalize to the same string-decimal hash. If both fields are supplied,
+mean total run power must agree with energy and duration within 2% or 0.01 Wh.
+The fields join the attested content only when given, so a power-free record
+hashes byte-identically to a pre-v0.23 one:
+
+```bash
+pat train-evidence-emit --run-id run-2026-07-16-001 --strategy fsdp --degree 8 \
+  -s 712 --duration-s 3600 -n 8 --energy-wh "420.0" --mean-power-w "420.0" \
+  | evidence-bridge-sign
+```
+
+A signed `training-run@1` can contribute one provenance record to a provider's
+technical documentation. It does not by itself establish compliance: EU AI Act
+Article 53 and Annex XI require broader GPAI technical documentation, while
+Germany's EnEfG §12 requires qualifying data-centre operators to continuously
+measure electrical power and energy demand for essential components within an
+energy or environmental management system. The energy here remains attributed
+to the producer under the v0.18 trust boundary (E1a), not asserted as a
+measurement by this suite.
 
 ---
 
@@ -1259,7 +1328,8 @@ threshold. The default `--signal replicas` is unchanged.
 | v0.19.1 | Evidence-hardening patch release — publishes ADR-0010 with remediated Actions pins and CodeQL code-scanning alert fixes |
 | v0.20.0 | Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1) |
 | v0.21.0 | Measure the watt — measured-energy store + parallel hash chain (`pat observe --energy`, `verify` walks both chains), platform-gated fail-closed direct hardware presets (RAPL/DCGM; Kepler attribution is refused), verified read-only consumers, `pat calibrate --energy-from-store`, modelled + measured exporter gauges, energy alert rules |
-| **v0.22.0** | **Budget the watt — `pat budget` (max output within a Wh/carbon budget, or least energy for the demand), region carbon intensity (`carbon.py`, live Electricity Maps + static snapshot), `pat what-if --energy-aware` idle-vs-trough flip, `pat cost --carbon` cheapest-greenest rank, `pat scaler --signal energy`; all modelled, never signed (E1a)** |
+| v0.22.0 | Budget the watt — `pat budget` (max output within a Wh/carbon budget, or least energy for the demand), region carbon intensity (`carbon.py`, live Electricity Maps + static snapshot), `pat what-if --energy-aware` idle-vs-trough flip, `pat cost --carbon` cheapest-greenest rank, `pat scaler --signal energy`; all modelled, never signed (E1a) |
+| **v0.23.0** | **Train the watt — `pat train-calibrate` (L-TR-1): fit training α/β overhead from committed JSON-Lines step logs, `samples/s/W` ranking in `train-analyze`/`train-what-if` with an energy-best marker, `training-run@1` optional producer-attributed energy fields (`--energy-wh`/`--mean-power-w`); training-fit tamper fails closed, energy stays a modelled/producer claim (E1a)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

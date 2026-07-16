@@ -34,7 +34,8 @@ via a ``training`` section in ``.pat-model.json`` / ``~/.pat/model.json``::
 
     {"training": {"data": {"overhead_alpha": 0.03, "overhead_beta": 0.04}}}
 
-Fitting these from recorded step-time logs is deferred past the MVP.
+`pat train-calibrate` fits these from bounded recorded step-time logs and stores
+a committed per-strategy record.
 """
 
 from __future__ import annotations
@@ -55,6 +56,16 @@ VALID_STRATEGIES: Final[tuple[str, ...]] = ("data", "fsdp", "tensor", "pipeline"
 
 class TrainingDomainError(ValueError):
     """Raised on out-of-domain training parameters (fail-closed, no math on junk)."""
+
+
+class TrainingCalibrationTamperError(ValueError):
+    """Raised when a committed ``training[<strategy>]`` record no longer re-hashes.
+
+    Fail-closed (ADR-0010 semantics, matching serving's
+    :class:`model.CalibrationTamperError`): a consumer that finds a
+    present-but-mismatched training commitment must refuse to use the fitted
+    parameters rather than silently falling back to defaults.
+    """
 
 
 def _require_positive_finite(value: float, name: str) -> float:
@@ -154,6 +165,7 @@ MEMORY_HEADROOM: Final[float] = 0.9
 #: Default number of pipeline microbatches (GPipe guidance: m ≳ 4×stages keeps
 #: the bubble below ~25%; 8 is a pragmatic MVP default for small stage counts).
 DEFAULT_MICROBATCHES: Final[int] = 8
+TRAINING_POWER_W_PER_DEVICE_MAX: Final[float] = 2_000.0
 
 
 # ---------------------------------------------------------------------------
@@ -161,24 +173,69 @@ DEFAULT_MICROBATCHES: Final[int] = 8
 # ---------------------------------------------------------------------------
 
 
-def resolve_strategy_params(strategy: ParallelismStrategy) -> StrategyParams:
-    """Per-strategy parameters, honouring a calibrated ``training`` section.
-
-    ``.pat-model.json`` / ``~/.pat/model.json`` may carry
-    ``{"training": {"<strategy>": {"overhead_alpha": .., "overhead_beta": ..}}}``;
-    missing or malformed entries fall back to the defaults (fail-open to
-    defaults is safe here — this tunes an estimate, it authorizes nothing).
-    """
-    defaults = STRATEGY_PARAMS[strategy]
+def _load_training_record(strategy: ParallelismStrategy) -> dict | None:
+    """Return the ``training[<strategy>]`` record from the calibrated model, or None."""
     model = load_calibrated_model()
     if not isinstance(model, dict):
-        return defaults
+        return None
     training = model.get("training")
     if not isinstance(training, dict):
-        return defaults
+        return None
     record = training.get(strategy.value)
-    if not isinstance(record, dict):
+    return record if isinstance(record, dict) else None
+
+
+def _training_status_or_raise(strategy: ParallelismStrategy, record: dict) -> str:
+    """Classify the record's training commitment, raising on tamper (fail-closed).
+
+    ``ok`` / ``legacy`` are returned; ``tampered`` raises
+    :class:`TrainingCalibrationTamperError`. Importing the classifier lazily
+    keeps the ``training`` <-> ``calibrate`` edge one-directional (train_calibrate
+    imports training; training must not import train_calibrate).
+    """
+    from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
+        training_commitment_of,
+        training_commitment_status,
+    )
+
+    record_strategy = record.get("strategy")
+    if record_strategy is not None and record_strategy != strategy.value:
+        raise TrainingCalibrationTamperError(
+            f"calibrated training record stored under {strategy.value!r} declares "
+            f"strategy {record_strategy!r}; refusing a cross-strategy record"
+        )
+    status = training_commitment_status(record)
+    if status == "tampered":
+        raise TrainingCalibrationTamperError(
+            f"calibrated training parameters for {strategy.value!r} do not match "
+            "their stored calibration_commitment "
+            f"(expected {training_commitment_of(record)}); the model file was "
+            "modified after calibration. Re-run `pat train-calibrate` to produce "
+            "a fresh, committed fit."
+        )
+    return status
+
+
+def resolve_strategy_params(strategy: ParallelismStrategy) -> StrategyParams:
+    """Per-strategy parameters, honouring a committed calibrated ``training`` section.
+
+    ``.pat-model.json`` / ``~/.pat/model.json`` may carry
+    ``{"training": {"<strategy>": {"overhead_alpha": .., "overhead_beta": ..}}}``.
+    ADR-0010 semantics (v0.23.0): when the record carries a
+    ``calibration_commitment`` that re-hashes clean the fitted values are used;
+    a present-but-mismatched commitment **raises**
+    :class:`TrainingCalibrationTamperError` (fail-closed, no silent fallback);
+    a record with **no** commitment is legacy (hand-written or pre-v0.23) and
+    keeps the historical fitted-if-sane-else-defaults behaviour, so a v0.22-era
+    model file behaves identically. Missing/malformed values still fall back to
+    the defaults (this tunes an estimate, it authorizes nothing).
+    """
+    defaults = STRATEGY_PARAMS[strategy]
+    record = _load_training_record(strategy)
+    if record is None:
         return defaults
+
+    _training_status_or_raise(strategy, record)  # fail-closed on tamper
 
     def _positive_float(key: str, fallback: float) -> float:
         try:
@@ -194,6 +251,59 @@ def resolve_strategy_params(strategy: ParallelismStrategy) -> StrategyParams:
         shards_model=defaults.shards_model,
         description=defaults.description,
     )
+
+
+def resolve_training_commitment(strategy: ParallelismStrategy) -> dict:
+    """Resolve the training-calibration commitment status for *strategy* (fail-closed).
+
+    Returns ``{"status": ..., "digest": ...}`` where ``status`` is ``ok``,
+    ``legacy`` (no commitment / hand-written record), or ``uncalibrated`` (no
+    training record for the strategy). Raises
+    :class:`TrainingCalibrationTamperError` when the record carries a commitment
+    its stored parameters no longer match — the tamper signal train-analyze /
+    train-what-if honour before rendering (mirrors
+    ``model.resolve_calibration_commitment``).
+    """
+    record = _load_training_record(strategy)
+    if record is None:
+        return {"status": "uncalibrated", "digest": None}
+    status = _training_status_or_raise(strategy, record)
+    if status == "legacy":
+        return {"status": "legacy", "digest": None}
+    from presidio_arch_translucency.calibrate import (  # noqa: PLC0415
+        training_commitment_of,
+    )
+
+    return {"status": "ok", "digest": training_commitment_of(record)}
+
+
+def resolve_training_energy(strategy: ParallelismStrategy) -> dict | None:
+    """Return committed fitted energy figures for *strategy*, or ``None``.
+
+    ``{"mean_power_w": float, "watts_per_device": float}`` when the (untampered)
+    training record carries them, else ``None``. Fails closed on tamper via
+    :func:`resolve_strategy_params`' shared gate. Used by the ``samples/s/W``
+    energy column in ``train-analyze`` / ``train-what-if``.
+    """
+    record = _load_training_record(strategy)
+    if record is None:
+        return None
+    _training_status_or_raise(strategy, record)  # fail-closed on tamper
+    watts_per_device = record.get("watts_per_device")
+    mean_power_w = record.get("mean_power_w")
+    if not isinstance(watts_per_device, (int, float)) or isinstance(
+        watts_per_device, bool
+    ):
+        return None
+    wpd = float(watts_per_device)
+    if not math.isfinite(wpd) or wpd <= 0.0 or wpd > TRAINING_POWER_W_PER_DEVICE_MAX:
+        return None
+    mpw = None
+    if isinstance(mean_power_w, (int, float)) and not isinstance(mean_power_w, bool):
+        candidate = float(mean_power_w)
+        if math.isfinite(candidate) and candidate > 0.0:
+            mpw = candidate
+    return {"mean_power_w": mpw, "watts_per_device": wpd}
 
 
 # ---------------------------------------------------------------------------
