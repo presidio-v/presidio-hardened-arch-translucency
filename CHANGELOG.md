@@ -10,6 +10,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-07-18
+
+### Fixed
+
+- Pin the authoritative `presidio-evidence` nominal Kepler
+  `energy-reading@1` payload and content hash byte-for-byte, while asserting
+  that PAT continues to reject Kepler at its producer boundary.
+- Promote the existing energy-bearing `training-run@1` hash from a local
+  self-pin to the merged family vector, closing the remaining L-EV-7
+  documentation placeholder without changing runtime behavior or wire format.
+
 ## [0.24.0] - 2026-07-18
 
 ### Added
@@ -934,7 +945,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...v0.22.0

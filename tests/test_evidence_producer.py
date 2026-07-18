@@ -277,11 +277,13 @@ def test_energy_reading_shape_and_hash():
     assert reading["content_hash"] == sha256_hex(content)
 
 
-# Self-pin (D): L-EV-7 placeholder — the family vectors/energy-reading/ vector
-# (presidio-evidence PR #14) replaces this via the swap prompt in plan/. That
-# family nominal vector uses meter "kepler", which pat can no longer emit, so
-# the swap pins the family inputs verbatim as a SECOND test rather than editing
-# this one (which stays meter="rapl", the emittable analogue).
+# Self-pin (D): pat's own rapl-emitting canonical form. The merged family
+# vectors (presidio-evidence PR #14) are pinned SEPARATELY, not by editing these:
+# the emittable DCGM/parents vector in
+# test_energy_reading_matches_merged_family_parents_vector, and the nominal
+# KEPLER vector — which pat can no longer emit — byte-for-byte in
+# test_energy_reading_matches_merged_family_nominal_vector. These stay meter="rapl",
+# the emittable analogue, and guard the string-decimal / field-order profile.
 _ENERGY_READING_SELF_PIN_HASH = (
     "8409b62d8511a38c4d9295c290a7fc302517cfc4c041aa36eaa3d5856d2acd40"
 )
@@ -326,6 +328,51 @@ def test_energy_reading_matches_merged_family_parents_vector():
     assert reading["content_hash"] == (
         "391083ae2426dc1dc0616a77fb9760d3ddca2c976ee16dd600ade78c9246a3d1"
     )
+
+
+# The nominal PR #14 family vector uses meter="kepler", which pat deliberately
+# cannot emit (v0.21 audit — refused at BOTH build_energy_reading._EMIT_METERS
+# and observe.VALID_METERS). Its cross-repo conformance is therefore pinned
+# byte-for-byte against the exact family signed_content, NOT routed through
+# build_energy_reading (which correctly rejects it). Loosening the builder to
+# accept kepler would reverse an audited invariant; pinning the canonical bytes
+# here gives the family-vector guarantee (L-EV-7) without that cost.
+# Source: presidio-evidence vectors/energy-reading/valid-envelope.json.
+_FAMILY_ENERGY_READING_NOMINAL_CONTENT = {
+    "window_start": "2026-07-02T00:00:00+00:00",
+    "window_end": "2026-07-02T00:05:00+00:00",
+    "energy_wh": "12.5",
+    "mean_power_w": "150.0",
+    "meter": "kepler",
+    "layer": "pod",
+    "energy_chain_head": (
+        "6cf76f69d0d27b89d1207a1ee4c20c254a37640886c21835762b045693c48e44"
+    ),
+}
+_FAMILY_ENERGY_READING_NOMINAL_HASH = (
+    "3950f28a608aea47e356e8096099042d8e3e2de73afaedf61ec547e167af0252"
+)
+
+
+def test_energy_reading_matches_merged_family_nominal_vector():
+    """Pin the nominal PR #14 KEPLER family vector byte-for-byte, without the builder.
+
+    pat cannot construct this reading via :func:`build_energy_reading` — ``meter``
+    ``"kepler"`` is refused (v0.21 audit, enforced at the builder and
+    ``observe.VALID_METERS``) — so conformance to the family bytes is asserted
+    directly on the canonical hash of the exact ``signed_content`` rather than by
+    re-emitting it. Cross-repo source: presidio-evidence
+    ``vectors/energy-reading/valid-envelope.json``.
+    """
+    assert (
+        sha256_hex(_FAMILY_ENERGY_READING_NOMINAL_CONTENT)
+        == _FAMILY_ENERGY_READING_NOMINAL_HASH
+    )
+    # The builder genuinely refuses this shape — the reason the pin bypasses it.
+    # If a future change makes build_energy_reading accept kepler, this guard
+    # fails and forces a deliberate revisit of the audited emit restriction.
+    with pytest.raises(EvidenceProducerError, match="kepler"):
+        build_energy_reading(**_FAMILY_ENERGY_READING_NOMINAL_CONTENT)
 
 
 def test_energy_reading_content_hash_stable_across_calls():
