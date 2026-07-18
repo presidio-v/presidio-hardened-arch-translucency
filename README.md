@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.23.0 — Architectural Translucency Analyzer for Docker, Kubernetes, and distributed training: calibrate training overhead from bounded step logs, compare samples/s/W, and emit producer-attributed training energy evidence.
+> v0.24.0 — Architectural Translucency Analyzer for Docker, Kubernetes, and distributed training: calibrate training overhead from bounded step logs, compare samples/s/W, and emit producer-attributed training energy evidence. The Energy Arc finale signs the watt — measured energy is emitted as key-less `energy-reading@1` evidence carrying the energy-chain head hash for external anchoring.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -1302,6 +1302,66 @@ threshold. The default `--signal replicas` is unchanged.
 
 ---
 
+## Sign the watt (v0.24.0)
+
+The measured-energy chain proves the local history was not rewritten *relative
+to its own head* — but nothing outside pat had ever seen that head. v0.24.0
+closes the loop: it emits the measured energy as a **key-less**
+`presidio-hardened/energy-reading@1` record that carries the energy-chain **head
+hash**. Once a signing-bridge sidecar signs it and it is published, any later
+silent rewrite of the local store no longer reproduces the anchored head — the
+rewrite becomes externally detectable. This discharges the anchoring deferral
+recorded in ADR-0010.
+
+```bash
+# Derive one reading from the measured-energy observations of the last hour
+# and print the unsigned record. arch-translucency holds NO signing key.
+pat energy-evidence-emit --window-minutes 60
+```
+
+```json
+{"schema":"presidio-hardened/energy-reading@1","attested_content":{"window_start":"2026-07-18T10:00:00+00:00","window_end":"2026-07-18T10:06:00+00:00","energy_wh":"14.25","mean_power_w":"142.5","meter":"rapl","energy_chain_head":"9f2c…","layer":"node"},"content_hash":"…","source":"presidio-hardened-arch-translucency","source_version":"0.24.0","generated_at":"2026-07-18T10:06:01+00:00"}
+```
+
+The figures come **exclusively from the preset-attested store** (corollary
+**E1a**: *pat never signs a watt it did not measure*). There is deliberately no
+override flag for the energy numbers; a window containing any
+`prometheus-override` row is refused, one reading carries one meter and one
+layer, and emission is gated on a **clean** energy-chain verify — a broken chain
+is never anchored. Selection is the **span-overlap closure** of the requested
+window — every measurement whose span `[timestamp − window_s, timestamp]` reaches
+into the emitted interval is pulled in and checked — so the signed window covers
+exactly the rows that were scanned and no `prometheus-override` sliver can escape
+the E1a check. Multiple rows must form one exactly consecutive window: overlap
+would double-count energy and a gap would claim unmeasured coverage, so either
+condition fails closed. `energy_wh` and `mean_power_w` are also checked against
+the elapsed window before hashing. As always, the record is unsigned: pipe it to the signing
+bridge, which adds the Ed25519 signature that downstream family consumers verify
+fail-closed.
+
+For periodic anchoring, `pat observe verify` gains `--emit-head`: it sends the
+normal two-chain report to stderr and, on a clean energy walk with at least one
+continuous row span, emits only
+an `energy-reading@1` for the full store window. Both emit paths derive their
+report, rows, and anchoring head from **one explicit transaction on a read-only
+snapshot**, so the
+anchored `energy_chain_head` is the last verified link and a row appended after
+the snapshot is outside both the figures and the head by construction.
+
+```bash
+pat observe verify --emit-head | evidence-bridge-sign
+```
+
+The honest bound is unchanged and worth restating plainly: a clean chain plus an
+external anchor proves the recorded history **was not rewritten after the fact** —
+it does **not** attest that the meter was honest at capture time. Capture-time
+honesty remains outside pat's trust boundary by design.
+
+This completes the Energy Arc: **model** the watt (v0.20) → **measure** it
+(v0.21) → **budget** it (v0.22) → **train** on it (v0.23) → **sign** it (v0.24).
+
+---
+
 ## Roadmap
 
 | Version | Theme |
@@ -1329,7 +1389,8 @@ threshold. The default `--signal replicas` is unchanged.
 | v0.20.0 | Model the watt — per-layer energy model (α_E/β_E), `pat analyze` Watts/J-per-req/EEI columns, `pat calibrate --energy-observation` fit bound by the calibration commitment; measures/models energy, never actuates (E1) |
 | v0.21.0 | Measure the watt — measured-energy store + parallel hash chain (`pat observe --energy`, `verify` walks both chains), platform-gated fail-closed direct hardware presets (RAPL/DCGM; Kepler attribution is refused), verified read-only consumers, `pat calibrate --energy-from-store`, modelled + measured exporter gauges, energy alert rules |
 | v0.22.0 | Budget the watt — `pat budget` (max output within a Wh/carbon budget, or least energy for the demand), region carbon intensity (`carbon.py`, live Electricity Maps + static snapshot), `pat what-if --energy-aware` idle-vs-trough flip, `pat cost --carbon` cheapest-greenest rank, `pat scaler --signal energy`; all modelled, never signed (E1a) |
-| **v0.23.0** | **Train the watt — `pat train-calibrate` (L-TR-1): fit training α/β overhead from committed JSON-Lines step logs, `samples/s/W` ranking in `train-analyze`/`train-what-if` with an energy-best marker, `training-run@1` optional producer-attributed energy fields (`--energy-wh`/`--mean-power-w`); training-fit tamper fails closed, energy stays a modelled/producer claim (E1a)** |
+| v0.23.0 | Train the watt — `pat train-calibrate` (L-TR-1): fit training α/β overhead from committed JSON-Lines step logs, `samples/s/W` ranking in `train-analyze`/`train-what-if` with an energy-best marker, `training-run@1` optional producer-attributed energy fields (`--energy-wh`/`--mean-power-w`); training-fit tamper fails closed, energy stays a modelled/producer claim (E1a) |
+| **v0.24.0** | **Sign the watt — Energy Arc finale: `pat energy-evidence-emit` + `pat observe verify --emit-head` emit key-less `energy-reading@1` carrying the measured-energy chain head hash (`build_energy_reading`, chain-head accessors); store-only figures, `prometheus-override` rows refused, emission gated on a clean chain walk (E1a); external anchoring discharges the ADR-0010 deferral — post-hoc rewriting becomes externally detectable** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

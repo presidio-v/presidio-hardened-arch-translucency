@@ -1046,6 +1046,11 @@ def load_verified_energy_observations(
     conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        # A connection alone is not a snapshot: in sqlite3 legacy transaction
+        # mode, SELECT does not start a transaction and later SELECTs may see a
+        # concurrent commit. Begin explicitly before the first read so report,
+        # rows, and head are from one immutable read transaction.
+        conn.execute("BEGIN")
         tables = {
             str(row["name"])
             for row in conn.execute(
@@ -1100,6 +1105,87 @@ def load_verified_energy_observations(
                     f"verified energy row {row['id']!r} is malformed: {exc}"
                 ) from exc
         return decoded
+    finally:
+        conn.close()
+
+
+def verified_energy_snapshot(
+    db_path: Path | None = None,
+) -> tuple[ChainReport, list[EnergyObservation], str | None]:
+    """Verify the energy chain, load all rows, and return the anchoring head —
+    all from ONE read-only SQLite snapshot (v0.24.0, chain-gate TOCTOU fix).
+
+    The single-snapshot anchoring primitive. Both emit paths
+    (``energy-evidence-emit`` and ``observe verify --emit-head``) derive their
+    ``(report, rows, head)`` triple exclusively from this one call, so a row
+    appended after the snapshot is outside BOTH the emitted figures and the
+    anchored head — by construction, not by timing luck. The anchoring claim is
+    bounded to exactly this snapshot.
+
+    ``head`` is the ``record_hash`` of the **last verified link** — never a
+    fresher chained row. On a clean walk it equals the chain tip; on a broken
+    walk it is the last link *before* the break (the emit flow refuses a broken
+    chain regardless, so it never anchors past a break). ``None`` when no link
+    verified (empty store). ``rows`` is every energy observation, chronological.
+
+    Opened read-only via ``sqlite3.connect(file:...?mode=ro)`` exactly like
+    :func:`load_verified_energy_observations` (never creates or migrates
+    storage). A missing database or a pre-v0.21 store without energy tables is
+    an empty snapshot ``(empty report, [], None)``.
+    """
+    empty = ChainReport(total=0, chained=0, verified=0, legacy_count=0, ok=True)
+    path = default_db_path() if db_path is None else Path(db_path)
+    if not path.is_file():
+        return (empty, [], None)
+
+    uri_path = urllib.parse.quote(str(path.resolve()), safe="/")
+    conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Explicitly pin every subsequent SELECT to one read transaction. A
+        # sqlite3 connection by itself does not provide this in legacy mode.
+        conn.execute("BEGIN")
+        tables = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if _ENERGY_TABLE not in tables or _ENERGY_CHAIN_TABLE not in tables:
+            return (empty, [], None)
+
+        chained_rows = _load_energy_chained_rows(conn)
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS c FROM {_ENERGY_TABLE}"  # noqa: S608
+            ).fetchone()["c"]
+        )
+        report = _walk_chain(
+            total, chained_rows, energy_record_hash, _row_to_energy_obs
+        )
+        # The head is the LAST VERIFIED link's record_hash — the running chain
+        # head at the point the walk stopped. Never the raw table tip, so a row
+        # chained after a break (or after this snapshot) can never be anchored.
+        head = (
+            str(chained_rows[report.verified - 1]["_record_hash"])
+            if report.verified > 0
+            else None
+        )
+        rows = []
+        for row in conn.execute(
+            f"SELECT * FROM {_ENERGY_TABLE} "  # noqa: S608
+            "ORDER BY timestamp ASC, id ASC"
+        ).fetchall():
+            decoded = _row_to_energy_obs(row)
+            if report.ok:
+                try:
+                    decoded.validate()
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise EnergyObservationError(
+                        f"verified energy row {row['id']!r} is malformed: {exc}"
+                    ) from exc
+            rows.append(decoded)
+        return (report, rows, head)
     finally:
         conn.close()
 
@@ -1170,3 +1256,59 @@ def verify_all_chains(
     ADR-0011 §2 — so this never conflates them into a single verdict.
     """
     return (verify_chain(db_path=db_path), verify_energy_chain(db_path=db_path))
+
+
+# ---------------------------------------------------------------------------
+# Public chain-head accessors (v0.24.0) — the anchoring surface
+# ---------------------------------------------------------------------------
+#
+# A chain "head" is the record_hash of the most recently chained row: it commits
+# to the entire history behind it (each record binds its predecessor's hash), so
+# publishing the head externally makes any later local rewrite detectable — an
+# attacker who edits an old row cannot reproduce the same head. These thin
+# wrappers expose the head so an emitted ``energy-reading@1`` can carry it as the
+# anchoring value.
+
+
+def _read_only_chain_head(db_path: Path | None, chain_table: str) -> str | None:
+    """Return a chain tip without creating, migrating, or chmod-ing the store."""
+    path = default_db_path() if db_path is None else Path(db_path)
+    if not path.is_file():
+        return None
+    uri_path = urllib.parse.quote(str(path.resolve()), safe="/")
+    conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (chain_table,),
+        ).fetchone()
+        if exists is None:
+            return None
+        row = conn.execute(
+            f"SELECT record_hash FROM {chain_table} "  # noqa: S608 -- fixed internal
+            "ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else str(row["record_hash"])
+    finally:
+        conn.close()
+
+
+def chain_head_hash(db_path: Path | None = None) -> str | None:
+    """Return the serving chain's head ``record_hash``, or ``None`` when empty.
+
+    A head hash is only meaningful *next to a clean* :func:`verify_chain`: it
+    names the current tip but does not by itself prove the history behind it was
+    not rewritten. Callers that anchor on the head must verify first.
+    """
+    return _read_only_chain_head(db_path, _CHAIN_TABLE)
+
+
+def energy_chain_head_hash(db_path: Path | None = None) -> str | None:
+    """Return the measured-energy chain's head ``record_hash``, or ``None`` empty.
+
+    Same discipline as :func:`chain_head_hash`: only meaningful next to a clean
+    :func:`verify_energy_chain`. This is the value an ``energy-reading@1`` anchors
+    on (v0.24.0, ADR-0010 anchoring deferral discharged).
+    """
+    return _read_only_chain_head(db_path, _ENERGY_CHAIN_TABLE)

@@ -10,6 +10,90 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-18
+
+### Added
+
+- **`pat energy-evidence-emit` — sign the watt (Energy Arc finale, L-EV-8).**
+  A new command emits a **key-less** Layer-0 `energy-reading@1` record (JSON to
+  stdout) derived exclusively from the chained measured-energy store. Default
+  mode selects the observations recorded in the last `--window-minutes N`
+  (1–1440, default 5), sums the *measured* joules into `energy_wh`, computes the
+  window-consistent `mean_power_w`, and carries the meter, layer, UTC window, and
+  the measured-energy **chain head hash** the reading anchors on. A signing-bridge
+  sidecar (arch-translucency holds no key) turns it into a signed `evidence-ref@1`
+  envelope; publishing that reading externally makes any later silent rewrite of
+  the local store detectable, discharging ADR-0010's anchoring deferral. Optional
+  repeatable `--parent HASH` attests upstream provenance (ADR-0002). There is
+  deliberately **no** override flag for the energy figures — the store is the
+  only source (E1a). Multiple rows are emitted only when their measurement spans
+  are exactly consecutive: overlap would double-count energy and a gap would
+  claim unmeasured coverage, so either condition refuses emission.
+- **`build_energy_reading()` in `evidence_producer.py`** (`energy-reading@1`,
+  schema id `presidio-hardened/energy-reading@1`). Fail-closed library validation
+  independent of the CLI: RFC3339 UTC window instants with explicit offset and
+  `start < end` (naive/non-UTC/garbage/control-char/overlong rejected); `energy_wh`
+  / `mean_power_w` via the shared string-decimal coercer (floats rejected,
+  IEEE-754 round-trip enforced); `meter` restricted to pat's emittable measured
+  meters (`rapl`/`dcgm` — `kepler` refused per the v0.21 audit); exactly one of
+  `layer` (serving) XOR `strategy` (training); a 64-char lowercase-hex
+  `energy_chain_head`; optional `parents` included only when non-empty. Energy
+  and mean power must agree with the signed window; contradictory content is
+  rejected before hashing. The merged presidio-evidence PR #14 DCGM/training
+  golden vector is pinned byte-for-byte.
+- **`pat observe verify --emit-head`** — with the normal two-chain report sent
+  to stderr (keeping stdout as one pipe-safe JSON record), and
+  only on a CLEAN energy-chain walk with at least one row, additionally emits an
+  `energy-reading@1` for the full measured-energy store window (the periodic
+  external-anchoring path). A broken chain keeps exit 1 and emits nothing; an
+  empty energy chain (including serving-only stores) exits 2 with the reserved
+  serving-anchoring deferral message. Serving-chain state never gates energy
+  emission; default `verify` output without the flag is byte-identical.
+- **Public chain-head accessors** `observe.energy_chain_head_hash()` and
+  `observe.chain_head_hash()` — the current head `record_hash` of each chain
+  (`None` when empty), documented as meaningful only next to a clean verify.
+  They use SQLite read-only mode and never create or migrate a store.
+
+### Security
+
+- **E1a enforced over the span-overlap closure — the signed window covers
+  exactly the scanned coverage (*pat never signs a watt it did not measure*).**
+  A row's measurement span is `[timestamp − window_s, timestamp]`. Selection is
+  no longer a naive `timestamp ∈ [now−N, now]`: it is the span-overlap **closure**
+  — start with rows whose span intersects the requested interval, then iterate to
+  a fixed point pulling in every store row whose span intersects the emitted
+  `[min span-start, max timestamp]` window. The E1a provenance check runs over
+  that closure, so a `prometheus-override` row that overlaps the signed window
+  can no longer hide in the sliver just outside a naive selection — the whole
+  reading is refused with a message naming the row count. The emitted figures
+  come exclusively from the preset-attested store (`source == "prometheus"`);
+  one reading carries one meter and one layer (mixed → refuse); modelled/analytic
+  values are unreachable from this path.
+- **Single-snapshot chain gate — the anchored head is the last verified link by
+  construction.** Both emit paths derive their `(chain report, rows, head)`
+  triple from one explicit read transaction on a read-only
+  `observe.verified_energy_snapshot` connection instead
+  of separate verify / load / head-hash calls. The anchored `energy_chain_head`
+  is the record_hash of the **last verified link** (never a fresher chained row),
+  and a row committed after the snapshot is outside both the figures and the head
+  — by construction, not by timing luck (closing a chain-gate TOCTOU window). An
+  `energy-reading@1` is still only emitted after a clean energy-chain walk — a
+  broken chain is never anchored.
+- **Window-integrity and wire-contract gate.** Strict RFC3339 UTC syntax rejects
+  permissive ISO-8601 variants; `energy_wh` and `mean_power_w` are cross-checked
+  against elapsed time; malformed verified rows fail closed. Overlapping spans
+  are never summed and unmeasured gaps are never represented as continuous
+  energy. This closes double-counting and contradictory-evidence paths found by
+  the v0.24.0 third-party audit.
+- **Bounded closure availability.** Span-overlap closure is computed as sorted
+  interval components in `O(n log n)`, removing the candidate's quadratic
+  fixed-point rescan on adversarial overlap chains.
+- **ADR-0010 anchoring deferral discharged.** External anchoring of the
+  energy-chain head makes post-hoc rewriting of the local store externally
+  detectable. The honest bound is restated unchanged: a clean chain plus an
+  external anchor proves the recorded history was not rewritten after the fact;
+  it does NOT attest that the meter was honest at capture time.
+
 ## [0.23.0] - 2026-07-16
 
 ### Added
@@ -850,7 +934,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.20.0...v0.21.0
