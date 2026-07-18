@@ -376,16 +376,17 @@ def test_training_run_no_energy_is_byte_identical_pin():
     assert reading["content_hash"] == _FAMILY_TRAINING_RUN_VECTOR_HASH
 
 
-# Energy-bearing self-pin (L-EV-7 placeholder — replace with the cross-repo
-# presidio-evidence training-run/ energy family vector once that vector lands;
-# until then this pins byte-identity of THIS producer's energy-bearing canonical
-# form so a drift in the string-decimal profile is caught here).
+# Energy-bearing family pin (L-EV-7): byte-for-byte the content hash of the
+# cross-repo family vector presidio-evidence
+# vectors/training-run/valid-envelope-energy.json (both suites there recompute
+# and pin it). A drift in this producer's string-decimal / field profile now
+# fails against the shared family reference, not just a local self-pin.
 _FAMILY_TRAINING_RUN_ENERGY_VECTOR_HASH = (
     "d674a11562def33ba92b54ab946d7782b1d3a111ec6a8f8f22a541788a57ffb0"
 )
 
 
-def test_training_run_energy_bearing_self_pin():
+def test_training_run_energy_bearing_matches_family_vector():
     reading = build_training_run_reading(
         **_golden_energy_kwargs(energy_wh="840.0", mean_power_w="420.0")
     )

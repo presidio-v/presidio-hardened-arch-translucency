@@ -17,7 +17,7 @@ RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:3d5ed973e45820f5ba5e46bd065bd88b3a504ff0724d85980dcd05eab361fcf4
 
-ARG VERSION="0.24.0"
+ARG VERSION="0.24.1"
 ARG VCS_REF=""
 LABEL org.opencontainers.image.title="pat-exporter" \
       org.opencontainers.image.description="Read-only architectural-translucency Prometheus exporter (pat export)" \

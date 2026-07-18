@@ -178,6 +178,10 @@ sidecar authors must not treat shape validation as measured-ness.
 
 Manual security audit history:
 
+- v0.24.1 patch release gate (2026-07-18) -- authoritative nominal Kepler and
+  energy-bearing training family-vector hashes independently verified; PAT's
+  audited Kepler emission refusal remains fail-closed; no runtime trust-boundary
+  change.
 - v0.24.0 full functionality/security release gate (2026-07-18) -- all findings
   remediated: explicit SQLite read transaction, family cross-field consistency,
   overlap/gap refusal, strict RFC3339, validated snapshot rows, pipe-pure JSON,

@@ -348,7 +348,7 @@ def _fetch_live_intensity(region: str, token: str) -> float:
     url = f"{_LIVE_URL}?{urllib.parse.urlencode({'zone': zone})}"
     req = urllib.request.Request(  # noqa: S310 — literal https scheme
         url,
-        headers={"auth-token": token, "User-Agent": "pat-cli/0.24.0"},
+        headers={"auth-token": token, "User-Agent": "pat-cli/0.24.1"},
     )
     with _open_live(req, timeout=30) as resp:
         raw = resp.read(MAX_RESPONSE_BYTES + 1)
