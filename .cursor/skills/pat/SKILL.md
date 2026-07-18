@@ -52,6 +52,7 @@ If installation is disallowed (sandboxed env, strict dependency policy), skip gr
 | User wants HPA/KEDA to scale on pat forecast | `pat scaler` |
 | User wants `pat export` installed in Kubernetes | Helm chart `charts/pat-exporter` |
 | User wants a signed SLO degradation signal from latency readings | `pat evidence-emit` piped to the signing bridge |
+| User wants to anchor/sign measured energy from the store | `pat energy-evidence-emit` (or `pat observe verify --emit-head`) piped to the signing bridge |
 
 `pat export` runs a **read-only** Prometheus exporter (`GET /metrics`, binds
 `127.0.0.1` by default; `--listen-public` to bind a routable host; `--once` to
@@ -75,7 +76,7 @@ ADR-0006, optional token from `PAT_OTLP_TOKEN`). `pat export --pushgateway <url>
 scales the deployment to track `pat_predicted_recommended_replicas` — emit-only.
 The Helm chart under `charts/pat-exporter` deploys the read-only exporter and
 optional ServiceMonitor, PrometheusRule, Grafana dashboard ConfigMap, and
-NetworkPolicy. Chart 0.21.0 follows its `appVersion`; an existing observation
+NetworkPolicy. Chart 0.24.0 follows its `appVersion`; an existing observation
 store can be mounted read-only for verified measured-energy and prediction data.
 `pat evidence-emit --p99-target-ms <ms>` emits unsigned Layer-0 SLO readings
 from an explicit `--p99-latency-ms` or the latest stored observation. Pipe that
@@ -225,6 +226,7 @@ This cites the source and makes the decision auditable — a reviewer can re-run
 - `pat what-if`: `TROUGH` and `STEADY STATE` panels with `Throughput`, `p99 latency`, `Missed reqs`
 - `pat optimize`: panel with the projected demand, the recommended replica count (and, for `--model arima`, a replica range from the 95% CI). With `--emit-hpa-patch`, the **stdout is the HPA manifest itself** — capture it directly (e.g. `> hpa-patch.yaml`), do not parse a panel.
 - `pat evidence-emit`: stdout is compact JSON for a `presidio-hardened/slo-reading@1` Layer-0 reading (`schema`, `attested_content`, `content_hash`, `source`, `source_version`, `generated_at`). No stdout means no degradation unless `--always` was used.
+- `pat energy-evidence-emit`: stdout is compact JSON for a key-less `presidio-hardened/energy-reading@1` Layer-0 reading derived only from the measured-energy store (`energy_wh`, `mean_power_w`, `meter`, `layer`, UTC window, and the `energy_chain_head` it anchors on). Refuses (nonzero exit, nothing emitted) on a broken/empty energy chain, an empty window, mixed meter/layer, or any `prometheus-override` row in the window (E1a). `pat observe verify --emit-head` emits the same record for the full store window after a clean verify.
 
 If multiple values are needed reliably, prefer re-running the command with narrower arguments so a single value dominates, rather than regex-parsing the full output.
 

@@ -1,4 +1,4 @@
-"""Tests for the ``pat-exporter`` Helm chart (v0.23.0).
+"""Tests for the ``pat-exporter`` Helm chart (v0.24.0).
 
 The chart is the seventh step of the monitoring-integration arc — cluster-native
 packaging of the read-only ``pat export`` endpoint. CI has no Helm binary, so
@@ -43,8 +43,8 @@ def test_chart_yaml_present_and_v2() -> None:
     assert re.search(r"^name:\s*pat-exporter\s*$", chart, re.MULTILINE)
     assert re.search(r"^type:\s*application\s*$", chart, re.MULTILINE)
     # Chart + appVersion track the carbon-aware energy-budget release.
-    assert re.search(r"^version:\s*0\.23\.0\s*$", chart, re.MULTILINE)
-    assert re.search(r'^appVersion:\s*"0\.23\.0"\s*$', chart, re.MULTILINE)
+    assert re.search(r"^version:\s*0\.24\.0\s*$", chart, re.MULTILINE)
+    assert re.search(r'^appVersion:\s*"0\.24\.0"\s*$', chart, re.MULTILINE)
 
 
 def test_expected_template_files_exist() -> None:

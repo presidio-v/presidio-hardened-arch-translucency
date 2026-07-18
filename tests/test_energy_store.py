@@ -445,3 +445,182 @@ def test_verify_all_chains_serving_broken_energy_ok(db):
     serving, energy = verify_all_chains(db_path=db)
     assert serving.ok is False
     assert energy.ok is True
+
+
+# ---------------------------------------------------------------------------
+# Public chain-head accessors (v0.24.0) — the anchoring surface. A head is only
+# meaningful next to a clean verify; these tests exercise emptiness, mutation on
+# append, and agreement with a raw chain-table query.
+# ---------------------------------------------------------------------------
+
+from presidio_arch_translucency.observe import (  # noqa: E402
+    chain_head_hash,
+    energy_chain_head_hash,
+)
+
+
+def test_energy_chain_head_none_when_empty(db):
+    assert energy_chain_head_hash(db_path=db) is None
+    assert not db.exists()
+
+
+def test_serving_chain_head_none_when_empty(db):
+    assert chain_head_hash(db_path=db) is None
+    assert not db.exists()
+
+
+def test_energy_chain_head_changes_after_append(db):
+    _record_energy_observation_unchecked(_eobs(_T0), db_path=db)
+    first = energy_chain_head_hash(db_path=db)
+    assert first is not None
+    _record_energy_observation_unchecked(_eobs(_T0 + timedelta(minutes=1)), db_path=db)
+    second = energy_chain_head_hash(db_path=db)
+    assert second is not None and second != first
+
+
+def test_energy_chain_head_matches_raw_table(db):
+    _seed(db, 3)
+    head = energy_chain_head_hash(db_path=db)
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT record_hash FROM energy_observation_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert head == row[0]
+
+
+def test_serving_chain_head_matches_raw_table(db):
+    record_observation(
+        Observation(_T0, 500.0, 80.0, 140.0, 480.0, "container", 6, "manual"),
+        db_path=db,
+    )
+    head = chain_head_hash(db_path=db)
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT record_hash FROM observation_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert head == row[0]
+
+
+def test_energy_and_serving_heads_are_independent(db):
+    # Recording an energy row must not create or change a serving head.
+    _record_energy_observation_unchecked(_eobs(_T0), db_path=db)
+    assert chain_head_hash(db_path=db) is None
+    assert energy_chain_head_hash(db_path=db) is not None
+
+
+# ---------------------------------------------------------------------------
+# verified_energy_snapshot (v0.24.0, chain-gate TOCTOU fix) — one RO snapshot
+# yields (report, rows, head). The head is the LAST VERIFIED link, bounded to
+# the snapshot; a row appended afterward is in neither the rows nor the head.
+# ---------------------------------------------------------------------------
+
+from presidio_arch_translucency.observe import (  # noqa: E402
+    verified_energy_snapshot,
+)
+
+
+def test_snapshot_clean_returns_report_rows_and_tip_head(db):
+    _seed(db, 4)
+    report, rows, head = verified_energy_snapshot(db_path=db)
+    assert report.ok is True
+    assert report.total == 4
+    assert len(rows) == 4
+    # On a clean walk the last verified link is the chain tip.
+    assert head == energy_chain_head_hash(db_path=db)
+
+
+def test_snapshot_missing_store_is_empty_without_creation(db):
+    report, rows, head = verified_energy_snapshot(db_path=db)
+    assert report.total == 0
+    assert rows == []
+    assert head is None
+    assert not db.exists()
+
+
+def test_snapshot_serving_only_store_has_no_energy_head(db):
+    # A serving write creates the energy tables (empty); the snapshot must read
+    # them as an empty energy store, not error.
+    record_observation(
+        Observation(_T0, 500.0, 80.0, 140.0, 480.0, "container", 6, "manual"),
+        db_path=db,
+    )
+    report, rows, head = verified_energy_snapshot(db_path=db)
+    assert report.total == 0
+    assert rows == []
+    assert head is None
+
+
+def test_snapshot_head_is_last_verified_link_not_tip_on_break(db):
+    _seed(db, 3)
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE energy_observations SET watts = 1 WHERE id = 2")
+    conn.commit()
+    conn.close()
+    report, _rows, head = verified_energy_snapshot(db_path=db)
+    assert report.ok is False
+    assert report.broken_obs_id == 2
+    # Only the first link verified; the head must be its record_hash, never the
+    # tip past the break.
+    assert report.verified == 1
+    conn = sqlite3.connect(str(db))
+    try:
+        first = conn.execute(
+            "SELECT record_hash FROM energy_observation_chain WHERE seq = 0"
+        ).fetchone()[0]
+        tip = conn.execute(
+            "SELECT record_hash FROM energy_observation_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert head == first
+    assert head != tip
+
+
+def test_snapshot_head_excludes_row_appended_after_snapshot(db):
+    _seed(db, 2)
+    _report1, rows1, head1 = verified_energy_snapshot(db_path=db)
+    # A SECOND connection appends a row after the snapshot was taken.
+    _record_energy_observation_unchecked(_eobs(_T0 + timedelta(minutes=99)), db_path=db)
+    # The already-derived snapshot is unchanged — head/rows never see the append.
+    assert len(rows1) == 2
+    _report2, rows2, head2 = verified_energy_snapshot(db_path=db)
+    assert len(rows2) == 3
+    assert head1 != head2  # the fresh snapshot's head advances; the old one did not
+    # head1 is the pre-append tip (seq 1), not the post-append tip (seq 2).
+    conn = sqlite3.connect(str(db))
+    try:
+        pre_tip = conn.execute(
+            "SELECT record_hash FROM energy_observation_chain WHERE seq = 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert head1 == pre_tip
+
+
+def test_snapshot_explicitly_begins_read_transaction(db, monkeypatch):
+    """One connection is not enough: BEGIN must precede every snapshot SELECT."""
+    _seed(db, 2)
+    original_connect = sqlite3.connect
+    statements = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            statements.append(str(sql))
+            return super().execute(sql, parameters)
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return original_connect(*args, **kwargs)
+
+    # ``sqlite3`` is the same module object used by ``observe``; patching its
+    # connection factory exercises the production call without a mixed import.
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    report, rows, head = verified_energy_snapshot(db_path=db)
+    assert report.ok and len(rows) == 2 and head is not None
+    assert statements[0] == "BEGIN"

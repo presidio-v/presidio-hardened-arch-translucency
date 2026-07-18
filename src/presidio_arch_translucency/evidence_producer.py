@@ -23,9 +23,10 @@ import hashlib
 import hmac as hmaclib
 import json
 import math
+import re
 import string
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,13 @@ LAYER0_SCHEMA_ID = "presidio-hardened/slo-reading@1"
 #: (e.g. the eai-classification and gate-decision envelopes that authorized
 #: the run) — turning isolated envelopes into a verifiable provenance DAG.
 TRAINING_SCHEMA_ID = "presidio-hardened/training-run@1"
+#: Wire id for the **unsigned** Layer-0 measured-energy reading (key-less; same
+#: signing-bridge pattern as ``slo-reading@1`` / ``training-run@1``). Emits a
+#: window of chained energy_observations plus the energy-chain head hash it
+#: anchors on, discharging ADR-0010's anchoring deferral (v0.24.0, Energy Arc
+#: finale). Corollary E1a: *pat never signs a watt it did not measure* — the
+#: figures come exclusively from the preset-attested measured-energy store.
+ENERGY_READING_SCHEMA_ID = "presidio-hardened/energy-reading@1"
 DEFAULT_SIGNER = "presidio-hardened-arch-translucency"
 SIGNING_ALGORITHMS = ("ed25519", "hmac-sha256")
 _LOWER_HEX = frozenset(string.hexdigits.lower()[:16])
@@ -516,6 +524,207 @@ def build_training_run_reading(
         content["mean_power_w"] = canonical_power
     return {
         "schema": TRAINING_SCHEMA_ID,
+        "attested_content": content,
+        "content_hash": sha256_hex(content),
+        "source": DEFAULT_SIGNER,
+        "source_version": source_version or _package_version(),
+        "generated_at": observed_at or _utcnow_iso(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Measured-energy reading (``energy-reading@1``) — Layer 0, key-less (v0.24.0).
+#
+# The Energy Arc finale: a window of the chained measured-energy store is emitted
+# as an unsigned reading that carries the energy-chain HEAD hash it anchors on.
+# Publishing that head externally (a sidecar signs the reading) makes any later
+# local rewrite of the store detectable — an editor cannot reproduce the same
+# head — discharging ADR-0010's anchoring deferral.
+#
+# Corollary E1a (*pat never signs a watt it did not measure*): every figure in
+# this reading originates from the preset-attested measured-energy store; there
+# is deliberately no override path for the energy numbers. The honest bound is
+# unchanged: a clean chain + external anchor proves the recorded history was not
+# rewritten after the fact, NOT that the meter was honest at capture time.
+# ---------------------------------------------------------------------------
+
+#: Max length of an RFC3339 UTC instant string on the wire (control-char free,
+#: bounded so a malformed field can never grow unbounded signable content).
+_INSTANT_MAX_CHARS = 64
+_RFC3339_UTC_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$"
+)
+
+#: The meters PAT is allowed to *emit* in a reading. Kept local so this
+#: vendored-contract module stays self-contained for signing-bridge sidecars
+#: (same discipline as ``_TRAINING_STRATEGIES``); a cross-check test pins it to
+#: ``observe.VALID_METERS``. The family schema also allows ``"kepler"``, but the
+#: v0.21 release audit refused Kepler attribution, so PAT never emits it.
+_EMIT_METERS = ("rapl", "dcgm")
+
+#: Serving replication layers PAT may name in a reading. Kept local for the same
+#: self-containment reason; a cross-check test pins it to ``model.VALID_LAYERS``.
+_SERVING_LAYERS = ("container", "pod", "deployment", "node")
+
+
+def _validate_utc_instant(value: object, name: str) -> tuple[str, datetime]:
+    """Validate an RFC3339 UTC *instant* string; return ``(wire_string, parsed)``.
+
+    Fail-closed (a sidecar must never sign a malformed timestamp): the string
+    must be non-empty, bounded, control-char free, parse as ISO-8601, and carry
+    an **explicit UTC offset** (``Z`` or ``+00:00``). A naive (offset-less) or
+    non-UTC instant is rejected — an anchored reading names a UTC window or none
+    at all. The original wire string is returned unchanged so the caller's exact
+    spelling is what gets hashed (the parsed value is for ordering only).
+    """
+    if not isinstance(value, str):
+        raise EvidenceProducerError(
+            f"{name} must be an RFC3339 UTC instant string, got "
+            f"{type(value).__name__!r}"
+        )
+    if not value or len(value) > _INSTANT_MAX_CHARS:
+        raise EvidenceProducerError(
+            f"{name} must be a non-empty instant string no longer than "
+            f"{_INSTANT_MAX_CHARS} characters"
+        )
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise EvidenceProducerError(f"{name} must not contain control characters")
+    if _RFC3339_UTC_RE.fullmatch(value) is None:
+        raise EvidenceProducerError(
+            f"{name} must be strict RFC3339 UTC using 'T' and either 'Z' or "
+            f"'+00:00', got {value!r}"
+        )
+    # Python 3.10's fromisoformat does not accept a trailing 'Z'; normalise it.
+    candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise EvidenceProducerError(
+            f"{name} must be an ISO-8601 instant, got {value!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise EvidenceProducerError(
+            f"{name} must carry an explicit UTC offset (naive instant rejected)"
+        )
+    if parsed.utcoffset() != timedelta(0):
+        raise EvidenceProducerError(
+            f"{name} must be UTC (offset 'Z' or '+00:00'), got {value!r}"
+        )
+    return value, parsed
+
+
+def _validate_chain_head(value: object) -> str:
+    """A chain head is a full SHA-256 hex digest: exactly 64 lowercase hex chars."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in _LOWER_HEX for ch in value)
+    ):
+        raise EvidenceProducerError(
+            "energy_chain_head must be a lowercase-hex SHA-256 digest (64 chars)"
+        )
+    return value
+
+
+def build_energy_reading(
+    *,
+    window_start: str,
+    window_end: str,
+    energy_wh: str | int,
+    mean_power_w: str | int,
+    meter: str,
+    energy_chain_head: str,
+    layer: str | None = None,
+    strategy: str | None = None,
+    parents: tuple[str, ...] | list[str] = (),
+    source_version: str | None = None,
+    observed_at: str | None = None,
+) -> dict:
+    """Build an **unsigned** Layer-0 ``energy-reading@1`` record (no key held).
+
+    The measured-energy anchoring reading (v0.24.0, Energy Arc finale). The
+    attested content is a UTC window of the chained measured-energy store plus
+    the energy-chain **head hash** it anchors on; a signing-bridge sidecar turns
+    it into a signed ``evidence-ref@1`` envelope. Publishing the head externally
+    makes a later silent rewrite of the store detectable (ADR-0010 discharged).
+
+    Trust boundary (mirrors :func:`build_training_run_reading`): this validates
+    WIRE SHAPE only and trusts the caller for measured provenance; E1a
+    store-provenance (*every figure came from the preset-attested measured-energy
+    store*) is enforced by the CLI derivation (:func:`cli._derive_energy_reading`),
+    not here. Sidecar authors must not treat shape validation as measured-ness.
+
+    Fail-closed, independent of any CLI (a sidecar must never be handed malformed
+    signable content):
+
+    * ``window_start`` / ``window_end`` — RFC3339 UTC instant strings with an
+      explicit offset; ``start < end`` (see :func:`_validate_utc_instant`).
+    * ``energy_wh`` / ``mean_power_w`` — int or decimal *string* via
+      :func:`_coerce_energy_value` (floats rejected on the wire; IEEE-754
+      round-trip enforced; negative zero collapses).
+    * ``meter`` — one of PAT's emitting meters (:data:`_EMIT_METERS`, pinned to
+      ``observe.VALID_METERS``); ``"kepler"`` is refused (v0.21 audit).
+    * exactly one of ``layer`` (serving) XOR ``strategy`` (training) — both or
+      neither is an error; ``layer`` is validated against the serving layers,
+      ``strategy`` against the training strategies.
+    * ``energy_chain_head`` — a 64-char lowercase-hex SHA-256 digest.
+    * ``parents`` — optional upstream content hashes (ADR-0002), attested inside
+      the content and included **only when non-empty**.
+    """
+    ws, ws_dt = _validate_utc_instant(window_start, "window_start")
+    we, we_dt = _validate_utc_instant(window_end, "window_end")
+    if not ws_dt < we_dt:
+        raise EvidenceProducerError("window_start must be strictly before window_end")
+    if meter not in _EMIT_METERS:
+        raise EvidenceProducerError(
+            f"meter must be one of {_EMIT_METERS!r} (PAT emits only measured "
+            "meters; 'kepler' was refused by the v0.21 release audit), "
+            f"got {meter!r}"
+        )
+    if (layer is None) == (strategy is None):
+        raise EvidenceProducerError(
+            "exactly one of layer (serving) or strategy (training) is required; "
+            "both given or neither given is rejected"
+        )
+    canonical_energy = _coerce_energy_value(energy_wh, "energy_wh")
+    canonical_power = _coerce_energy_value(mean_power_w, "mean_power_w")
+    duration_s = Decimal(str((we_dt - ws_dt).total_seconds()))
+    expected_wh = Decimal(canonical_power) * duration_s / Decimal(3600)
+    difference = abs(Decimal(canonical_energy) - expected_wh)
+    # Permit only the tiny decimal wobble introduced by shortest IEEE-754
+    # round-trip strings. Materially contradictory joules/watts must never
+    # become signable content (the family contract re-derives this relation).
+    tolerance = max(abs(expected_wh) * Decimal("1e-12"), Decimal("1e-12"))
+    if difference > tolerance:
+        raise EvidenceProducerError(
+            "energy_wh and mean_power_w contradict the signed window "
+            f"(expected approximately {expected_wh} Wh)"
+        )
+    content: dict[str, object] = {
+        "window_start": ws,
+        "window_end": we,
+        "energy_wh": canonical_energy,
+        "mean_power_w": canonical_power,
+        "meter": meter,
+        "energy_chain_head": _validate_chain_head(energy_chain_head),
+    }
+    if layer is not None:
+        if layer not in _SERVING_LAYERS:
+            raise EvidenceProducerError(
+                f"layer must be one of {_SERVING_LAYERS!r}, got {layer!r}"
+            )
+        content["layer"] = layer
+    else:
+        if strategy not in _TRAINING_STRATEGIES:
+            raise EvidenceProducerError(
+                f"strategy must be one of {_TRAINING_STRATEGIES!r}, got {strategy!r}"
+            )
+        content["strategy"] = strategy
+    validated_parents = [_validate_parent_hash(p) for p in parents]
+    if validated_parents:
+        content["parents"] = validated_parents
+    return {
+        "schema": ENERGY_READING_SCHEMA_ID,
         "attested_content": content,
         "content_hash": sha256_hex(content),
         "source": DEFAULT_SIGNER,

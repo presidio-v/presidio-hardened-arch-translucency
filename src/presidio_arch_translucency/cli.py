@@ -2667,6 +2667,254 @@ def _observe_energy(
     )
 
 
+class _EnergyEmitError(Exception):
+    """A fail-closed refusal to emit an energy-reading, carrying a CLI exit code.
+
+    ``exit_code`` 1 = the store content is unfit to sign (E1a override rows,
+    mixed meter, mixed layer); ``exit_code`` 2 = there is simply nothing to
+    anchor (no in-window rows). Separate from a broken chain, which the caller
+    detects before deriving.
+    """
+
+    def __init__(self, message: str, *, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def _energy_span_closure(
+    rows: list,  # noqa: ANN001
+    interval_start: object = None,
+    interval_end: object = None,
+) -> list:
+    """Span-overlap CLOSURE of measured-energy *rows* over a requested interval.
+
+    A row's measurement span is ``[timestamp − window_s, timestamp]``. Start with
+    every store row whose span intersects the requested interval
+    ``[interval_start, interval_end]`` (``None`` bounds = the full store). Then
+    include each complete connected component of measurement spans that
+    intersects the requested interval. This is the same transitive closure as a
+    fixed-point rescan, computed in ``O(n log n)`` rather than quadratic time on
+    adversarial chains where each span reaches only the next.
+
+    The result is the transitive coverage of every measurement overlapping the
+    interval, so the signed window covers *exactly* the rows that were scanned:
+    no sliver of coverage escapes the E1a provenance check (FIX 1, v0.24.0).
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    def _span_start(r):  # noqa: ANN001, ANN202
+        return r.timestamp - timedelta(seconds=r.window_s)
+
+    if interval_start is None:
+        selected = list(rows)
+    else:
+        entries = sorted(
+            ((_span_start(row), row.timestamp, row) for row in rows),
+            key=lambda entry: (entry[0], entry[1]),
+        )
+        components: list[tuple[object, object, list]] = []
+        for start, end, row in entries:
+            if components and start <= components[-1][1]:
+                lo, hi, members = components[-1]
+                members.append(row)
+                components[-1] = (lo, max(hi, end), members)
+            else:
+                components.append((start, end, [row]))
+        selected = [
+            row
+            for lo, hi, members in components
+            if lo <= interval_end and hi >= interval_start
+            for row in members
+        ]
+    return selected
+
+
+def _derive_energy_reading(rows: list, chain_head: str, *, parents=()) -> dict:  # noqa: ANN001
+    """Derive an ``energy-reading@1`` from the measured-energy span-overlap closure.
+
+    *rows* is the span-overlap CLOSURE (see :func:`_energy_span_closure`) — the
+    transitive set of every measurement whose span overlaps the emitted window.
+    Because the caller passes the closure rather than a raw timestamp selection,
+    the signed window is the exact coverage of every row that was scanned: there
+    is no sliver of measured span outside the interval the signature claims, which
+    is precisely what makes the E1a refusal complete.
+
+    E1a (*pat never signs a watt it did not measure*): every row in the closure
+    must be preset-attested (``source == "prometheus"``); a single
+    ``prometheus-override`` row in the closure forfeits the pinned-metric
+    attestation the signature would mean, so the whole reading is refused. One
+    reading carries one meter and one layer (mixed → refuse). ``energy_wh`` is the
+    summed measured joules over the closure rendered in watt-hours;
+    The selected spans must form one exactly contiguous, non-overlapping window;
+    a gap would claim unmeasured coverage and an overlap would double-count
+    energy. Such a set is refused rather than converted into plausible but false
+    evidence. ``mean_power_w`` is Σjoules / the continuous elapsed duration.
+    ``window_start``/``window_end`` are the closure's interval — the earliest
+    measurement start (row timestamp − its collection window) to the latest row
+    timestamp — so the reading's window truthfully covers the whole scanned span
+    (always a non-empty interval even for a single row). Assumes the energy chain
+    was already verified clean by the caller.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
+        build_energy_reading,
+    )
+    from presidio_arch_translucency.observe import _iso  # noqa: PLC0415
+
+    overrides = [r for r in rows if r.source != "prometheus"]
+    if overrides:
+        raise _EnergyEmitError(
+            f"E1a refusal: {len(overrides)} of {len(rows)} row(s) in the window "
+            "carry source=prometheus-override — a query was overridden away from "
+            "the meter's pinned presets, so the attestation the signature would "
+            "mean does not apply. pat never signs a watt it did not measure under "
+            "the pinned metric. Nothing emitted.",
+            exit_code=1,
+        )
+    meters = sorted({r.meter for r in rows})
+    if len(meters) != 1:
+        raise _EnergyEmitError(
+            f"mixed meters in the window ({', '.join(meters)}); one reading carries "
+            "one meter. Narrow --window-minutes or record a single meter. "
+            "Nothing emitted.",
+            exit_code=1,
+        )
+    layers = sorted({r.layer for r in rows})
+    if len(layers) != 1:
+        raise _EnergyEmitError(
+            f"mixed layers in the window ({', '.join(layers)}); one reading carries "
+            "one layer. Nothing emitted.",
+            exit_code=1,
+        )
+    spans = sorted(
+        ((r.timestamp - timedelta(seconds=r.window_s), r.timestamp) for r in rows),
+        key=lambda span: (span[0], span[1]),
+    )
+    for previous, current in zip(spans[:-1], spans[1:], strict=True):
+        if current[0] < previous[1]:
+            raise _EnergyEmitError(
+                "measurement windows overlap; summing them would double-count "
+                "energy. Record non-overlapping consecutive windows or emit a "
+                "single-row window. Nothing emitted.",
+                exit_code=1,
+            )
+        if current[0] > previous[1]:
+            raise _EnergyEmitError(
+                "measurement windows contain an unmeasured gap; one continuous "
+                "energy-reading cannot honestly cover it. Record consecutive "
+                "windows or emit a single-row window. Nothing emitted.",
+                exit_code=1,
+            )
+    total_joules = sum(r.joules for r in rows)
+    energy_wh = total_joules / 3600.0
+    window_start_dt = spans[0][0]
+    window_end_dt = spans[-1][1]
+    elapsed_s = (window_end_dt - window_start_dt).total_seconds()
+    mean_power_w = total_joules / elapsed_s
+    window_start = _iso(window_start_dt)
+    window_end = _iso(window_end_dt)
+    return build_energy_reading(
+        window_start=window_start,
+        window_end=window_end,
+        # repr() yields the shortest IEEE-754 round-trip decimal string the wire
+        # coercer accepts losslessly (the family string-decimal discipline).
+        energy_wh=repr(energy_wh),
+        mean_power_w=repr(mean_power_w),
+        meter=meters[0],
+        energy_chain_head=chain_head,
+        # Serving-store rows are serving-domain, so the reading is emitted with a
+        # `layer`. `strategy` emission is reserved for a future training energy
+        # store (there is no training-energy chain to derive from yet).
+        layer=layers[0],
+        parents=tuple(parents),
+    )
+
+
+def _emit_head_or_exit(db: Optional[Path]) -> None:  # noqa: UP045
+    """Handle ``observe verify --emit-head`` from a single verified snapshot.
+
+    Derives ``(report, rows, head)`` from ONE read-only
+    :func:`observe.verified_energy_snapshot` call — the same primitive the
+    ``energy-evidence-emit`` command uses — so the anchored head is the snapshot's
+    last verified link, never a row that appeared after the walk (chain-gate
+    TOCTOU fix, FIX 2). This is independent of the two-section report the caller
+    already rendered; that report and the verify exit codes are unchanged.
+
+    Emission is gated on a CLEAN energy chain walk with at least one row (a broken
+    chain must never be anchored). Broken → print an error and return so the
+    caller's normal contract still exits 1. Empty energy chain (incl. serving-only
+    stores) → exit 2 with the reserved-deferral message. Clean + rows → derive
+    over the FULL store window and print the unsigned record.
+    """
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+    from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
+        EvidenceProducerError,
+    )
+
+    try:
+        report, rows_all, head = store.verified_energy_snapshot(db_path=db)
+    except store.EnergyObservationError as exc:
+        err_console.print(f"[bold red]--emit-head refused:[/] {exc}. Nothing emitted.")
+        raise typer.Exit(code=1) from exc
+
+    if report.broken_obs_id is not None:
+        err_console.print(
+            "[bold red]--emit-head: the energy chain is broken; refusing to anchor "
+            "a broken chain.[/] The report above locates the break. Nothing emitted."
+        )
+        return  # normal verify contract exits 1 for the break
+    if report.total == 0:
+        err_console.print(
+            "[bold red]--emit-head: no energy chain to anchor[/]; serving-chain "
+            "anchoring awaits a family-reserved reading type. Nothing emitted."
+        )
+        raise typer.Exit(code=2)
+    if not report.ok:
+        err_console.print(
+            "[bold red]--emit-head: energy chain coverage is incomplete; refusing "
+            "to anchor.[/] Nothing emitted."
+        )
+        raise typer.Exit(code=2)
+    if not rows_all or head is None:
+        err_console.print(
+            "[bold red]--emit-head: the energy store is empty; nothing to anchor.[/]"
+        )
+        raise typer.Exit(code=2)
+
+    # Full-store window: the closure over an unbounded interval is every row.
+    closure = _energy_span_closure(rows_all)
+    try:
+        reading = _derive_energy_reading(closure, head)
+    except _EnergyEmitError as exc:
+        err_console.print(f"[bold red]--emit-head refused:[/] {exc}")
+        raise typer.Exit(code=exc.exit_code) from exc
+    except (InputValidationError, EvidenceProducerError) as exc:
+        err_console.print(f"[bold red]--emit-head error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Keep the invariant active under ``python -O``: an internal drift here is
+    # an evidence-integrity failure, never a removable debug assertion.
+    if reading["attested_content"]["energy_chain_head"] != head:
+        err_console.print(
+            "[bold red]--emit-head internal integrity error:[/] derived head "
+            "does not match the verified snapshot. Nothing emitted."
+        )
+        raise typer.Exit(code=1)
+
+    log_security_event(
+        "ENERGY_EVIDENCE_EMIT",
+        {
+            "via": "verify-emit-head",
+            "rows": len(closure),
+            "meter": reading["attested_content"]["meter"],
+            "layer": reading["attested_content"].get("layer"),
+            "energy_chain_head_16": head[:16],
+        },
+    )
+    typer.echo(json.dumps(reading, separators=(",", ":")))
+
+
 @observe_app.command("verify")
 def observe_verify_cmd(
     db: Optional[Path] = typer.Option(  # noqa: UP045, B008
@@ -2678,6 +2926,16 @@ def observe_verify_cmd(
         False,
         "--allow-legacy",
         help="Exit 0 when the chain is intact but legacy unchained rows remain.",
+    ),
+    emit_head: bool = typer.Option(
+        False,
+        "--emit-head",
+        help=(
+            "After a CLEAN energy-chain verify, additionally emit an unsigned "
+            "energy-reading@1 for the full measured-energy store window, carrying "
+            "the energy-chain head hash it anchors on (the external-anchoring "
+            "path). Errors if the energy chain is broken or empty."
+        ),
     ),
 ) -> None:
     """Verify BOTH hash chains (serving + measured energy) and report each.
@@ -2709,12 +2967,24 @@ def observe_verify_cmd(
             "energy_verified": energy.verified,
             "energy_ok": energy.ok,
             "allow_legacy": allow_legacy,
+            "emit_head": emit_head,
         },
     )
-    console.print("\n[bold blue]── Serving observation chain ──[/]")
-    _render_chain_report(serving, label="Observation")
-    console.print("[bold blue]── Measured energy chain ──[/]")
-    _render_chain_report(energy, label="Energy observation")
+    # Evidence mode keeps stdout machine-pure for the documented signing pipe;
+    # human diagnostics move to stderr. Default verify output is unchanged.
+    report_console = warn_console if emit_head else console
+    report_console.print("\n[bold blue]── Serving observation chain ──[/]")
+    _render_chain_report(serving, label="Observation", output=report_console)
+    report_console.print("[bold blue]── Measured energy chain ──[/]")
+    _render_chain_report(energy, label="Energy observation", output=report_console)
+
+    # --emit-head anchors the energy chain externally (v0.24.0). It runs after
+    # the normal report and only on a clean energy walk; it never gates on the
+    # serving chain (serving-chain state does not gate energy emission). A broken
+    # energy chain falls through to the exit-1 contract below; an empty chain
+    # exits 2 from inside the handler.
+    if emit_head:
+        _emit_head_or_exit(db)
 
     # A break in EITHER chain is exit 1 (ADR-0011 §2). Only then consider legacy.
     if serving.broken_obs_id is not None or energy.broken_obs_id is not None:
@@ -2726,7 +2996,9 @@ def observe_verify_cmd(
         raise typer.Exit(code=2)
 
 
-def _render_chain_report(report: object, *, label: str = "Observation") -> None:
+def _render_chain_report(
+    report: object, *, label: str = "Observation", output: Console = console
+) -> None:
     """Render a ChainReport: coverage, legacy prefix, and the first break.
 
     ``label`` names the record kind so the serving and energy sections render
@@ -2739,7 +3011,7 @@ def _render_chain_report(report: object, *, label: str = "Observation") -> None:
 
     noun = label.lower()
     if report.total == 0:
-        console.print(f"\n[dim]No {noun}s recorded yet — nothing to verify.[/]\n")
+        output.print(f"\n[dim]No {noun}s recorded yet — nothing to verify.[/]\n")
         return
 
     lines = [
@@ -2782,9 +3054,9 @@ def _render_chain_report(report: object, *, label: str = "Observation") -> None:
         border = "green"
         title = f"[bold blue]{label} chain — verified[/]"
 
-    console.print()
-    console.print(Panel("\n".join(lines), title=title, border_style=border))
-    console.print()
+    output.print()
+    output.print(Panel("\n".join(lines), title=title, border_style=border))
+    output.print()
 
 
 # ── observe daemon: continuous collection via launchd / systemd ───────────────
@@ -5043,6 +5315,136 @@ def train_evidence_emit_cmd(
             "run_id_sha256_16": run_id_digest,
             "strategy": strategy_str,
             "parents": len(parent),
+        },
+    )
+    typer.echo(json.dumps(reading, separators=(",", ":")))
+
+
+@app.command("energy-evidence-emit")
+def energy_evidence_emit_cmd(
+    window_minutes: int = typer.Option(
+        5,
+        "--window-minutes",
+        help=(
+            "Select measured-energy observations recorded in the last N minutes "
+            "[now-N, now] and emit one reading over them."
+        ),
+        min=1,
+        max=1440,
+    ),
+    db: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None, "--db", help="Observation store path (defaults to the standard location)."
+    ),
+    parent: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--parent",
+        help=(
+            "Content hash of an upstream evidence payload (repeatable), attested "
+            "inside the reading (provenance DAG convention, ADR-0002)."
+        ),
+    ),
+) -> None:
+    """Emit a key-less Layer-0 measured-energy reading as JSON (Energy Arc finale).
+
+    arch-translucency holds **no signing key**: this prints an *unsigned*
+    ``energy-reading@1`` to stdout. Pipe it to the signing-bridge sidecar, which
+    adds the Ed25519 signature; the reading carries the measured-energy chain
+    **head hash** so publishing the signed reading externally makes any later
+    silent rewrite of the local store detectable (ADR-0010 anchoring discharged).
+
+    E1a — *pat never signs a watt it did not measure*: the figures come
+    exclusively from the preset-attested measured-energy store. There is
+    deliberately **no** override flag for the energy numbers; a window containing
+    any ``prometheus-override`` row is refused. Emission is gated on a CLEAN
+    energy-chain verify (a broken chain is never anchored): a broken chain exits
+    1, an empty chain or an empty window exits 2, and nothing is emitted.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    from presidio_arch_translucency import observe as store  # noqa: PLC0415
+    from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
+        EvidenceProducerError,
+    )
+
+    # Single verified snapshot: the chain report, every row, and the anchoring
+    # head all come from ONE read-only connection, so a row appended after this
+    # point is outside both the figures and the head (chain-gate TOCTOU fix).
+    try:
+        report, rows_all, head = store.verified_energy_snapshot(db_path=db)
+    except store.EnergyObservationError as exc:
+        err_console.print(
+            f"[bold red]Energy evidence refused:[/] {exc}. Nothing emitted."
+        )
+        raise typer.Exit(code=1) from exc
+
+    # Chain gate: refuse to anchor a broken or empty chain.
+    if report.broken_obs_id is not None:
+        err_console.print(
+            f"[bold red]Energy chain is broken[/] at energy id {report.broken_obs_id} "
+            f"(seq {report.broken_seq}): {report.break_reason}. A broken chain is "
+            "never anchored — run `pat observe verify` for the full report. "
+            "Nothing emitted."
+        )
+        raise typer.Exit(code=1)
+    if report.total == 0:
+        err_console.print(
+            "[bold red]No measured-energy observations recorded[/] — record some "
+            "with `pat observe --energy` first. Nothing to anchor."
+        )
+        raise typer.Exit(code=2)
+    if not report.ok:
+        err_console.print(
+            "[bold red]Energy chain coverage is incomplete[/]; refusing to anchor. "
+            "Nothing emitted."
+        )
+        raise typer.Exit(code=1)
+    if head is None:  # pragma: no cover - report.ok with total>0 implies a head
+        err_console.print(
+            "[bold red]Energy chain head is unexpectedly empty[/]; nothing emitted."
+        )
+        raise typer.Exit(code=2)
+
+    # Span-overlap closure of the requested [now-N, now] window: the emitted
+    # window covers exactly the rows scanned for E1a provenance (no sliver).
+    now = store.utcnow()
+    since = now - timedelta(minutes=window_minutes)
+    closure = _energy_span_closure(rows_all, since, now)
+    if not closure:
+        err_console.print(
+            f"[bold red]No measured-energy observations in the last "
+            f"{window_minutes} minute(s)[/] — widen --window-minutes or record "
+            "more readings. Nothing emitted."
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        reading = _derive_energy_reading(closure, head, parents=tuple(parent))
+    except _EnergyEmitError as exc:
+        err_console.print(f"[bold red]Refused:[/] {exc}")
+        raise typer.Exit(code=exc.exit_code) from exc
+    except (InputValidationError, EvidenceProducerError) as exc:
+        err_console.print(f"[bold red]Evidence error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if reading["attested_content"]["energy_chain_head"] != head:
+        err_console.print(
+            "[bold red]Energy evidence internal integrity error:[/] derived head "
+            "does not match the verified snapshot. Nothing emitted."
+        )
+        raise typer.Exit(code=1)
+
+    # Security-event discipline: log counts, enum meter/layer, and the chain-head
+    # digest prefix — never the raw energy figures (mirrors the sibling emitters).
+    log_security_event(
+        "ENERGY_EVIDENCE_EMIT",
+        {
+            "via": "energy-evidence-emit",
+            "rows": len(closure),
+            "window_minutes": window_minutes,
+            "meter": reading["attested_content"]["meter"],
+            "layer": reading["attested_content"].get("layer"),
+            "parents": len(parent),
+            "energy_chain_head_16": head[:16],
         },
     )
     typer.echo(json.dumps(reading, separators=(",", ":")))

@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.23.0** ("Energy arc · Train the watt")
+- Current version: **0.24.0** ("Energy arc · Sign the watt")
 
 ---
 
@@ -72,7 +72,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.21.0 | Energy arc · Measure the watt — platform-gated direct-hardware mode (RAPL/DCGM; Kepler attribution refused), parallel verified `energy_observations` chain, energy gauges + rules | Implemented and third-party release gate remediated (2026-07-16) |
 | v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity (static citable snapshot + optional live via `PAT_CARBON_TOKEN`), `what-if --energy-aware` idle-vs-trough dual, `cost --carbon`, `scaler --signal energy` | Implemented; third-party findings remediated and release gate green (2026-07-16) |
 | v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` from step-time logs (discharges L-TR-1) with committed training fits, samples/s/W ranking, `training-run@1` optional energy fields (string-decimal wire) | Implemented; third-party findings remediated and release gate green (2026-07-17) |
-| v0.24.0 | Energy arc · Sign the watt — `energy-reading@1` Layer-0 emit carrying the chain head (discharges the ADR-0010 deferral), arc retro + position paper | Planned |
+| v0.24.0 | Energy arc · Sign the watt — `pat energy-evidence-emit` (`energy-reading@1`, store-only figures, span-overlap closure) + `observe verify --emit-head` chain-head anchoring from a single verified snapshot (discharges the ADR-0010 deferral); arc retro | Implemented and third-party findings remediated (2026-07-18); release gate in progress |
 
 ---
 
@@ -1328,7 +1328,8 @@ the founding claim, now in watts.
   CPU meter and workload energy is proportional attribution, while metric/zone
   shape does not distinguish it. The release therefore refuses Kepler and
   admits direct node-exporter RAPL/DCGM counters only. Elevated to E1a.
-- L-EN-4: `energy-reading@1` family vector reservation — **PR #14 open**
+- L-EN-4: `energy-reading@1` family vector reservation — **PR #14 merged
+  2026-07-14; emittable DCGM/training vector pinned in v0.24.0**
   (presidio-evidence `reserve-energy-reading-v1`, 2026-07-13); both lanes
   green. Field-naming decisions taken 2026-07-13 (drop payload-internal
   `reading` id; `source`→`meter` with family enum `rapl|kepler|dcgm`, while this
@@ -1600,6 +1601,109 @@ validated in the library fail-closed, never invented by pat.
 | Energy is a score, memory is the constraint | An infeasible point is impossible; an energy-hungry point is merely expensive — the v0.18 semantics, unchanged by the new column |
 | String-decimal energy on the wire, floats rejected by type | The family canonical profile; ints and equivalent accepted spellings normalize to one canonical hash |
 | Saturated fits flagged | R²=1.0 from an exactly-determined system is not evidence; honesty in rendering is part of the evidence posture |
+
+## v0.24.0 — Sign the watt (implemented 2026-07-18)
+
+### Direction
+
+The arc finale: a measured-energy window leaves pat as a key-less Layer-0
+`energy-reading@1` (frozen family shape, presidio-evidence PR #14) carrying
+the **energy-chain head hash inside the signed content** — each signed
+reading attests the unrewritten history behind it. This discharges
+ADR-0010's deferral ("signing/externally anchoring the chain head") and
+closes the v0.19 bounded-claim gap the honest way: rewriting becomes
+*externally* detectable; capture-time honesty remains out of scope, restated
+verbatim.
+
+### Scope (implemented)
+
+- [x] **`build_energy_reading`** (evidence_producer.py) — the frozen PR #14
+  shape: no payload-internal type id; RFC3339 UTC `window_start`/`window_end`
+  (strict, `Z`-tolerant, non-UTC rejected, start<end); `energy_wh`/
+  `mean_power_w` under the v0.23 string-decimal discipline; `meter` restricted
+  pat-side to `VALID_METERS` (`rapl`/`dcgm` — the family enum's `kepler` is
+  never emitted after the v0.21 audit refusal, cross-check-tested); `layer`
+  XOR `strategy`; `energy_chain_head` lowercase-hex-64; optional `parents`
+  (ADR-0002). Wire-shape validation fail-closed in the library; the
+  trust-boundary caveat states shape ≠ measured-ness (the CLI derivation
+  enforces provenance). The builder cross-checks energy and mean power against
+  the elapsed window and pins the merged PR #14 DCGM/training vector.
+- [x] **`pat energy-evidence-emit`** — figures come EXCLUSIVELY from the
+  chained measured-energy store (E1a): no flags for energy values exist.
+  **Span-overlap closure** semantics (from the pre-audit review): the signed
+  window is the fixed-point transitive coverage of every measurement
+  overlapping it, so the override-row refusal scans exactly what the window
+  claims — no boundary sliver where an unattested row overlaps a signed
+  interval. Mixed meter/layer refused (one reading, one meter, one subject);
+  `prometheus-override` rows refuse emission; `--parent` passthrough. Multiple
+  rows must be consecutive: overlap would double-count energy and a gap would
+  claim unmeasured coverage, so both fail closed.
+- [x] **Single-snapshot chain gate** (from the pre-audit review):
+  `verified_energy_snapshot()` walks the chain, loads rows, and returns the
+  **last verified link** as head from one explicit read transaction on a
+  read-only SQLite connection — the
+  anchored head can never cover a row the walk didn't verify, by
+  construction, not by timing. Emission refuses on anything but a clean walk
+  (broken chain → exit 1, nothing emitted).
+- [x] **`pat observe verify --emit-head`** — the periodic external-anchoring
+  path: sends the normal two-chain report to stderr and emits pipe-pure JSON on
+  stdout for the full-store
+  energy-reading from the same verified snapshot. Serving-chain anchoring is
+  **deferred** — no family-reserved reading type exists for a bare chain
+  head; recorded as L-EN-5 below rather than inventing an unfrozen shape.
+- [x] **Golden-vector conformance** — deterministic self-pins plus a byte-exact
+  pin of merged presidio-evidence PR #14's emittable DCGM/training vector (the
+  family nominal Kepler vector remains intentionally refused by pat).
+- [x] **Tests** — 82 new incl. remediation regressions (wire-validation
+  matrix, closure growth/termination/the review's exact boundary scenario,
+  snapshot head-bounding, exit-code matrix, byte-identical default verify).
+  Full suite 1346 passed, 94.27% coverage, ruff clean.
+- [x] **Pre-audit adversarial review** (same session): found the E1a
+  boundary hole (override row overlapping the signed window while outside
+  the timestamp selection — demonstrated empirically) → fixed with the
+  closure semantics; found the three-connection chain-gate TOCTOU → fixed
+  with the single-snapshot primitive; trust-boundary docstring aligned with
+  the training builder's.
+
+### Deferred (recorded, not built)
+
+- L-EN-5: serving-chain head anchoring — needs a family-reserved reading
+  type (`chain-head@1` or similar); prompt material in `plan/` when wanted.
+  The energy chain (the arc's subject) anchors today.
+
+### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Store-only figures, no value flags | E1a structurally: the CLI cannot be handed a watt; the library's shape-only trust boundary is documented for sidecar authors |
+| Span-overlap closure | A signed window must cover exactly what was scanned — interval semantics, not timestamp-selection convenience |
+| Head = last verified link, one snapshot | An anchor that can outrun its own verification is not an anchor |
+| Serving-chain anchoring deferred | The family freezes wire shapes; pat does not emit shapes the family has not reserved — the house rule that made PR #14 orderly |
+| Emission gated on a clean walk | A broken chain must never be externally anchored; refusing is the evidence posture |
+
+## Energy Arc retro (v0.20.0 → v0.24.0)
+
+Five versions, one axis: **watts became a first-class NFP** with the same
+translucency question answered at every altitude — modelled (v0.20), measured
+(v0.21), budgeted (v0.22), trained (v0.23), signed (v0.24). What held: the
+governing invariants E1/E1a survived contact with implementation and grew
+teeth (platform gate, meter enum without `manual`, store-only emission); the
+ADR-0010 parallel-structure discipline made each extension a copy of a proven
+mechanism (parallel params table, parallel chain, conditional-on-presence
+commitments); zero new runtime dependencies across the arc; every version
+shipped with a same-session adversarial review that found real, demonstrable
+holes before the third-party auditor did (cross-scope tamper-escape,
+neutered gate, intensity poisoning, ingestion escape, window-coverage
+sliver, chain-gate TOCTOU) — the two-layer review is now house practice.
+What changed against the briefing, honestly: Kepler fell out entirely (the
+L-EN-3 spike, then the v0.21 audit refused its attribution — the metric pin
+and direct-hardware meters are the operative guards); EEI lost the scaler
+trigger to J/req (no operator-meaningful absolute target); α_E became the
+derived fraction, (P_idle, e_dyn, β_E) the fitted truth. SEANERGYS's DSRM
+actuates power; pat's answer stayed emit-only and gained what the consortium
+lacks — **cryptographically evidenced energy under an honest, bounded
+claim**. Position paper (briefing §4 v0.24) remains outstanding: outline in
+`plan/position-paper-outline.md`, to be written against released artifacts.
 
 ## SDLC
 
