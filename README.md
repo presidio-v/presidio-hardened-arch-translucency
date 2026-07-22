@@ -3,6 +3,9 @@
 [![PyPI version](https://img.shields.io/pypi/v/presidio-hardened-arch-translucency.svg)](https://pypi.org/project/presidio-hardened-arch-translucency/)
 [![Python](https://img.shields.io/pypi/pyversions/presidio-hardened-arch-translucency.svg)](https://pypi.org/project/presidio-hardened-arch-translucency/)
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
+[![CI](https://github.com/presidio-v/presidio-hardened-arch-translucency/actions/workflows/ci.yml/badge.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/presidio-v/presidio-hardened-arch-translucency/badge)](https://scorecard.dev/viewer/?uri=github.com/presidio-v/presidio-hardened-arch-translucency)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13750/badge)](https://www.bestpractices.dev/projects/13750)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > v0.24.1 — Family-vector conformance patch for the Architectural Translucency Analyzer. The nominal Kepler energy vector and energy-bearing training vector are now pinned to the authoritative `presidio-evidence` records while PAT retains its fail-closed refusal to emit Kepler measurements.
@@ -1394,6 +1397,32 @@ This completes the Energy Arc: **model** the watt (v0.20) → **measure** it
 | **v0.24.1** | **Family-vector conformance patch — pin the nominal Kepler energy payload and energy-bearing training payload to the merged `presidio-evidence` vectors without weakening PAT's audited Kepler emission refusal** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
+
+---
+
+## Roadmap / Planned (next 12 months)
+
+The table above is the version-by-version history; the items below are the
+forward-looking plan.
+
+- **Now / in flight** — OpenSSF Best Practices hardening (governance and assurance
+  docs, the Scorecard workflow, and the two-person review gate) plus routine
+  security-patch releases driven by Dependabot and the `pip-audit` release gate.
+- **Next** — maturing the measured-energy hardware backends (the RAPL / DCGM
+  presets) beyond their current MVP state, and extending `presidio-evidence`
+  family-vector conformance.
+- **Later** *(under evaluation)* — an academic write-up of the layer-aware
+  replication model, and an open-core hosted tier (the draft monetisation plan,
+  still pending review).
+
+---
+
+## Governance, Architecture, Security
+
+- [Governance](GOVERNANCE.md) — roles, decision process, and how to become a maintainer.
+- [Architecture](ARCHITECTURE.md) — components, trust boundaries, and the core processing path.
+- [Assurance case](ASSURANCE.md) — the security claims and the evidence backing each one.
+- [Security policy](SECURITY.md) — supported versions and how to report a vulnerability.
 
 ---
 
