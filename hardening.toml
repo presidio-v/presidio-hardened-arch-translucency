@@ -1,0 +1,24 @@
+# hardening.toml — presidio-hardened-repo skill manifest for this target.
+#
+# Render input, re-run record, and idempotency anchor. Read by
+# scripts/render.py to fill the templates under the skill's templates/ tree.
+
+[project]
+name = "presidio-hardened-arch-translucency"
+org = "presidio-v"
+package = "presidio_arch_translucency"
+description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
+language = "python"           # "python" selects templates/python/; "none" = core only
+tier = "silver"               # target level: passing | silver | gold
+
+[people]
+maintainer = "vstantch"
+reviewer = "ceoofcyber"       # external two-person-review gate (write collaborator + CODEOWNER)
+security_contact = "security@presidio-group.eu"
+
+[legal]
+copyright_holder = "PRESIDIO Group"
+license = "MIT"
+
+[badge]
+bestpractices_id = 0          # filled in after a human registers at bestpractices.dev

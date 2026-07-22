@@ -1,0 +1,11 @@
+# SSH allowed_signers for verifying presidio-hardened-arch-translucency release tags.
+#
+# Release tags are SSH-signed with the presidio-v org release signing key.
+# To verify a tag locally:
+#
+#   git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag <tag>
+#
+# GitHub also shows each release tag as "Verified" because this same key is
+# registered as a signing key on the maintainer's GitHub account.
+
+vstantch@users.noreply.github.com,vladimir@presidio-group.eu namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILzAijdWkrW+yAhY6ZfjBqSs/1HWiGLJkhfHv2PX9JB5 presidio-v release signing

@@ -213,6 +213,22 @@ Manual security audit history:
 - [`SECURITY-AUDIT-2026-06-16.md`](SECURITY-AUDIT-2026-06-16.md) -- v0.9.0 hardening audit and remediation status.
 - [`SECURITY-AUDIT.md`](SECURITY-AUDIT.md) -- 2026-06-03 audit and remediation status.
 
+## Verifying release signatures
+
+Release tags are SSH-signed with the `presidio-v` organisation release signing
+key. The corresponding public key is checked into the repository at
+[`allowed_signers`](allowed_signers), so any release tag can be verified locally:
+
+```bash
+git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag v0.24.1
+```
+
+A `Good "git" signature` result confirms the tag was signed by the org release
+key. GitHub also renders each release tag as **Verified** because this same key
+is registered as a signing key on the maintainer's GitHub account. See
+[GOVERNANCE.md](GOVERNANCE.md#project-continuity) for how the key is custodied and
+recovered.
+
 ## Software Development Lifecycle
 
 This repository is developed under the Presidio hardened-family SDLC. The public report
