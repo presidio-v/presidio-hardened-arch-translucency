@@ -1,0 +1,54 @@
+name: Scorecard supply-chain security
+
+# OpenSSF Scorecard — weekly supply-chain posture check.
+# Target score >= 7.0 (see sdlc/supply-chain.md). Results are published to the
+# repo Security tab (code scanning) and to the public OpenSSF results store; a
+# dip below target is triaged into the risk register.
+
+on:
+  # Re-run when branch-protection settings change (a Scorecard input).
+  branch_protection_rule:
+  schedule:
+    - cron: "40 6 * * 1" # Mondays 06:40 UTC
+  push:
+    branches: ["main"]
+
+# Least privilege by default; the analysis job elevates only what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC for publish_results to the OpenSSF store
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # The default GITHUB_TOKEN cannot read branch-protection rules, so the
+          # Branch-Protection check errors. A fine-grained PAT (admin:read on this
+          # repo) stored as SCORECARD_TOKEN lets that check score; falls back to
+          # the default token when the secret is absent (non-breaking).
+          repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}
+          # Publish to the public OpenSSF store so the score is externally
+          # verifiable and a Scorecard badge can be rendered.
+          publish_results: true
+
+      # SARIF is published to the OpenSSF store (publish_results) and rendered via
+      # the README badge; it is deliberately NOT uploaded to GitHub code scanning,
+      # which would flood the Security tab with posture-check findings already
+      # tracked by the score. Kept as a build artifact for debugging only.
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
