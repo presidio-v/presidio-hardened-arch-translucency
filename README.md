@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/presidio-v/presidio-hardened-arch-translucency.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/releases)
 [![CI](https://github.com/presidio-v/presidio-hardened-arch-translucency/actions/workflows/ci.yml/badge.svg)](https://github.com/presidio-v/presidio-hardened-arch-translucency/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/presidio-v/presidio-hardened-arch-translucency/badge)](https://scorecard.dev/viewer/?uri=github.com/presidio-v/presidio-hardened-arch-translucency)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/0/badge)](https://www.bestpractices.dev/projects/0)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13750/badge)](https://www.bestpractices.dev/projects/13750)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > v0.24.1 — Family-vector conformance patch for the Architectural Translucency Analyzer. The nominal Kepler energy vector and energy-bearing training vector are now pinned to the authoritative `presidio-evidence` records while PAT retains its fail-closed refusal to emit Kepler measurements.
