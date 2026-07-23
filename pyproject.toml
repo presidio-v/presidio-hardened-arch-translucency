@@ -55,6 +55,11 @@ evidence = [
 spot = [
     "boto3>=1.26",
 ]
+fuzz = [
+    # Atheris 3.x dropped Python 3.10 (last 3.10 wheel: 2.3.0); the marker keeps
+    # the extra resolvable across the >=3.10 support matrix while fuzz CI pins 3.12.
+    'atheris>=3.0; python_version >= "3.11"',
+]
 
 [project.scripts]
 pat = "presidio_arch_translucency.cli:app"
