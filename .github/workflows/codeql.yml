@@ -9,6 +9,11 @@ on:
     # Run weekly on Mondays at 08:00 UTC
     - cron: "0 8 * * 1"
 
+# Least privilege at the top level (OpenSSF Scorecard Token-Permissions); the
+# analyze job below re-declares the scoped security-events: write it needs.
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze Python
