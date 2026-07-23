@@ -670,7 +670,17 @@ def verify_commitment(record: object) -> bool:
         return False
     try:
         return _digest_from_record(record) == stored  # type: ignore[arg-type]
-    except (CalibrationError, KeyError, TypeError, ValueError, IndexError):
+    except (
+        CalibrationError,
+        KeyError,
+        TypeError,
+        ValueError,
+        IndexError,
+        OverflowError,
+    ):
+        # OverflowError: a valid commitment envelope carrying Infinity in an int
+        # column (replicas / degree / microbatches) reaches int(inf) during the
+        # re-hash; fail closed rather than raising through the contract.
         return False
 
 
@@ -835,7 +845,17 @@ def verify_training_commitment(record: object) -> bool:
         return False
     try:
         return _digest_from_training_record(record) == stored  # type: ignore[arg-type]
-    except (CalibrationError, KeyError, TypeError, ValueError, IndexError):
+    except (
+        CalibrationError,
+        KeyError,
+        TypeError,
+        ValueError,
+        IndexError,
+        OverflowError,
+    ):
+        # OverflowError: a valid commitment envelope carrying Infinity in an int
+        # column (replicas / degree / microbatches) reaches int(inf) during the
+        # re-hash; fail closed rather than raising through the contract.
         return False
 
 

@@ -117,6 +117,14 @@ def test_tampered_observations_fails_verify():
     assert verify_commitment(load_calibrated_model()) is False
 
 
+def test_infinite_replicas_column_fails_closed():
+    # A valid commitment envelope with Infinity in the int replicas column
+    # (observations[i][2]) must fail closed, not raise OverflowError via int(inf).
+    write_model_file(_fit())
+    _tamper(observations=[[1.0, 1.0, float("inf")]])
+    assert verify_commitment(load_calibrated_model()) is False
+
+
 def test_resolve_raises_tamper_error_fail_closed():
     write_model_file(_fit())
     _tamper(concurrency=999.0)
