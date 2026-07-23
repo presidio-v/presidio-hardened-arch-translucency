@@ -6,8 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write  # required for OIDC trusted publishing
-  contents: read   # required for actions/checkout
+  contents: read  # least privilege at the top level; elevate per-job below
 
 jobs:
   publish:
@@ -17,6 +16,10 @@ jobs:
     # publish to PyPI requires the reviewers/rules configured on the `pypi`
     # environment in repo settings before the OIDC token is issued.
     environment: pypi
+    permissions:
+      contents: read       # required for actions/checkout
+      id-token: write      # OIDC for PyPI trusted publishing AND the attestation
+      attestations: write  # required to write the build-provenance attestation
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,6 +29,14 @@ jobs:
 
       - name: Build
         run: uv build
+
+      # Emit SLSA build provenance over the sdist/wheel so Scorecard's
+      # Signed-Releases check passes for the PyPI artifacts. Container image
+      # provenance is already attested in publish-container.yml.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/*
 
       - name: Publish
         run: uv publish
