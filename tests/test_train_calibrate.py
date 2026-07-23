@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 from presidio_arch_translucency.calibrate import (
     Observation,
     fit_calibration,
+    global_model_path,
     training_commitment_of,
     verify_commitment,
     verify_training_commitment,
@@ -458,6 +459,18 @@ def test_write_training_fit_roundtrips_commitment():
     assert training_commitment_of(record) is not None
     assert verify_training_commitment(record) is True
     assert resolve_training_commitment(ParallelismStrategy.DATA)["status"] == "ok"
+
+
+def test_infinite_microbatches_column_fails_closed():
+    # A valid training commitment envelope with Infinity in the int microbatches
+    # column must fail closed, not raise OverflowError via int(inf).
+    write_training_fit(ParallelismStrategy.DATA, _fit())
+    path = global_model_path()
+    data = json.loads(path.read_text())
+    data["training"]["data"]["microbatches"] = float("inf")
+    path.write_text(json.dumps(data))
+    record = load_calibrated_model()["training"]["data"]
+    assert verify_training_commitment(record) is False
 
 
 def test_write_training_fit_energy_roundtrips():
