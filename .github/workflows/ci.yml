@@ -29,20 +29,23 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        # Locked install so CI uses the same ruff/pytest pins as uv.lock.
+        # Floating `uv pip install` was pulling ruff 0.16 and failing format
+        # on Dependabot PRs that only touched workflow pins.
+        run: uv sync --locked --extra dev
 
       - name: Lint with ruff
         run: |
-          ruff format --check .
-          ruff check .
+          uv run ruff format --check .
+          uv run ruff check .
 
       - name: Run tests with coverage
         # Note: --cov and --cov-fail-under=80 come from pyproject.toml [addopts].
         # --cov-report=xml is added here for the Codecov upload step only.
-        run: pytest --cov-report=xml
+        run: uv run pytest --cov-report=xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
@@ -58,7 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Verify uv.lock matches pyproject.toml
         # Fails if editing pyproject.toml would change uv.lock without the
@@ -78,7 +81,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install locked package and audit dependencies
         run: uv sync --locked --extra audit --extra evidence
@@ -111,10 +114,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Install package + fuzz extra
-        run: uv pip install --system -e ".[fuzz]"
+        run: uv sync --locked --extra fuzz
 
       # The harness raises AssertionError explicitly (no bare asserts), so its
       # property checks fire regardless of -O/PYTHONOPTIMIZE; any unexpected
@@ -123,6 +126,6 @@ jobs:
         run: |
           for f in fuzz/fuzz_*.py; do
             echo "::group::$f"
-            python "$f" -atheris_runs=25000 -max_total_time=60
+            uv run python "$f" -atheris_runs=25000 -max_total_time=60
             echo "::endgroup::"
           done
