@@ -1,9 +1,12 @@
 name: Scorecard supply-chain security
 
 # OpenSSF Scorecard — weekly supply-chain posture check.
-# Target score >= 7.0 (see sdlc/supply-chain.md). Results are published to the
-# repo Security tab (code scanning) and to the public OpenSSF results store; a
-# dip below target is triaged into the risk register.
+# Target score >= 7.0, per the "Posture score" control in the PRESIDIO SDLC
+# report, §6 "Supply chain":
+# https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md
+# Results are published to the public OpenSSF results store (see the upload step
+# below for why they are deliberately kept out of the repo Security tab); a dip
+# below target is triaged into the risk register.
 
 on:
   # Re-run when branch-protection settings change (a Scorecard input).
