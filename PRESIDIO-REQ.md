@@ -808,7 +808,7 @@ reaches them **without Prometheus**.
 
 ### Transport decision — see ADR-0006
 
-Per **[ADR-0006](../docs/adr/0006-otlp-export-transport.md)** the transport is
+Per **[ADR-0006](docs/adr/0006-otlp-export-transport.md)** the transport is
 **hand-rolled OTLP/HTTP+JSON, Collector-targeted** — no `opentelemetry` SDK, no
 `protobuf`, no `grpcio`. This preserves the zero-client-dependency hardened
 posture (the fifth wire format `pat` emits by hand, after Prometheus text, rules

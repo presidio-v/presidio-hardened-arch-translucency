@@ -65,8 +65,9 @@ jobs:
 
       - name: Verify uv.lock matches pyproject.toml
         # Fails if editing pyproject.toml would change uv.lock without the
-        # lockfile being regenerated and committed. Implements the pinned-
-        # versions control in sdlc/supply-chain.md.
+        # lockfile being regenerated and committed. Implements the dependency-
+        # pinning control in the PRESIDIO SDLC report, §6 "Supply chain":
+        # https://github.com/presidio-v/presidio-hardened-docs/blob/main/sdlc/sdlc-report.md
         run: uv lock --locked
 
   security-audit:
