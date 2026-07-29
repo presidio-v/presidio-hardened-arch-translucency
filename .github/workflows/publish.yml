@@ -1,5 +1,16 @@
 name: Publish to PyPI
 
+# Release pipeline, split into three jobs so each holds only the write scopes it
+# needs:
+#   build          — sdist/wheel, SBOM, SLSA provenance (no repo write, no PyPI)
+#   publish        — PyPI trusted publishing, behind the `pypi` environment gate
+#   release-assets — attach dist + SBOM + provenance to the GitHub Release
+# Splitting also keeps the attestation bundle available as a named file, which is
+# what OpenSSF Scorecard's Signed-Releases check looks for on the release itself:
+# attesting the artifact is not enough, the `.intoto.jsonl` must be a release
+# asset. GOVERNANCE.md commits the release manager to verifying provenance and
+# SBOM attach on each release; these jobs are what makes that verifiable.
+
 on:
   release:
     types: [published]
@@ -9,20 +20,18 @@ permissions:
   contents: read  # least privilege at the top level; elevate per-job below
 
 jobs:
-  publish:
-    name: Build and publish
+  build:
+    name: Build, SBOM, and attest
     runs-on: ubuntu-latest
-    # Bind to a protected environment so a manual workflow_dispatch (or release)
-    # publish to PyPI requires the reviewers/rules configured on the `pypi`
-    # environment in repo settings before the OIDC token is issued.
-    environment: pypi
     permissions:
       contents: read       # required for actions/checkout
-      id-token: write      # OIDC for PyPI trusted publishing AND the attestation
+      id-token: write      # OIDC for the build-provenance attestation
       attestations: write  # required to write the build-provenance attestation
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -30,13 +39,83 @@ jobs:
       - name: Build
         run: uv build
 
-      # Emit SLSA build provenance over the sdist/wheel so Scorecard's
-      # Signed-Releases check passes for the PyPI artifacts. Container image
-      # provenance is already attested in publish-container.yml.
+      # SBOM is generated from a throwaway venv containing only the built wheel
+      # and its runtime dependencies, so it describes what a consumer installs —
+      # not this repo's dev/test/fuzz extras.
+      - name: Generate SBOM
+        run: |
+          uv venv .sbom-venv
+          uv pip install --python .sbom-venv/bin/python dist/*.whl
+          uvx --from cyclonedx-bom cyclonedx-py environment .sbom-venv/bin/python \
+            --output-format JSON --output-file sbom.cdx.json
+
+      # Emit SLSA build provenance over the sdist/wheel. Container image
+      # provenance is attested separately in publish-container.yml.
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: dist/*
 
+      # Copy the Sigstore/in-toto bundle to a stable filename so it can be
+      # attached to the GitHub Release; Scorecard recognises `.intoto.jsonl`.
+      - name: Stage provenance bundle as a release asset
+        run: cp "${{ steps.attest.outputs.bundle-path }}" provenance.intoto.jsonl
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifacts
+          path: |
+            dist/
+            sbom.cdx.json
+            provenance.intoto.jsonl
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Bind to a protected environment so a manual workflow_dispatch (or release)
+    # publish to PyPI requires the reviewers/rules configured on the `pypi`
+    # environment in repo settings before the OIDC token is issued.
+    environment: pypi
+    permissions:
+      contents: read   # no checkout; the built artifacts are downloaded
+      id-token: write  # OIDC for PyPI trusted publishing
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: .
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Publish
         run: uv publish
+
+  release-assets:
+    name: Attach release assets
+    needs: [build, publish]
+    # workflow_dispatch has no release to attach to; only the `release: published`
+    # path reaches this job.
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # upload assets to the GitHub Release
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: .
+
+      - name: Attach dist, SBOM, and provenance to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" dist/* sbom.cdx.json provenance.intoto.jsonl \
+            --repo "$GH_REPO" --clobber

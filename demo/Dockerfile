@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Pinned by digest (same base as the root Dockerfile) so the demo workload is
+# reproducible and the image cannot drift under the floating tag.
+FROM python:3.12-slim@sha256:3d5ed973e45820f5ba5e46bd065bd88b3a504ff0724d85980dcd05eab361fcf4
 LABEL maintainer="presidio-v" \
       description="Monte Carlo π workload server for pat demo"
 WORKDIR /app

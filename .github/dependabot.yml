@@ -27,6 +27,11 @@ updates:
     commit-message:
       prefix: "chore(ci)"
     groups:
-      codeql-action:
+      # One PR for all action bumps. Ungrouped, each action opened its own PR
+      # (#93-#97 had to be superseded by a single hand-batched PR #98), and every
+      # one of them re-ran the full matrix for a one-line SHA change. Grouping
+      # applies to version updates only; Dependabot still raises security
+      # updates individually and immediately.
+      github-actions:
         patterns:
-          - "github/codeql-action/*"
+          - "*"

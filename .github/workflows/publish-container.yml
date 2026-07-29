@@ -10,16 +10,22 @@ on:
         required: true
         type: string
 
+# Least privilege at the top level (OpenSSF Scorecard Token-Permissions); the
+# publish job below re-declares the scoped write scopes it needs. A top-level
+# `packages: write` grants that scope to every job in the workflow and is scored
+# as a High-severity finding.
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 jobs:
   publish:
     name: Build, attest, and publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # required for actions/checkout
+      packages: write      # push the image to ghcr.io
+      id-token: write      # OIDC for the build-provenance attestation
+      attestations: write  # required to write the attestation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,7 +69,7 @@ jobs:
             ghcr.io/presidio-v/pat-exporter:latest
 
       - name: Attest image provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/presidio-v/pat-exporter
           subject-digest: ${{ steps.build.outputs.digest }}
