@@ -50,7 +50,7 @@ evidence = [
     # Ed25519 signing for the evidence-ref@1 SLO degradation producer
     # (evidence_producer.py). Major-bounded and lock-pinned for release auditability.
     # HMAC-SHA256 + the canonical/hash layer are stdlib.
-    "cryptography>=49.0.0,<50.0.0",
+    "cryptography>=49.0.0,<51.0.0",
 ]
 spot = [
     "boto3>=1.26",
