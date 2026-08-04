@@ -21,6 +21,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   `pip-audit` reports no advisories for 50.0.0 and the family golden vectors
   still verify byte-for-byte.
 
+### Security
+
+- Raise the `[dev]` extra floor to `pytest>=9.0.3`, closing the repository's
+  only outstanding dependency alert (GHSA-6w46-j5rx-g56g / CVE-2025-71176 —
+  pytest through 9.0.2 created `/tmp/pytest-of-{user}` under a predictable
+  name, CWE-379, local DoS or privilege escalation). `uv.lock` already
+  resolved to a patched 9.0.3, so no installed CI dependency was ever
+  vulnerable; the exposure was the open-ended `>=7.4.0` range itself, which
+  advertised 26 vulnerable versions to the dependency graph. Relocking is a
+  metadata-only change — the resolved pytest version does not move.
+
 ## [0.24.1] - 2026-07-18
 
 ### Fixed

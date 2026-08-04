@@ -37,7 +37,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
+    # Floor is the patched release for GHSA-6w46-j5rx-g56g (CVE-2025-71176):
+    # pytest <= 9.0.2 created /tmp/pytest-of-{user} with a predictable name,
+    # letting a local user pre-create or hijack it. uv.lock already pinned a
+    # patched pytest, but the open-ended range left the manifest itself
+    # advertising vulnerable versions to the dependency graph.
+    "pytest>=9.0.3",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
 ]
