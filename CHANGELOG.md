@@ -10,6 +10,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Changed
+
+- Move the optional `[evidence]` extra to `cryptography>=50.0.0,<51.0.0` and
+  repin `uv.lock` to 50.0.0. Dependabot proposed widening the range to
+  `>=49.0.0,<51.0.0`, which would have let the two majors resolve
+  interchangeably; the v0.17.0 audit remediation requires this dependency to
+  stay **major-bounded** and lock-pinned, so the floor moves with the ceiling
+  instead. The Ed25519 signing surface (`evidence_producer.py`) is unchanged —
+  `pip-audit` reports no advisories for 50.0.0 and the family golden vectors
+  still verify byte-for-byte.
+
 ## [0.24.1] - 2026-07-18
 
 ### Fixed
