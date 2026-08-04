@@ -27,7 +27,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 - CLI control plane: `analyze` · `what-if` · `slo` · `cost` (AWS/GCP/Azure, on-demand/
   reserved/spot/Fargate) · `calibrate` · `observe` · `optimize` (SMA/ARIMA + HPA patch) ·
   `export` (Prometheus / OTLP / Pushgateway) · `rules` · `annotate` · `scaler` · `demo`
-- Optional `[evidence]` extra (`cryptography>=49,<50`) for the v0.17.0
+- Optional `[evidence]` extra (`cryptography>=50,<51`) for the v0.17.0
   `evidence_producer` (`evidence-ref@1` signing); HMAC + the canonical/hash layer
   are stdlib
 - ≥80% test coverage, enforced in CI (`--cov-fail-under=80`); `ruff` format + lint (incl.
