@@ -45,6 +45,11 @@ audit = [
     "pip-audit>=2.6.0",
     # CVE guard for pip-audit/cachecontrol's transitive dependency.
     "msgpack>=1.2.1",
+    # CVE guard for pip-audit/pip-api's transitive dependency: pip 26.1.2 is
+    # affected by PYSEC-2026-3721, first fixed in 26.2. Without this floor the
+    # resolver picks the vulnerable pin and the blocking pip-audit gate on
+    # push (main + release tags) fails.
+    "pip>=26.2",
 ]
 evidence = [
     # Ed25519 signing for the evidence-ref@1 SLO degradation producer
