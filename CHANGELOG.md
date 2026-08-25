@@ -10,6 +10,16 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Security
+
+- Pin the audit extra's transitive `pip` dependency to `>=26.2`, remediating
+  PYSEC-2026-3721 in `uv.lock` (repinned 26.1.2 -> 26.2.1). `pip` reaches the
+  extra via `pip-audit` -> `pip-api`, so nothing held the resolver above the
+  vulnerable version and the blocking `pip-audit` gate on push failed. The
+  floor is declared in `pyproject.toml` rather than hand-edited into the lock,
+  matching the `msgpack>=1.2.1` guard, so a future `uv lock` cannot silently
+  resolve back to a vulnerable `pip`.
+
 ### Changed
 
 - Move the optional `[evidence]` extra to `cryptography>=50.0.0,<51.0.0` and
