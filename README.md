@@ -8,7 +8,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13750/badge)](https://www.bestpractices.dev/projects/13750)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.24.1 — Family-vector conformance patch for the Architectural Translucency Analyzer. The nominal Kepler energy vector and energy-bearing training vector are now pinned to the authoritative `presidio-evidence` records while PAT retains its fail-closed refusal to emit Kepler measurements.
+> v0.24.2 — Dependency security patch for the Architectural Translucency Analyzer. The optional `[evidence]` extra moves to `cryptography>=50.0.0,<51.0.0`, so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, the `[audit]` extra floors `pip` at 26.2, and `urllib3` is floored at 2.8.0. Ed25519 evidence signing is unchanged.
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -1395,6 +1395,7 @@ This completes the Energy Arc: **model** the watt (v0.20) → **measure** it
 | v0.23.0 | Train the watt — `pat train-calibrate` (L-TR-1): fit training α/β overhead from committed JSON-Lines step logs, `samples/s/W` ranking in `train-analyze`/`train-what-if` with an energy-best marker, `training-run@1` optional producer-attributed energy fields (`--energy-wh`/`--mean-power-w`); training-fit tamper fails closed, energy stays a modelled/producer claim (E1a) |
 | **v0.24.0** | **Sign the watt — Energy Arc finale: `pat energy-evidence-emit` + `pat observe verify --emit-head` emit key-less `energy-reading@1` carrying the measured-energy chain head hash (`build_energy_reading`, chain-head accessors); store-only figures, `prometheus-override` rows refused, emission gated on a clean chain walk (E1a); external anchoring discharges the ADR-0010 deferral — post-hoc rewriting becomes externally detectable** |
 | **v0.24.1** | **Family-vector conformance patch — pin the nominal Kepler energy payload and energy-bearing training payload to the merged `presidio-evidence` vectors without weakening PAT's audited Kepler emission refusal** |
+| **v0.24.2** | **Dependency security patch — `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (major-bounded, lock-pinned 50.0.0) for CVE-2026-69247 / GHSA-g6cj-pr64-35w5; `[audit]` extra floors `pip>=26.2` (PYSEC-2026-3721); `urllib3>=2.8.0` (PYSEC-2026-4175/4176/4177); Ed25519 signing unchanged** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)
 

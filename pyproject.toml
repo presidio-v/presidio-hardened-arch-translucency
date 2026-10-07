@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "presidio-hardened-arch-translucency"
-version = "0.24.1"
+version = "0.24.2"
 description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
 readme = "README.md"
 license = { text = "MIT" }
@@ -30,6 +30,11 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "docker>=6.0.0",
+    # CVE guard for docker/requests' transitive dependency: urllib3 2.7.0 is
+    # affected by PYSEC-2026-4175/4176/4177, first fixed in 2.8.0. Without this
+    # floor the resolver keeps the vulnerable pin and the blocking pip-audit gate
+    # on push (main + release tags) fails.
+    "urllib3>=2.8.0",
     "matplotlib>=3.7.0",
     "scipy>=1.10",
     "statsmodels>=0.14",
