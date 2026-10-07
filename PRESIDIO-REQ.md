@@ -34,7 +34,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.24.1** (family-vector conformance patch)
+- Current version: **0.24.2** (dependency security patch)
 
 ---
 
@@ -73,7 +73,8 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.22.0 | Energy arc · Budget the watt — `pat budget` (max output within Wh / min energy for demand), carbon intensity (static citable snapshot + optional live via `PAT_CARBON_TOKEN`), `what-if --energy-aware` idle-vs-trough dual, `cost --carbon`, `scaler --signal energy` | Implemented; third-party findings remediated and release gate green (2026-07-16) |
 | v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` from step-time logs (discharges L-TR-1) with committed training fits, samples/s/W ranking, `training-run@1` optional energy fields (string-decimal wire) | Implemented; third-party findings remediated and release gate green (2026-07-17) |
 | v0.24.0 | Energy arc · Sign the watt — `pat energy-evidence-emit` (`energy-reading@1`, store-only figures, span-overlap closure) + `observe verify --emit-head` chain-head anchoring from a single verified snapshot (discharges the ADR-0010 deferral); arc retro | Released after third-party findings were remediated (2026-07-18) |
-| v0.24.1 | Family-vector conformance patch — pin the nominal Kepler energy vector and energy-bearing training vector to the authoritative family records while preserving PAT's Kepler emission refusal | Release gate in progress (2026-07-18) |
+| v0.24.1 | Family-vector conformance patch — pin the nominal Kepler energy vector and energy-bearing training vector to the authoritative family records while preserving PAT's Kepler emission refusal | Released (2026-07-18) |
+| v0.24.2 | Dependency security patch — ship the `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (still major-bounded; lock-pinned 50.0.0) so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, floor the audit extra's `pip` at `>=26.2` (PYSEC-2026-3721) and core `urllib3` at `>=2.8.0` (PYSEC-2026-4175/4176/4177) | Release gate in progress (2026-10-07) |
 
 ---
 

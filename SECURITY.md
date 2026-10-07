@@ -178,6 +178,12 @@ sidecar authors must not treat shape validation as measured-ness.
 
 Manual security audit history:
 
+- v0.24.2 patch release gate (2026-10-07) -- ships the `[evidence]` extra at
+  `cryptography>=50.0.0,<51.0.0` (lock-pinned 50.0.0) so downstream installs get
+  the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix; the v0.17.0 major-bound policy
+  is kept. `[audit]` floors `pip>=26.2` (PYSEC-2026-3721); core
+  floors `urllib3>=2.8.0` (PYSEC-2026-4175/4176/4177). Ed25519 sign/verify
+  re-verified on 50.0.0; no runtime trust-boundary change.
 - v0.24.1 patch release gate (2026-07-18) -- authoritative nominal Kepler and
   energy-bearing training family-vector hashes independently verified; PAT's
   audited Kepler emission refusal remains fail-closed; no runtime trust-boundary
