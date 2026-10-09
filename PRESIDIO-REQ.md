@@ -1707,6 +1707,56 @@ lacks — **cryptographically evidenced energy under an honest, bounded
 claim**. Position paper (briefing §4 v0.24) remains outstanding: outline in
 `plan/position-paper-outline.md`, to be written against released artifacts.
 
+## Inference Arc — "Where to Replicate an LLM" (Phase 0 implemented 2026-10-09)
+
+### Direction
+
+Apply the translucency question to LLM inference serving: for a GPU budget N,
+is capacity best bought as single-GPU replicas, tensor parallelism, or
+replicas of TP groups? The arc feeds a paper whose publishable claim is
+out-of-sample prediction of the layer crossover from ≤6 calibration points,
+a fixed-scope EU inference placement audit, and a signed EU inference
+benchmark index. `pat` stays emit-only (A1); it never serves or resells
+inference.
+
+### Phases
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Inference profile: `inference.py`, `pat infer-analyze`, `pat infer-what-if` (ADR-0012) | Implemented 2026-10-09 |
+| 1 | vLLM metric presets for `pat observe`; `pat infer-calibrate` with ADR-0010 commitments; `pat infer-benchmark` vLLM sweep harness with DCGM energy through the E1a gate; dated EU GPU price catalog | Planned |
+| 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
+| 3 | Hosted continuous-report shell; only after two paid audits | Gated |
+
+### Scope (Phase 0, implemented)
+
+- Configuration search over `(tp, n)`, `tp ∈ {1,2,4,8,16}`, `tp ≤
+  gpus_per_node`, `tp·n ≤ N`; labels `replica`/`tensor`/`hybrid` derived.
+- KV-cache capacity and weight fit as hard feasibility constraints;
+  bandwidth-bound decode step, prefill rate, Little's-law batch (closed form),
+  M/M/c TTFT via Erlang C; saturation reported, never recommended.
+- Objective: fewest GPUs meeting TTFT p99 / TPOT SLOs at demand; optional
+  uniform `--cost-per-gpu-hour` for $/h and $/Mtok.
+- Library validation is fail-closed independently of the CLI
+  (`InferenceDomainError`: finite, bounded numbers; supported tp; budget).
+
+### Bounded claim (no overclaiming)
+
+Every figure is modelled; α/β and engine efficiencies are MVP placeholders
+and the output says so. TTFT p99 is queueing-derived, TPOT is a mean. The
+crossover is predicted conditionally on `W/(h·M)`; whether it exists on real
+vLLM is the Phase 1 pilot's question (kill criterion: >25% crossover error
+after calibration by 2026-11-30 drops the predictive claim).
+
+### Design decisions
+
+| ID | Decision | Rationale |
+|----|----------|-----------|
+| I1 | Separate domain profile; serving and training untouched | ADR-0012; same reasoning as ADR-0009 |
+| I2 | No `inference` model-file section until it can be born committed | Avoid a legacy path like training's pre-v0.23 records |
+| I3 | `pipeline` and cross-node layouts deferred (L-INF-1, L-INF-2) | Inference PP pipelines requests, not microbatches; needs an interconnect parameter |
+| I4 | Recommend fewest GPUs meeting the SLO, not max goodput | Demand is an operator input; capacity is reported |
+
 ## SDLC
 
 These requirements are delivered under the family-wide Presidio SDLC:

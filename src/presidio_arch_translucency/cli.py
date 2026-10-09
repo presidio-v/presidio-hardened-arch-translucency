@@ -43,6 +43,10 @@ from presidio_arch_translucency.hpa import (
     save_hpa_plot,
     simulate_scale_event,
 )
+from presidio_arch_translucency.inference_cli import (
+    infer_analyze_command,
+    infer_what_if_command,
+)
 from presidio_arch_translucency.model import (
     ALL_REPLICATION_LAYERS,
     DEFAULT_LAYER_NAME,
@@ -80,6 +84,8 @@ app = typer.Typer(
     add_completion=False,
 )
 app.command("demo")(demo_command)
+app.command("infer-analyze")(infer_analyze_command)
+app.command("infer-what-if")(infer_what_if_command)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")

@@ -10,6 +10,18 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Added
+
+- LLM inference serving domain profile (ADR-0012, Inference Arc Phase 0).
+  `pat infer-analyze` sweeps every `(tp, n)` layout of a GPU budget, from
+  single-GPU replicas and tensor-parallel instances to replicas of TP groups.
+  It recommends the fewest GPUs meeting a TTFT p99 / TPOT target at a given
+  request rate. `pat infer-what-if` evaluates one layout. KV-cache capacity
+  (`tp·h·M − W`) is a hard constraint, so a model that nearly fills a GPU
+  pushes the recommendation towards tensor parallelism. All figures are
+  modelled and uncalibrated; no model-file section is read until
+  `pat infer-calibrate` lands with calibration commitments.
+
 ## [0.24.2] - 2026-10-07
 
 ### Security
