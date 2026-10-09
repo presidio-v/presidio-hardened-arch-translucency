@@ -30,6 +30,17 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   above 1%. `pat infer-validate` reports TPOT and prefill error on held-out
   points or by leave-one-out.
 
+- `pat infer-observe` reads one steady-state window of a single vLLM engine
+  from Prometheus (vLLM 0.31 metric names) and prints it as a calibration
+  point, so `>> points.jsonl` builds the input for `pat infer-calibrate`.
+  All queries share one evaluation instant. Windows that are not steady are
+  refused: more than one engine series over the window, a restart, a
+  preemption, a running batch that dropped to 0 or varied too much,
+  completions inconsistent with Little's law, a window shorter than five mean
+  request latencies, or too few requests. `instant_query` and
+  `instant_query_vector` accept an optional evaluation time. Prefill time is included only when the
+  queue was empty and the batch small.
+
 ### Changed
 
 - Inference model: the decode step reads the mean live context `P + O/2`

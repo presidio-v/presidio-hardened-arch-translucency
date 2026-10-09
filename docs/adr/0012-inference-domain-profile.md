@@ -152,6 +152,37 @@ computed by `pat` itself.
   default (β when the held-out point was its only second tp level) is
   excluded and counted as degraded, so placeholder error never enters the
   paper's figure.
+
+## Amendment — Phase 1b observation (2026-10-09)
+
+`pat infer-observe` reads one window of one vLLM engine from Prometheus and
+prints it as a calibration point.
+
+- **Pinned names.** vLLM 0.31 metric names (`vllm:inter_token_latency_seconds`,
+  `vllm:kv_cache_usage_perc`, `vllm:request_prefill_time_seconds`, request
+  token histograms, `vllm:request_success_total`, `vllm:num_preemptions_total`).
+  The two names older engines used for TPOT and KV usage are reachable through
+  validated overrides, never by guessing.
+- **Refuse, don't record.** All queries share one evaluation instant. A
+  window is refused unless it is steady: exactly one engine series now and
+  across the whole window (`model_name` / `engine` labels, escaped into the
+  selector), no counter reset, no preemption, a running batch that never
+  reached 0 with CV < 0.25, completions within ±50% of Little's law
+  `batch / (prefill + O·TPOT)` — the single check that catches ramps, restarts
+  and double counting — a window of at least 5 mean request latencies (token
+  means are observed at completion and over-sample short requests in short
+  windows), and enough completed requests. Preemption-only gating, the first
+  draft, let ramp and restart windows through (adversarial review).
+- **Prefill only at low load.** Prefill time is included only with an empty
+  queue and a small batch; under load it is inflated by queueing and decode
+  interference and would bias R_pre.
+- **No new store.** The point goes to stdout for a points file; the
+  calibration commitment binds it once fitted. A chained inference observation
+  store is deferred until the benchmark harness needs it.
+- **Bounded claim.** tp is the operator's statement (vLLM exposes none).
+  Mean inter-token latency is token-weighted, so larger-batch steps count
+  more; with the decode step affine in b the bias is `s1·Var(b)/E[b]`, which
+  the CV gate bounds.
 - **Bounded claim.** η is an effective bandwidth: measured inter-token latency
   includes chunked-prefill interference. Fitting single-instance points
   validates timing; the crossover prediction (H3) also depends on b_max, router
