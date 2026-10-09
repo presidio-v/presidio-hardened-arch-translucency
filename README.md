@@ -1045,6 +1045,47 @@ measurement by this suite.
 
 ---
 
+## LLM inference serving (unreleased, Inference Arc Phase 0)
+
+The translucency question for **LLM inference**: given N GPUs, should a model
+be served as N single-GPU replicas, one tensor-parallel (TP) instance, or
+replicas of TP groups ([ADR-0012](docs/adr/0012-inference-domain-profile.md))?
+`pat infer-analyze` sweeps every `(tp, n)` with `tp·n ≤ N` and recommends the
+fewest GPUs that meet a TTFT p99 / TPOT target at your request rate.
+
+The deciding mechanism is **KV-cache capacity**. A replica keeps the full
+weights W on every GPU and has `h·M − W` left for KV cache; a TP group pools
+`tp·h·M − W`. When a model nearly fills a GPU, replicas can hold only a few
+concurrent sequences (or none), and TP wins despite its all-reduce cost.
+
+```bash
+# Mistral-Small-24B (bf16, ~47 GB) on 4× L40S (48 GB, 864 GB/s), 5 req/s,
+# 1000-token prompts, 256-token outputs, TPOT ≤ 60 ms:
+pat infer-analyze -r 5 -p 1000 -o 256 \
+  --model-weights-gb 47 --kv-bytes-per-token 163840 \
+  --gpus 4 --gpu-memory-gb 48 --gpu-bandwidth-gbs 864 \
+  --tpot-slo-ms 60 --cost-per-gpu-hour 1.2
+
+# One layout, JSON for automation:
+pat infer-what-if --tp 2 --instances 1 -r 2 -p 1000 -o 256 \
+  -w 47 -k 163840 -m 48 -b 864 --json
+```
+
+`--kv-bytes-per-token` is `2 · layers · kv_heads · head_dim · dtype_bytes`
+(131072 for Llama-3.1-8B in bf16). Weights or KV cache that do not fit are
+reported as infeasible, and layouts at capacity as saturated; neither is
+recommended. `--tp` (repeatable), `--gpus-per-node`, `--max-num-seqs` and
+`--gpu-memory-utilization` mirror the vLLM settings.
+
+> **Modelled, uncalibrated.** The overhead α/β and the engine efficiencies
+> (`--bandwidth-efficiency`, `--step-overhead-ms`, `--prefill-tokens-per-s`)
+> are MVP placeholders. TTFT p99 comes from an M/M/c queue, not from
+> observation; TPOT is a mean. Calibration from vLLM metrics
+> (`pat infer-calibrate`, with calibration commitments) is the next phase.
+> No energy figures are produced for inference yet.
+
+---
+
 ## Energy model (v0.20.0)
 
 The same translucency question — *the same measure (replication) has different
