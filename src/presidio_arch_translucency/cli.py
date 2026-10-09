@@ -45,6 +45,8 @@ from presidio_arch_translucency.hpa import (
 )
 from presidio_arch_translucency.inference_cli import (
     infer_analyze_command,
+    infer_calibrate_command,
+    infer_validate_command,
     infer_what_if_command,
 )
 from presidio_arch_translucency.model import (
@@ -86,6 +88,8 @@ app = typer.Typer(
 app.command("demo")(demo_command)
 app.command("infer-analyze")(infer_analyze_command)
 app.command("infer-what-if")(infer_what_if_command)
+app.command("infer-calibrate")(infer_calibrate_command)
+app.command("infer-validate")(infer_validate_command)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")

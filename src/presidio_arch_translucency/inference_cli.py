@@ -3,8 +3,10 @@ CLI surface for the LLM inference serving domain (`pat infer-analyze`,
 `pat infer-what-if`). Kept out of ``cli.py`` (registered there, like
 ``demo``) so the inference profile stays one self-contained module pair.
 
-All output is modelled (ADR-0012 Phase 0): every table carries an
-"uncalibrated" notice until `pat infer-calibrate` lands.
+All output is modelled (ADR-0012). Without ``--calibration`` every table
+carries an "uncalibrated" notice; with it, the committed profile's name and
+digest are shown, and the profile must match the hardware being analysed.
+`pat infer-calibrate` and `pat infer-validate` live here too.
 """
 
 from __future__ import annotations
@@ -19,6 +21,24 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from presidio_arch_translucency.infer_calibrate import (
+    HardwareSpec,
+    InferenceCalibrationError,
+    InferenceCalibrationResult,
+    InferenceCalibrationTamperError,
+    InferencePoint,
+    InferenceProfile,
+    ValidationReport,
+    fit_inference_calibration,
+    load_inference_profile,
+    load_points_file,
+    parse_point,
+    require_hardware_match,
+    validate_holdout,
+    validate_leave_one_out,
+    validate_profile_name,
+    write_inference_profile,
+)
 from presidio_arch_translucency.inference import (
     DEFAULT_ENGINE_PARAMS,
     DEFAULT_GPU_MEMORY_UTILIZATION,
@@ -151,28 +171,156 @@ def _cost_option() -> Optional[float]:  # noqa: UP045
     )
 
 
-def _bw_eff_option() -> float:
+def _bw_eff_option() -> Optional[float]:  # noqa: UP045
     return typer.Option(
-        DEFAULT_ENGINE_PARAMS.bandwidth_efficiency,
+        None,
         "--bandwidth-efficiency",
-        help="Achieved fraction of spec bandwidth (placeholder 0.6).",
+        help=(
+            "Achieved fraction of spec bandwidth η (placeholder "
+            f"{DEFAULT_ENGINE_PARAMS.bandwidth_efficiency:g}). "
+            "Not allowed with --calibration."
+        ),
     )
 
 
-def _step_overhead_option() -> float:
+def _step_overhead_option() -> Optional[float]:  # noqa: UP045
     return typer.Option(
-        DEFAULT_ENGINE_PARAMS.step_overhead_ms,
+        None,
         "--step-overhead-ms",
-        help="Fixed per-decode-step cost t₀ in ms (placeholder 2.0).",
+        help=(
+            "Fixed per-decode-step cost t₀ in ms (placeholder "
+            f"{DEFAULT_ENGINE_PARAMS.step_overhead_ms:g}). "
+            "Not allowed with --calibration."
+        ),
     )
 
 
-def _prefill_rate_option() -> float:
+def _prefill_rate_option() -> Optional[float]:  # noqa: UP045
     return typer.Option(
-        DEFAULT_ENGINE_PARAMS.prefill_tokens_per_s_per_gpu,
+        None,
         "--prefill-tokens-per-s",
-        help="Prefill throughput per GPU R_pre (placeholder 20000).",
+        help=(
+            "Prefill throughput per GPU R_pre (placeholder "
+            f"{DEFAULT_ENGINE_PARAMS.prefill_tokens_per_s_per_gpu:g}). "
+            "Not allowed with --calibration."
+        ),
     )
+
+
+def _calibration_option() -> Optional[str]:  # noqa: UP045
+    return typer.Option(
+        None,
+        "--calibration",
+        help=(
+            "Use a committed `pat infer-calibrate` profile. Fails closed if it "
+            "was tampered with or fitted for different weights/KV/GPU."
+        ),
+    )
+
+
+def _resolve_params(
+    calibration: str | None,
+    overrides: dict[str, float | None],
+    weights_gb: float,
+    kv_bytes: float,
+    gpu_bandwidth_gbs: float,
+    gpu_memory_gb: float,
+) -> tuple[EngineParams, InferenceProfile | None]:
+    """Engine parameters from a verified profile, or from placeholders/overrides."""
+    given = {name: value for name, value in overrides.items() if value is not None}
+    if calibration is None:
+        return EngineParams(**given), None
+    if given:
+        raise InferenceCalibrationError(
+            "--calibration cannot be combined with engine overrides "
+            f"({', '.join(sorted(given))}); the profile supplies them"
+        )
+    profile = load_inference_profile(calibration)
+    require_hardware_match(
+        profile, weights_gb, kv_bytes, gpu_bandwidth_gbs, gpu_memory_gb
+    )
+    return profile.params, profile
+
+
+def _engine_overrides(
+    bandwidth_efficiency: float | None,
+    step_overhead_ms: float | None,
+    prefill_tokens_per_s: float | None,
+) -> dict[str, float | None]:
+    return {
+        "bandwidth_efficiency": bandwidth_efficiency,
+        "step_overhead_ms": step_overhead_ms,
+        "prefill_tokens_per_s_per_gpu": prefill_tokens_per_s,
+    }
+
+
+def _calibrated_tp_max(profile: InferenceProfile) -> int:
+    return max(p.tp for p in profile.points)
+
+
+def _extrapolated(c: ConfigResult, profile: InferenceProfile | None) -> bool | None:
+    """True when a calibrated row lies outside what the profile observed.
+
+    Beyond the largest calibrated tp, or any n ≥ 2 (router cost is never
+    observed by single-instance points). ``None`` when uncalibrated.
+    """
+    if profile is None:
+        return None
+    return c.tp > _calibrated_tp_max(profile) or c.instances >= 2
+
+
+def _note(
+    profile: InferenceProfile | None,
+    gpu: GpuSpec | None = None,
+    engine: EngineSpec | None = None,
+) -> str:
+    if profile is None:
+        return _UNCALIBRATED_NOTE
+    note = (
+        f"[green]Calibrated: profile {profile.name!r} "
+        f"(commitment {profile.digest[:16]}…).[/] [yellow]Figures are still "
+        "modelled: TTFT p99 is M/M/c-derived. † = extrapolated beyond the "
+        f"profile (tp > {_calibrated_tp_max(profile)}, or n ≥ 2 where router "
+        "cost is unobserved).[/]"
+    )
+    hw = profile.hardware
+    if gpu is not None and gpu.memory_utilization != hw.gpu_memory_utilization:
+        note += (
+            f"\n[dim]gpu_memory_utilization: profile {hw.gpu_memory_utilization:g},"
+            f" analysed {gpu.memory_utilization:g}.[/]"
+        )
+    if engine is not None and engine.max_num_seqs != hw.max_num_seqs:
+        note += (
+            f"\n[dim]max_num_seqs: profile {hw.max_num_seqs}, analysed "
+            f"{engine.max_num_seqs}.[/]"
+        )
+    return note
+
+
+def _calibration_json(
+    profile: InferenceProfile | None,
+    gpu: GpuSpec | None = None,
+    engine: EngineSpec | None = None,
+) -> dict:
+    if profile is None:
+        return {"calibrated": False, "calibration": None}
+    hw = profile.hardware
+    return {
+        "calibrated": True,
+        "calibration": {
+            "profile": profile.name,
+            "digest": profile.digest,
+            "calibrated_tp_max": _calibrated_tp_max(profile),
+            "gpu_memory_utilization": {
+                "profile": hw.gpu_memory_utilization,
+                "analysed": gpu.memory_utilization if gpu else None,
+            },
+            "max_num_seqs": {
+                "profile": hw.max_num_seqs,
+                "analysed": engine.max_num_seqs if engine else None,
+            },
+        },
+    }
 
 
 def _build_inputs(
@@ -188,10 +336,7 @@ def _build_inputs(
     memory_utilization: float,
     max_num_seqs: int,
     tp_degrees: tuple[int, ...],
-    bandwidth_efficiency: float,
-    step_overhead_ms: float,
-    prefill_rate: float,
-) -> tuple[InferenceWorkload, ModelSpec, GpuSpec, EngineSpec, EngineParams]:
+) -> tuple[InferenceWorkload, ModelSpec, GpuSpec, EngineSpec]:
     return (
         InferenceWorkload(rps, prompt_tokens, output_tokens),
         ModelSpec(weights_gb, kv_bytes),
@@ -199,7 +344,6 @@ def _build_inputs(
             gpus, gpu_memory_gb, gpu_bandwidth_gbs, gpus_per_node, memory_utilization
         ),
         EngineSpec(max_num_seqs, tp_degrees),
-        EngineParams(bandwidth_efficiency, step_overhead_ms, prefill_rate),
     )
 
 
@@ -207,16 +351,22 @@ def _fmt(value: float | None, spec: str) -> str:
     return "—" if value is None else format(value, spec)
 
 
-def _config_json(c: ConfigResult) -> dict:
+def _config_json(c: ConfigResult, profile: InferenceProfile | None = None) -> dict:
     data = asdict(c)
     data["strategy"] = c.strategy.value
+    data["extrapolated"] = _extrapolated(c, profile)
     return data
 
 
 # -- rendering -------------------------------------------------------------------
 
 
-def _render_analysis(analysis: InferenceAnalysis, show_all: bool) -> None:
+def _render_analysis(
+    analysis: InferenceAnalysis,
+    show_all: bool,
+    note: str = _UNCALIBRATED_NOTE,
+    profile: InferenceProfile | None = None,
+) -> None:
     rows = analysis.configs if show_all else representative_configs(analysis)
     has_cost = any(c.cost_per_hour is not None for c in rows)
     table = Table(
@@ -252,7 +402,7 @@ def _render_analysis(analysis: InferenceAnalysis, show_all: bool) -> None:
             status = "✓" if c.slo_ok else "[yellow]✗[/]"
         cells = [
             c.strategy.value,
-            f"{c.tp}×{c.instances}",
+            f"{c.tp}×{c.instances}{'†' if _extrapolated(c, profile) else ''}",
             str(c.gpus),
             str(c.max_batch),
             _fmt(c.utilization if c.feasible else None, ".2f"),
@@ -295,7 +445,7 @@ def _render_analysis(analysis: InferenceAnalysis, show_all: bool) -> None:
                 f"(demand {analysis.workload.requests_per_second:g} req/s)"
             )
         console.print(Panel(body, title="Recommendation", border_style="red"))
-    console.print(_UNCALIBRATED_NOTE)
+    console.print(note)
 
 
 # -- commands --------------------------------------------------------------------
@@ -321,9 +471,10 @@ def infer_analyze_command(
     ttft_slo_ms: Optional[float] = _ttft_slo_option(),  # noqa: UP045
     tpot_slo_ms: Optional[float] = _tpot_slo_option(),  # noqa: UP045
     cost_per_gpu_hour: Optional[float] = _cost_option(),  # noqa: UP045
-    bandwidth_efficiency: float = _bw_eff_option(),
-    step_overhead_ms: float = _step_overhead_option(),
-    prefill_tokens_per_s: float = _prefill_rate_option(),
+    bandwidth_efficiency: Optional[float] = _bw_eff_option(),  # noqa: UP045
+    step_overhead_ms: Optional[float] = _step_overhead_option(),  # noqa: UP045
+    prefill_tokens_per_s: Optional[float] = _prefill_rate_option(),  # noqa: UP045
+    calibration: Optional[str] = _calibration_option(),  # noqa: UP045
     show_all: bool = typer.Option(
         False, "--show-all", help="List every (tp, n) configuration, not one per tp."
     ),
@@ -339,7 +490,7 @@ def infer_analyze_command(
     fewest GPUs meeting the TTFT/TPOT SLO at the given demand.
     """
     try:
-        workload, model, gpu, engine, params = _build_inputs(
+        workload, model, gpu, engine = _build_inputs(
             requests_per_second,
             prompt_tokens,
             output_tokens,
@@ -352,9 +503,16 @@ def infer_analyze_command(
             gpu_memory_utilization,
             max_num_seqs,
             tuple(tp) if tp else DEFAULT_TP_DEGREES,
-            bandwidth_efficiency,
-            step_overhead_ms,
-            prefill_tokens_per_s,
+        )
+        params, profile = _resolve_params(
+            calibration,
+            _engine_overrides(
+                bandwidth_efficiency, step_overhead_ms, prefill_tokens_per_s
+            ),
+            model_weights_gb,
+            kv_bytes_per_token,
+            gpu_bandwidth_gbs,
+            gpu_memory_gb,
         )
         analysis = analyze_inference(
             workload,
@@ -366,8 +524,11 @@ def infer_analyze_command(
             tpot_slo_ms=tpot_slo_ms,
             cost_per_gpu_hour=cost_per_gpu_hour,
         )
-    except InferenceDomainError as exc:
+    except (InferenceDomainError, InferenceCalibrationError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except InferenceCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
     rec = analysis.recommended
@@ -381,24 +542,31 @@ def infer_analyze_command(
             json.dumps(
                 {
                     "modelled": True,
-                    "calibrated": False,
+                    **_calibration_json(profile, gpu, engine),
                     "ttft_p99_basis": "prefill + M/M/c wait; no interference",
-                    "recommended": _config_json(rec) if rec else None,
+                    "recommended": _config_json(rec, profile) if rec else None,
                     "best_effort": (
-                        _config_json(analysis.best_effort)
+                        _config_json(analysis.best_effort, profile)
                         if analysis.best_effort
                         else None
                     ),
                     "baseline": (
-                        _config_json(analysis.baseline) if analysis.baseline else None
+                        _config_json(analysis.baseline, profile)
+                        if analysis.baseline
+                        else None
                     ),
-                    "configs": [_config_json(c) for c in analysis.configs],
+                    "configs": [_config_json(c, profile) for c in analysis.configs],
                 },
                 separators=(",", ":"),
             )
         )
         return
-    _render_analysis(analysis, show_all=show_all)
+    _render_analysis(
+        analysis,
+        show_all=show_all,
+        note=_note(profile, gpu, engine),
+        profile=profile,
+    )
 
 
 def infer_what_if_command(
@@ -419,9 +587,10 @@ def infer_what_if_command(
     ttft_slo_ms: Optional[float] = _ttft_slo_option(),  # noqa: UP045
     tpot_slo_ms: Optional[float] = _tpot_slo_option(),  # noqa: UP045
     cost_per_gpu_hour: Optional[float] = _cost_option(),  # noqa: UP045
-    bandwidth_efficiency: float = _bw_eff_option(),
-    step_overhead_ms: float = _step_overhead_option(),
-    prefill_tokens_per_s: float = _prefill_rate_option(),
+    bandwidth_efficiency: Optional[float] = _bw_eff_option(),  # noqa: UP045
+    step_overhead_ms: Optional[float] = _step_overhead_option(),  # noqa: UP045
+    prefill_tokens_per_s: Optional[float] = _prefill_rate_option(),  # noqa: UP045
+    calibration: Optional[str] = _calibration_option(),  # noqa: UP045
     as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
 ) -> None:
     """Evaluate one (tp, instances) inference configuration.
@@ -430,7 +599,7 @@ def infer_what_if_command(
     out-of-domain number is rejected (exit 2), never reported as feasible.
     """
     try:
-        workload, model, gpu, engine, params = _build_inputs(
+        workload, model, gpu, engine = _build_inputs(
             requests_per_second,
             prompt_tokens,
             output_tokens,
@@ -443,9 +612,16 @@ def infer_what_if_command(
             gpu_memory_utilization,
             max_num_seqs,
             DEFAULT_TP_DEGREES,
-            bandwidth_efficiency,
-            step_overhead_ms,
-            prefill_tokens_per_s,
+        )
+        params, profile = _resolve_params(
+            calibration,
+            _engine_overrides(
+                bandwidth_efficiency, step_overhead_ms, prefill_tokens_per_s
+            ),
+            model_weights_gb,
+            kv_bytes_per_token,
+            gpu_bandwidth_gbs,
+            gpu_memory_gb,
         )
         c = evaluate_config(
             tp,
@@ -459,8 +635,11 @@ def infer_what_if_command(
             tpot_slo_ms=tpot_slo_ms,
             cost_per_gpu_hour=cost_per_gpu_hour,
         )
-    except InferenceDomainError as exc:
+    except (InferenceDomainError, InferenceCalibrationError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except InferenceCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
     log_security_event(
@@ -468,7 +647,11 @@ def infer_what_if_command(
         {"strategy": c.strategy.value, "tp": c.tp, "instances": c.instances},
     )
     if as_json:
-        payload = {"modelled": True, "calibrated": False, **_config_json(c)}
+        payload = {
+            "modelled": True,
+            **_calibration_json(profile, gpu, engine),
+            **_config_json(c, profile),
+        }
         typer.echo(json.dumps(payload, separators=(",", ":")))
         return
 
@@ -490,6 +673,10 @@ def infer_what_if_command(
     )
     for label, value in (
         ("Status", status),
+        (
+            "Extrapolated",
+            "—" if profile is None else ("yes" if _extrapolated(c, profile) else "no"),
+        ),
         ("GPUs", str(c.gpus)),
         ("Max batch / instance", str(c.max_batch)),
         ("Effective batch", _fmt(c.effective_batch if c.feasible else None, ".1f")),
@@ -505,4 +692,311 @@ def infer_what_if_command(
     ):
         table.add_row(label, value)
     console.print(table)
-    console.print(_UNCALIBRATED_NOTE)
+    console.print(_note(profile, gpu, engine))
+
+
+# -- calibration and validation ------------------------------------------------------
+
+
+def _collect_points(
+    point: Optional[list[str]],  # noqa: UP045
+    points_file: Optional[str],  # noqa: UP045
+) -> list[InferencePoint]:
+    points = [parse_point(raw) for raw in point or []]
+    if points_file is not None:
+        points.extend(load_points_file(points_file))
+    if not points:
+        raise InferenceCalibrationError("give points with --point or --points-file")
+    return points
+
+
+def _point_label(p: InferencePoint) -> str:
+    return f"tp={p.tp} b={p.batch:g}"
+
+
+def _calibration_result_json(
+    result: InferenceCalibrationResult, path: str | None, digest: str | None
+) -> dict:
+    return {
+        "params": {
+            "bandwidth_efficiency": result.params.bandwidth_efficiency,
+            "step_overhead_ms": result.params.step_overhead_ms,
+            "prefill_tokens_per_s_per_gpu": result.params.prefill_tokens_per_s_per_gpu,
+            "replica_alpha": result.params.replica_alpha,
+            "tensor_alpha": result.params.tensor_alpha,
+            "tensor_beta": result.params.tensor_beta,
+        },
+        "fitted": list(result.fitted),
+        "held": list(result.held),
+        "at_bound": list(result.at_bound),
+        "degrees_of_freedom": result.degrees_of_freedom,
+        "r_squared": result.r_squared,
+        "rmse_ms": result.rmse_ms,
+        "points": [
+            {
+                **pr.point.as_row(),
+                "predicted_tpot_ms": pr.tpot_ms,
+                "tpot_error_pct": pr.tpot_error_pct,
+                "predicted_prefill_ms": pr.prefill_ms,
+                "prefill_error_pct": pr.prefill_error_pct,
+            }
+            for pr in result.predictions
+        ],
+        "path": path,
+        "digest": digest,
+    }
+
+
+def infer_calibrate_command(
+    profile: str = typer.Option(
+        ..., "--profile", help="Profile name (one per model × GPU pair)."
+    ),
+    point: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--point",
+        help=(
+            "Measured point, repeatable: tp=2,batch=24.3,prompt=1000,output=256,"
+            "tpot_ms=35.1[,prefill_ms=60][,kv_usage=0.41]"
+        ),
+    ),
+    points_file: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--points-file", help="JSON-Lines file of points (same keys)."
+    ),
+    model_weights_gb: float = _weights_option(),
+    kv_bytes_per_token: float = _kv_option(),
+    gpu_bandwidth_gbs: float = _gpu_bw_option(),
+    gpu_memory_gb: float = _gpu_mem_option(),
+    gpu_memory_utilization: float = _mem_util_option(),
+    max_num_seqs: int = _max_seqs_option(),
+    model_name: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--model-name", help="Label bound into the profile, e.g. the HF id."
+    ),
+    gpu_type: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--gpu-type", help="Label bound into the profile, e.g. L40S."
+    ),
+    engine_version: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--engine-version", help="Label bound into the profile, e.g. vllm 0.31.0."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Fit and report without writing the profile."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of tables."),
+) -> None:
+    """Fit inference engine parameters from measured vLLM points.
+
+    Each point is one steady-state window on a single instance at a fixed tp:
+    mean running batch, mean inter-token latency (TPOT) and, optionally, mean
+    prefill time (measure it at low load) and mean KV-cache usage. Needs ≥2
+    tp=1 points with distinct batch and ≥1 tp>1 point; two distinct tp>1
+    degrees also fit β. The fit is written as a committed profile under
+    `inference.<profile>` in ~/.pat/model.json.
+    """
+    try:
+        name = validate_profile_name(profile)
+        points = _collect_points(point, points_file)
+        hardware = HardwareSpec(
+            weights_gb=model_weights_gb,
+            kv_bytes_per_token=kv_bytes_per_token,
+            gpu_bandwidth_gbs=gpu_bandwidth_gbs,
+            gpu_memory_gb=gpu_memory_gb,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_num_seqs=max_num_seqs,
+            model_name=model_name,
+            gpu_type=gpu_type,
+            engine_version=engine_version,
+        )
+        result = fit_inference_calibration(points, hardware)
+        path = None if dry_run else write_inference_profile(name, result)
+        digest = None if dry_run else load_inference_profile(name).digest
+    except (InferenceCalibrationError, InferenceCalibrationTamperError) as exc:
+        err_console.print(f"[bold red]Inference calibration error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "INFER_CALIBRATE_INVOCATION",
+        {"points": len(points), "dry_run": dry_run, "fitted": len(result.fitted)},
+    )
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "profile": name,
+                    **_calibration_result_json(
+                        result, str(path) if path else None, digest
+                    ),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+
+    params = Table(title=f"Inference calibration: {name}", box=box.SIMPLE_HEAVY)
+    params.add_column("Parameter", style="bold")
+    params.add_column("Value", justify="right")
+    params.add_column("Source")
+    for attr, label, spec in (
+        ("bandwidth_efficiency", "Bandwidth efficiency η", ".3f"),
+        ("step_overhead_ms", "Step overhead t₀ ms", ".3f"),
+        ("tensor_alpha", "α tensor", ".4f"),
+        ("tensor_beta", "β tensor", ".4f"),
+        ("replica_alpha", "α replica", ".4f"),
+        ("prefill_tokens_per_s_per_gpu", "Prefill tok/s/GPU", ",.0f"),
+    ):
+        if attr in result.at_bound:
+            source = "[yellow]fitted, at bound[/]"
+        elif attr in result.fitted:
+            source = "fitted"
+        else:
+            source = "[dim]held at default[/]"
+        params.add_row(label, format(getattr(result.params, attr), spec), source)
+    console.print(params)
+
+    residuals = Table(box=box.SIMPLE, title="Measured vs fitted")
+    for col in ("Point", "TPOT ms", "Fitted", "Err %", "Prefill ms", "Fitted", "Err %"):
+        residuals.add_column(col, justify="right")
+    for pr in result.predictions:
+        residuals.add_row(
+            _point_label(pr.point),
+            f"{pr.point.tpot_ms:.2f}",
+            f"{pr.tpot_ms:.2f}",
+            f"{pr.tpot_error_pct:+.1f}",
+            _fmt(pr.point.prefill_ms, ".1f"),
+            _fmt(pr.prefill_ms, ".1f"),
+            _fmt(pr.prefill_error_pct, "+.1f"),
+        )
+    console.print(residuals)
+    quality = (
+        f"R² {result.r_squared:.4f}"
+        if result.r_squared is not None
+        else "R² not reported (fewer than 2 spare points)"
+    )
+    console.print(
+        f"Degrees of freedom {result.degrees_of_freedom} · {quality} · "
+        f"TPOT RMSE {result.rmse_ms:.3f} ms"
+    )
+    if result.at_bound:
+        console.print(
+            "[yellow]Parameters at a bound are poorly identified by these points; "
+            "add points at more tp degrees.[/]"
+        )
+    if path is None:
+        console.print("[dim]Dry run: profile not written.[/]")
+    else:
+        console.print(f"[green]Profile written →[/] {path} (commitment {digest})")
+    console.print(
+        "[dim]η is an effective bandwidth: measured inter-token latency includes "
+        "chunked-prefill interference. Validate on held-out configurations with "
+        "`pat infer-validate`.[/]"
+    )
+
+
+def _validation_json(report: ValidationReport, mode: str, profile: str) -> dict:
+    return {
+        "profile": profile,
+        "mode": mode,
+        "tpot_mape_pct": report.tpot_mape_pct,
+        "tpot_max_error_pct": report.tpot_max_error_pct,
+        "prefill_mape_pct": report.prefill_mape_pct,
+        "prefill_max_error_pct": report.prefill_max_error_pct,
+        "skipped_folds": report.skipped_folds,
+        "degraded_folds": report.degraded_folds,
+        "points": [
+            {
+                **pr.point.as_row(),
+                "predicted_tpot_ms": pr.tpot_ms,
+                "tpot_error_pct": pr.tpot_error_pct,
+                "predicted_prefill_ms": pr.prefill_ms,
+                "prefill_error_pct": pr.prefill_error_pct,
+            }
+            for pr in report.predictions
+        ],
+    }
+
+
+def infer_validate_command(
+    calibration: str = typer.Option(
+        ..., "--calibration", help="Committed profile to validate."
+    ),
+    point: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None, "--point", help="Held-out measured point (repeatable)."
+    ),
+    points_file: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--points-file", help="JSON-Lines file of held-out points."
+    ),
+    leave_one_out: bool = typer.Option(
+        False,
+        "--leave-one-out",
+        help="Refit on the profile's own points minus one, predict that one.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of tables."),
+) -> None:
+    """Report a profile's prediction error on held-out points.
+
+    Held-out mode predicts measured points the profile never saw (use other tp
+    degrees to test transfer across layers). Leave-one-out mode refits on the
+    profile's committed points; folds that leave the fit unidentifiable are
+    skipped and counted.
+    """
+    try:
+        profile = load_inference_profile(calibration)
+        if leave_one_out:
+            if point or points_file:
+                raise InferenceCalibrationError(
+                    "--leave-one-out uses the profile's own points; do not pass "
+                    "--point/--points-file"
+                )
+            report = validate_leave_one_out(list(profile.points), profile.hardware)
+            mode = "leave-one-out"
+        else:
+            report = validate_holdout(
+                _collect_points(point, points_file), profile.hardware, profile.params
+            )
+            mode = "holdout"
+    except InferenceCalibrationError as exc:
+        err_console.print(f"[bold red]Validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except InferenceCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "INFER_VALIDATE_INVOCATION",
+        {"mode": mode, "points": len(report.predictions)},
+    )
+    if as_json:
+        typer.echo(
+            json.dumps(
+                _validation_json(report, mode, profile.name), separators=(",", ":")
+            )
+        )
+        return
+
+    table = Table(
+        title=f"Inference validation ({mode}): {profile.name}", box=box.SIMPLE_HEAVY
+    )
+    for col in ("Point", "TPOT ms", "Predicted", "Err %", "Prefill ms", "Predicted"):
+        table.add_column(col, justify="right")
+    for pr in report.predictions:
+        table.add_row(
+            _point_label(pr.point),
+            f"{pr.point.tpot_ms:.2f}",
+            f"{pr.tpot_ms:.2f}",
+            f"{pr.tpot_error_pct:+.1f}",
+            _fmt(pr.point.prefill_ms, ".1f"),
+            _fmt(pr.prefill_ms, ".1f"),
+        )
+    console.print(table)
+    line = (
+        f"TPOT MAPE {report.tpot_mape_pct:.2f}% · max |error| "
+        f"{report.tpot_max_error_pct:.2f}%"
+    )
+    if report.prefill_mape_pct is not None:
+        line += f" · prefill MAPE {report.prefill_mape_pct:.2f}%"
+    if report.skipped_folds:
+        line += f" · {report.skipped_folds} fold(s) skipped (unidentifiable)"
+    if report.degraded_folds:
+        line += (
+            f" · {report.degraded_folds} fold(s) excluded (fitted fewer parameters "
+            "than the full set)"
+        )
+    console.print(line)

@@ -1724,7 +1724,9 @@ inference.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Inference profile: `inference.py`, `pat infer-analyze`, `pat infer-what-if` (ADR-0012) | Implemented 2026-10-09 |
-| 1 | vLLM metric presets for `pat observe`; `pat infer-calibrate` with ADR-0010 commitments; `pat infer-benchmark` vLLM sweep harness with DCGM energy through the E1a gate; dated EU GPU price catalog | Planned |
+| 1a | `pat infer-calibrate` (bounded least squares, committed named profiles, hardware binding); `pat infer-validate` (held-out and leave-one-out error); `--calibration` on `infer-analyze` / `infer-what-if` | Implemented 2026-10-09 |
+| 1b | vLLM metric presets (`pat infer-observe`, pinned to vLLM 0.31 names; windows with preemptions rejected) | Planned |
+| 1c | `pat infer-benchmark` vLLM sweep harness with DCGM energy through the E1a gate; dated EU GPU price catalog | Planned |
 | 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
 | 3 | Hosted continuous-report shell; only after two paid audits | Gated |
 
@@ -1756,6 +1758,9 @@ after calibration by 2026-11-30 drops the predictive claim).
 | I2 | No `inference` model-file section until it can be born committed | Avoid a legacy path like training's pre-v0.23 records |
 | I3 | `pipeline` and cross-node layouts deferred (L-INF-1, L-INF-2) | Inference PP pipelines requests, not microbatches; needs an interconnect parameter |
 | I4 | Recommend fewest GPUs meeting the SLO, not max goodput | Demand is an operator input; capacity is reported |
+| I5 | α_replica fixed at 0; decode reads the live context `P + O/2` | α_replica is unidentifiable from single-instance data; `P + O` biased η (adversarial review) |
+| I6 | Calibration profiles are named, opt-in, committed, and bound to hardware (±1%) | A fit does not transfer across models or GPUs; "calibrated" must not be a label on a mismatched fit |
+| I7 | Bounded refinement reports parameters at a bound instead of refusing | α/β are near-collinear with few tp levels; predictions stay accurate while the split is uncertain |
 
 ## SDLC
 

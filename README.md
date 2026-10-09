@@ -1077,12 +1077,49 @@ reported as infeasible, and layouts at capacity as saturated; neither is
 recommended. `--tp` (repeatable), `--gpus-per-node`, `--max-num-seqs` and
 `--gpu-memory-utilization` mirror the vLLM settings.
 
-> **Modelled, uncalibrated.** The overhead α/β and the engine efficiencies
-> (`--bandwidth-efficiency`, `--step-overhead-ms`, `--prefill-tokens-per-s`)
-> are MVP placeholders. TTFT p99 comes from an M/M/c queue, not from
-> observation; TPOT is a mean. Calibration from vLLM metrics
-> (`pat infer-calibrate`, with calibration commitments) is the next phase.
-> No energy figures are produced for inference yet.
+> **Modelled.** Without `--calibration`, the overhead α/β and the engine
+> efficiencies (`--bandwidth-efficiency`, `--step-overhead-ms`,
+> `--prefill-tokens-per-s`) are MVP placeholders. TTFT p99 comes from an M/M/c
+> queue, not from observation; TPOT is a mean. No energy figures are produced
+> for inference yet.
+
+### Calibrate against your vLLM deployment
+
+Measure a few steady-state windows on a single vLLM instance (mean running
+batch, mean inter-token latency, and at low load the mean prefill time), at
+tp = 1 with two different loads and at one or more tp > 1. Then fit a named
+profile for that model and GPU:
+
+```bash
+# points.jsonl — one window per line:
+# {"tp": 1, "batch": 4,  "prompt_tokens": 900, "output_tokens": 300, "tpot_ms": 30.4, "prefill_ms": 63.9}
+# {"tp": 1, "batch": 48, "prompt_tokens": 900, "output_tokens": 300, "tpot_ms": 39.6}
+# {"tp": 2, "batch": 8,  "prompt_tokens": 900, "output_tokens": 300, "tpot_ms": 21.8, "prefill_ms": 38.8}
+# ...
+pat infer-calibrate --profile l40s-llama8b --points-file points.jsonl \
+  -w 16 -k 131072 -b 864 -m 48 --gpu-type L40S --engine-version "vllm 0.31.0"
+
+# How well does it predict what it has not seen?
+pat infer-validate --calibration l40s-llama8b --leave-one-out
+pat infer-validate --calibration l40s-llama8b --points-file tp8-points.jsonl
+
+# Use it (fails closed if the weights/KV/bandwidth/memory differ by >1%):
+pat infer-analyze -r 10 -p 900 -o 300 -w 16 -k 131072 -n 4 -m 48 -b 864 \
+  --tpot-slo-ms 50 --calibration l40s-llama8b
+```
+
+The profile is written to `~/.pat/model.json` under `inference.<profile>` with
+a calibration commitment that binds the profile name, the hardware, the fitted
+parameters and every point; an edited or renamed profile is refused (so do not
+reformat the file with tools that rewrite `4.0` as `4`). Profiles are read from
+the global store only, never from a project-local `.pat-model.json`. With
+`--calibration`, rows beyond the largest calibrated tp, or with n ≥ 2, are
+marked † (`"extrapolated": true` in JSON). The fit needs at least one more
+point than it has free parameters, reports R² only with two spare points, and
+marks parameters that land on a physical bound — α and β are hard to separate
+with only tp = 2 and 4, so add another tp level when that happens. The fitted
+bandwidth efficiency is an *effective* figure: measured inter-token latency
+includes chunked-prefill interference.
 
 ---
 

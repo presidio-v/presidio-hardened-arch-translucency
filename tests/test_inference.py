@@ -142,8 +142,8 @@ def test_decode_step_is_affine_in_batch_and_faster_with_tp():
     t1 = decode_step_s(1, *args, 1, ServingStrategy.REPLICA, p)
     t10 = decode_step_s(10, *args, 1, ServingStrategy.REPLICA, p)
     assert t10 - t0 == pytest.approx(10 * (t1 - t0))
-    # Weights read only: W / (η·BW) + α·W / (η·BW) + t₀.
-    expected = 16e9 / (0.6 * 864e9) * 1.02 + 0.002
+    # Weights read only (α_replica = 0): W / (η·BW) + t₀.
+    expected = 16e9 / (0.6 * 864e9) + 0.002
     assert t0 == pytest.approx(expected)
     assert decode_step_s(0, *args, 2, ServingStrategy.TENSOR, p) < t0
 

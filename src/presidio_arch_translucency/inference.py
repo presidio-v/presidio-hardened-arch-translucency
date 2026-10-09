@@ -20,7 +20,8 @@ win despite its all-reduce overhead. Equations (per instance):
 
   KV tokens        T      = (tp·h·M − W) / k
   max batch        b_max  = min(B_max, ⌊T / (P + O)⌋)
-  decode step      t(b)   = (W + b·(P+O)·k) / (tp·η·BW) + (α + β·ln tp)·W/(η·BW) + t₀
+  decode step      t(b)   = (W + b·c·k) / (tp·η·BW) + (α + β·ln tp)·W/(η·BW) + t₀
+                   c      = P + O/2   (mean live context a decode step reads)
   prefill          t_pre  = P / (R_pre · tp · (1 − α − β·ln tp))
   service time     S(b)   = t_pre + O · t(b)
   in-flight batch  b_eff  = λ_i · S(b_eff)     (Little; closed form, S affine in b)
@@ -78,6 +79,10 @@ MAX_TOKENS: Final[float] = 10_000_000.0
 #: excluded from recommendation: the M/M/c tail grows without bound as ρ → 1.
 NEAR_SATURATION_RHO: Final[float] = 0.95
 
+#: Overhead bounds (exclusive upper): match the training fit's sanity window.
+ALPHA_MAX: Final[float] = 0.5
+BETA_MAX: Final[float] = 0.45
+
 
 class InferenceDomainError(ValueError):
     """Raised on out-of-domain inference parameters (fail-closed, no math on junk)."""
@@ -109,7 +114,9 @@ class OverheadParams:
 #: MVP placeholders, uncalibrated. ``hybrid`` shares the tensor record: its
 #: extra cost over pure TP is routing, already inside α.
 OVERHEAD_PARAMS: Final[dict[ServingStrategy, OverheadParams]] = {
-    ServingStrategy.REPLICA: OverheadParams(overhead_alpha=0.02, overhead_beta=0.0),
+    # α_replica is not identifiable from single-instance data (it merges into
+    # t₀) and the multi-instance router cost is not modelled: fixed at 0.
+    ServingStrategy.REPLICA: OverheadParams(overhead_alpha=0.0, overhead_beta=0.0),
     ServingStrategy.TENSOR: OverheadParams(overhead_alpha=0.05, overhead_beta=0.10),
     ServingStrategy.HYBRID: OverheadParams(overhead_alpha=0.05, overhead_beta=0.10),
 }
@@ -117,11 +124,23 @@ OVERHEAD_PARAMS: Final[dict[ServingStrategy, OverheadParams]] = {
 
 @dataclass(frozen=True)
 class EngineParams:
-    """Hardware/engine efficiency parameters (global, calibratable in Phase 1)."""
+    """Engine efficiency and overhead parameters (fitted by `pat infer-calibrate`).
 
-    bandwidth_efficiency: float = 0.6  # achieved fraction of spec HBM bandwidth
+    Defaults are the uncalibrated MVP placeholders. ``hybrid`` uses the tensor
+    α/β (its extra cost over pure TP is routing, inside α).
+    """
+
+    bandwidth_efficiency: float = 0.6  # η: achieved fraction of spec HBM bandwidth
     step_overhead_ms: float = 2.0  # t₀: scheduler, sampling, kernel launch
     prefill_tokens_per_s_per_gpu: float = 20_000.0  # R_pre
+    replica_alpha: float = OVERHEAD_PARAMS[ServingStrategy.REPLICA].overhead_alpha
+    tensor_alpha: float = OVERHEAD_PARAMS[ServingStrategy.TENSOR].overhead_alpha
+    tensor_beta: float = OVERHEAD_PARAMS[ServingStrategy.TENSOR].overhead_beta
+
+    def overhead(self, strategy: ServingStrategy) -> OverheadParams:
+        if strategy is ServingStrategy.REPLICA:
+            return OverheadParams(self.replica_alpha, 0.0)
+        return OverheadParams(self.tensor_alpha, self.tensor_beta)
 
 
 DEFAULT_ENGINE_PARAMS: Final[EngineParams] = EngineParams()
@@ -230,6 +249,13 @@ def _validate_engine_params(params: EngineParams) -> EngineParams:
     _require_positive(
         params.prefill_tokens_per_s_per_gpu, "prefill_tokens_per_s_per_gpu", 1e9
     )
+    for name in ("replica_alpha", "tensor_alpha"):
+        alpha = _require_bounded(getattr(params, name), name, 0.0, ALPHA_MAX)
+        if alpha >= ALPHA_MAX:
+            raise InferenceDomainError(f"{name} must be < {ALPHA_MAX}, got {alpha!r}")
+    beta = _require_bounded(params.tensor_beta, "tensor_beta", 0.0, BETA_MAX)
+    if beta >= BETA_MAX:
+        raise InferenceDomainError(f"tensor_beta must be < {BETA_MAX}, got {beta!r}")
     return params
 
 
@@ -240,15 +266,19 @@ def _validate_engine_params(params: EngineParams) -> EngineParams:
 _GB: Final[float] = 1e9
 
 
-def coordination_overhead(strategy: ServingStrategy, tp: int) -> float:
+def coordination_overhead(
+    strategy: ServingStrategy, tp: int, params: EngineParams = DEFAULT_ENGINE_PARAMS
+) -> float:
     """``α + β·ln tp`` — coordination cost as a fraction of one unsharded read."""
-    p = OVERHEAD_PARAMS[strategy]
+    p = params.overhead(strategy)
     return p.overhead_alpha + p.overhead_beta * math.log(tp)
 
 
-def prefill_efficiency(strategy: ServingStrategy, tp: int) -> float:
+def prefill_efficiency(
+    strategy: ServingStrategy, tp: int, params: EngineParams = DEFAULT_ENGINE_PARAMS
+) -> float:
     """``1 − α − β·ln tp`` clamped at a small floor (the serving-model form)."""
-    p = OVERHEAD_PARAMS[strategy]
+    p = params.overhead(strategy)
     return max(1e-3, 1.0 - p.overhead_alpha - p.overhead_beta * math.log(tp))
 
 
@@ -261,6 +291,15 @@ def kv_tokens_per_instance(model: ModelSpec, gpu: GpuSpec, tp: int) -> float:
 def weights_fit(model: ModelSpec, gpu: GpuSpec, tp: int) -> bool:
     """Hard constraint: the per-GPU weight shard fits in the usable memory."""
     return model.weights_gb / tp <= gpu.memory_utilization * gpu.memory_gb
+
+
+def live_context_tokens(workload: InferenceWorkload) -> float:
+    """``P + O/2`` — the mean context a sequence holds at a random decode step.
+
+    Used for the KV bytes a decode step reads. ``b_max`` keeps the conservative
+    full footprint ``P + O`` (a sequence must fit at its longest).
+    """
+    return workload.prompt_tokens + workload.output_tokens / 2.0
 
 
 def max_batch(
@@ -289,19 +328,23 @@ def decode_step_s(
     tp: int,
     strategy: ServingStrategy,
     params: EngineParams,
+    context_tokens: float | None = None,
 ) -> float:
     """``t(b)`` — bandwidth-bound decode step.
 
     Weights and live KV are read in parallel across the tp shards; the
     coordination term ``(α + β·ln tp)·W/(η·BW)`` is charged against the
     unsharded weight-read time so it does not shrink with tp.
+    ``context_tokens`` overrides the ``P + O/2`` live-context estimate (e.g.
+    with a value measured from KV-cache usage).
     """
-    per_seq_kv = (workload.prompt_tokens + workload.output_tokens) * (
-        model.kv_bytes_per_token
+    context = (
+        live_context_tokens(workload) if context_tokens is None else context_tokens
     )
+    per_seq_kv = context * model.kv_bytes_per_token
     bytes_read = model.weights_gb * _GB + batch * per_seq_kv
     gpu_bw = params.bandwidth_efficiency * gpu.bandwidth_gbs * _GB
-    coordination = coordination_overhead(strategy, tp) * model.weights_gb * _GB
+    coordination = coordination_overhead(strategy, tp, params) * model.weights_gb * _GB
     return (
         bytes_read / (tp * gpu_bw)
         + coordination / gpu_bw
@@ -316,7 +359,11 @@ def prefill_s(
     params: EngineParams,
 ) -> float:
     """``t_pre = P / (R_pre · tp · (1 − α − β·ln tp))``."""
-    rate = params.prefill_tokens_per_s_per_gpu * tp * prefill_efficiency(strategy, tp)
+    rate = (
+        params.prefill_tokens_per_s_per_gpu
+        * tp
+        * prefill_efficiency(strategy, tp, params)
+    )
     return workload.prompt_tokens / rate
 
 
