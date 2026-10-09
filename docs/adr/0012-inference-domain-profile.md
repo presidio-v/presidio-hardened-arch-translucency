@@ -44,9 +44,11 @@ module are untouched.
 - **Configurations, not strategies, are searched.** Every `(tp, n)` with
   `tp ∈ {1, 2, 4, 8, 16}`, `tp ≤ gpus_per_node`, `tp·n ≤ N`. The label is
   derived: `replica` (tp = 1), `tensor` (n = 1), `hybrid` (both > 1).
-- **Equations** (per instance, s̄ = P + O, the conservative full-occupancy
-  footprint): KV tokens `T = (tp·h·M − W)/k`; `b_max = min(B_max, ⌊T/s̄⌋)`;
-  decode step `t(b) = (W + b·s̄·k)/(tp·η·BW) + (α + β·ln tp)·W/(η·BW) + t₀`
+- **Equations** (per instance): KV tokens `T = (tp·h·M − W)/k`;
+  `b_max = min(B_max, ⌊T/(P + O)⌋)` with the conservative full footprint (a
+  sequence must fit at its longest); decode step
+  `t(b) = (W + b·c·k)/(tp·η·BW) + (α + β·ln tp)·W/(η·BW) + t₀`, where
+  `c = P + O/2` is the mean live context a decode step reads
   — coordination is charged against the *unsharded* weight read, so the
   all-reduce cost does not shrink with tp (a multiplicative form made TP=8
   ~5× faster than TP=1 on an 8B model, far above observed vLLM scaling); prefill
@@ -63,10 +65,12 @@ module are untouched.
 - **Objective.** Among feasible configurations with ρ ≤ 0.95 meeting both SLOs,
   the fewest GPUs; ties by lowest TPOT, then TTFT p99. If none qualifies, no
   recommendation; the highest-capacity configuration is shown as best effort.
-- **Parameters.** Per strategy α/β (`hybrid` shares `tensor`'s; replica has
-  β = 0 since ln 1 = 0) plus three global engine parameters: bandwidth
-  efficiency η, per-step overhead t₀, prefill rate R_pre. All are MVP
-  placeholders. The KV bytes per token k is architectural and never fitted.
+- **Parameters.** Tensor α/β (`hybrid` shares them) plus three global engine
+  parameters: bandwidth efficiency η, per-step overhead t₀, prefill rate R_pre.
+  α_replica is fixed at 0: it is not identifiable from single-instance data
+  (it merges into t₀), and the multi-instance router cost is not modelled. The
+  defaults are MVP placeholders. The KV bytes per token k is architectural and
+  never fitted.
 - **No model-file section in Phase 0.** Training read an uncommitted
   `training` section first and had to carry a legacy path once commitments
   arrived. The `inference` section is born with `pat infer-calibrate` (Phase 1)
@@ -104,6 +108,52 @@ module are untouched.
   prefill, prefix caching, speculative decoding, MoE (weights read per step ≠
   W), quantized KV, heterogeneous GPUs, energy (no DCGM path for inference yet;
   E1a stands), EU price catalog. `pat` emits a recommendation only (A1).
-- Revisit: (a) `pat infer-calibrate` from vLLM metrics with commitments;
-  (b) vLLM metric presets for `pat observe`; (c) L-INF-1/L-INF-2; (d) the mean
-  footprint `P + O/2` once calibration shows the conservative s̄ bias.
+- Revisit: (a) vLLM metric presets for `pat observe`; (b) L-INF-1/L-INF-2;
+  (c) router cost for n ≥ 2, which needs multi-instance measurements.
+
+## Amendment — Phase 1a calibration (2026-10-09)
+
+`pat infer-calibrate` fits the engine parameters from measured points and
+`pat infer-validate` reports prediction error, so the paper's error metric is
+computed by `pat` itself.
+
+- **Point.** One steady-state window on one instance at fixed tp: mean running
+  batch, mean inter-token latency, optional mean prefill time (measured at low
+  load) and optional mean KV-cache usage, which replaces the `P + O/2` estimate
+  with the measured live context `usage·T/b`.
+- **Fit.** Linear in `(x = 1/(η·BW), t₀, x·W·α_t, x·W·β_t)`; that solution
+  starts a bounded least-squares refinement in natural units. With tp ∈ {2, 4}
+  α and β are nearly collinear, so noise can push them past physical bounds;
+  the bound then binds and is reported (`at_bound`) instead of refusing the
+  fit. On synthetic data with 3% noise, a fit on tp ∈ {1, 2, 4} predicts
+  held-out tp = 8 points within ~5% MAPE while α sits at its bound. With one
+  distinct tp > 1, β is held. At least one degree of freedom is required; R²
+  is reported only with two or more.
+- **Named profiles, born committed.** `model["inference"][<profile>]` binds
+  the hardware (W, k, BW, M, h, B_max, optional model/GPU/engine labels), the
+  parameters, the fit metadata and every point. Consumers use a profile only
+  via `--calibration NAME`, fail closed on tamper, and fail closed when the
+  analysed W, k, BW or M differs from the profile by more than 1%. Engine
+  overrides cannot be combined with a profile. h and B_max are not checked —
+  the fitted parameters do not depend on them, so "what if I raise h" is a
+  legitimate calibrated question — but differences are reported.
+- **Global store only.** Profiles are read from `~/.pat/model.json` with the
+  strict reader the write path uses, never from a project-local
+  `.pat-model.json` (ADR-0005): a repo's serving calibration must not hide
+  them, and a profile shipped inside a repository carries no key and would
+  certify itself. The profile name is part of the hashed content, so a record
+  copied under another name is refused. The commitment follows the family's
+  string-decimal rule: tools that renormalise numbers (`4.0` → `4`) break it.
+- **Extrapolation is visible.** With `--calibration`, each configuration is
+  flagged `extrapolated` when its tp exceeds the largest calibrated tp or
+  n ≥ 2 (router cost is never observed by single-instance points). That is
+  exactly the region H3 tests, so it is marked, not hidden.
+- **Leave-one-out scores only full folds.** A fold that falls back to a
+  default (β when the held-out point was its only second tp level) is
+  excluded and counted as degraded, so placeholder error never enters the
+  paper's figure.
+- **Bounded claim.** η is an effective bandwidth: measured inter-token latency
+  includes chunked-prefill interference. Fitting single-instance points
+  validates timing; the crossover prediction (H3) also depends on b_max, router
+  cost and queueing, so it needs held-out *configurations* (other tp, n ≥ 2)
+  and λ sweeps per layer.

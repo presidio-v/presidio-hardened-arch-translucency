@@ -21,6 +21,21 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   pushes the recommendation towards tensor parallelism. All figures are
   modelled and uncalibrated; no model-file section is read until
   `pat infer-calibrate` lands with calibration commitments.
+- `pat infer-calibrate` fits bandwidth efficiency, per-step overhead, the
+  tensor-parallel α/β and the prefill rate from measured vLLM points (Inference
+  Arc Phase 1a). The fit is stored as a committed, named profile under
+  `inference.<profile>` and is bound to its weights, KV size, bandwidth and GPU
+  memory. `infer-analyze` and `infer-what-if` use it only with
+  `--calibration NAME`, and fail closed on tamper or on a hardware mismatch
+  above 1%. `pat infer-validate` reports TPOT and prefill error on held-out
+  points or by leave-one-out.
+
+### Changed
+
+- Inference model: the decode step reads the mean live context `P + O/2`
+  (`P + O` stays the footprint for the maximum batch), and α_replica is fixed
+  at 0 because single-instance data cannot separate it from the per-step
+  overhead.
 
 ## [0.24.2] - 2026-10-07
 
