@@ -1726,7 +1726,8 @@ inference.
 | 0 | Inference profile: `inference.py`, `pat infer-analyze`, `pat infer-what-if` (ADR-0012) | Implemented 2026-10-09 |
 | 1a | `pat infer-calibrate` (bounded least squares, committed named profiles, hardware binding); `pat infer-validate` (held-out and leave-one-out error); `--calibration` on `infer-analyze` / `infer-what-if` | Implemented 2026-10-09 |
 | 1b | `pat infer-observe`: one vLLM window from Prometheus as a calibration point (vLLM 0.31 names; single-engine, preemption, request-count and idle gates; prefill only at low load) | Implemented 2026-10-09 |
-| 1c | `pat infer-benchmark` vLLM sweep harness with DCGM energy through the E1a gate; dated EU GPU price catalog | Planned |
+| 1c | `pat infer-benchmark`: closed-loop calibration and open-loop λ sweeps against an operator-run vLLM (stagger and output jitter against lockstep, unique prompts, `usage`-verified lengths); prefix-cache and spec-decode gates in `infer-observe` | Implemented 2026-10-09 |
+| 1d | λ_max / λ* from sweep reports in `infer-validate`; DCGM energy per level through the E1a gate; dated EU GPU price catalog | Planned |
 | 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
 | 3 | Hosted continuous-report shell; only after two paid audits | Gated |
 

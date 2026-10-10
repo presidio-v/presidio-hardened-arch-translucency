@@ -45,6 +45,7 @@ from presidio_arch_translucency.hpa import (
 )
 from presidio_arch_translucency.inference_cli import (
     infer_analyze_command,
+    infer_benchmark_command,
     infer_calibrate_command,
     infer_observe_command,
     infer_validate_command,
@@ -92,6 +93,7 @@ app.command("infer-what-if")(infer_what_if_command)
 app.command("infer-calibrate")(infer_calibrate_command)
 app.command("infer-validate")(infer_validate_command)
 app.command("infer-observe")(infer_observe_command)
+app.command("infer-benchmark")(infer_benchmark_command)
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")

@@ -35,7 +35,11 @@ window. A window is refused, never recorded, unless it is steady:
 * the window spans at least :data:`MIN_WINDOWS_PER_REQUEST` mean request
   latencies, since per-request token means are observed at completion and a
   short window over-samples short requests;
-* enough requests completed, and the engine was not idle.
+* enough requests completed, and the engine was not idle;
+* the prefix cache hit rate is below :data:`MAX_PREFIX_CACHE_HIT_RATE` (shared
+  cached blocks void prefill timing and the KV-usage context) and no
+  speculative-decoding draft tokens were produced (they change inter-token
+  latency). Absent counters count as "off".
 
 Prefill time is only included when the queue was empty and the batch small,
 because under load it is inflated by queueing and decode interference.
@@ -81,6 +85,8 @@ MAX_BATCH_CV: Final[float] = 0.25
 LITTLE_TOLERANCE: Final[float] = 0.5
 #: The window must span this many mean request latencies.
 MIN_WINDOWS_PER_REQUEST: Final[float] = 5.0
+#: Prefix-cache hit rate above which prompts were not independent.
+MAX_PREFIX_CACHE_HIT_RATE: Final[float] = 0.01
 MAX_LABEL_VALUE_LEN: Final[int] = 256
 
 _METRIC_NAME_CHARS: Final[frozenset[str]] = frozenset(
@@ -89,7 +95,16 @@ _METRIC_NAME_CHARS: Final[frozenset[str]] = frozenset(
 
 
 class InferenceObserveError(ValueError):
-    """Raised when a window cannot be turned into a trustworthy point."""
+    """Raised when a window cannot be turned into a trustworthy point.
+
+    ``code`` classifies the refusal for callers (e.g. the benchmark harness
+    treats ``preemption`` and ``little`` as signs of an overloaded engine)
+    without matching on message text.
+    """
+
+    def __init__(self, message: str, code: str = "refused") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -179,6 +194,13 @@ def vllm_queries(
         "requests": f"sum(increase(vllm:request_success_total{sel}{w}))",
         "resets": f"sum(resets(vllm:request_success_total{sel}{w}))",
         "preemptions": f"sum(increase(vllm:num_preemptions_total{sel}{w}))",
+        "prefix_cache_hit_rate": (
+            f"sum(rate(vllm:prefix_cache_hits_total{sel}{w})) / "
+            f"sum(rate(vllm:prefix_cache_queries_total{sel}{w}))"
+        ),
+        "spec_decode_drafts": (
+            f"sum(increase(vllm:spec_decode_num_draft_tokens_total{sel}{w}))"
+        ),
     }
 
 
@@ -285,7 +307,20 @@ def observe_vllm_window(
     if preemptions > 0.0:
         raise InferenceObserveError(
             f"{preemptions:g} preemption(s) in the window: the KV cache "
-            "overflowed, so this is not a steady-state point"
+            "overflowed, so this is not a steady-state point",
+            code="preemption",
+        )
+    hit_rate = values["prefix_cache_hit_rate"] or 0.0
+    if hit_rate >= MAX_PREFIX_CACHE_HIT_RATE:
+        raise InferenceObserveError(
+            f"prefix cache hit rate {hit_rate:.1%} in the window: prompts shared "
+            "cached blocks, so prefill and KV usage do not describe independent "
+            "requests (use unique prompts or --no-enable-prefix-caching)"
+        )
+    if (values["spec_decode_drafts"] or 0.0) > 0.0:
+        raise InferenceObserveError(
+            "speculative decoding produced draft tokens in the window; it changes "
+            "inter-token latency, so the decode model does not apply"
         )
     batch = values["batch"]
     if batch <= 0.0 or values["batch_min"] <= 0.0:
@@ -308,7 +343,8 @@ def observe_vllm_window(
         raise InferenceObserveError(
             f"Little's law does not hold ({requests:.0f} completions vs "
             f"{batch / service_s * window_s:.0f} implied by batch {batch:.2f} and "
-            f"{service_s:.2f}s per request): ramp, restart or double counting"
+            f"{service_s:.2f}s per request): ramp, restart or double counting",
+            code="little",
         )
     e2e_s = values["e2e_s"]
     if e2e_s is not None and window_s < MIN_WINDOWS_PER_REQUEST * e2e_s:

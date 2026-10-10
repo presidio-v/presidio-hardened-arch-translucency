@@ -31,6 +31,8 @@ HEALTHY = {
     "output_tokens": 300.0,
     "resets": 0.0,
     "preemptions": 0.0,
+    "prefix_cache_hit_rate": None,
+    "spec_decode_drafts": None,
 }
 EVAL_AT = 1_791_000_000.0
 
@@ -141,6 +143,8 @@ def test_kv_usage_can_be_omitted():
         (FakePrometheus({"requests": 60.0}), "Little's law"),
         (FakePrometheus({"batch": 8.0, "requests": 40.0}), "Little's law"),
         (FakePrometheus({"e2e_s": 30.0}), "shorter than 5"),
+        (FakePrometheus({"prefix_cache_hit_rate": 0.4}), "prefix cache hit rate"),
+        (FakePrometheus({"spec_decode_drafts": 12.0}), "speculative decoding"),
         (FakePrometheus({"tpot_s": None, "requests": 40.0}), "no data for tpot_s"),
         (FakePrometheus({"prompt_tokens": None}), "prompt_tokens"),
         (FakePrometheus({"kv_usage": 1.7}), "out of domain"),
@@ -149,6 +153,13 @@ def test_kv_usage_can_be_omitted():
 def test_untrustworthy_windows_are_refused(fake, match):
     with pytest.raises(InferenceObserveError, match=match):
         _observe(fake)
+
+
+def test_cache_and_spec_decode_counters_at_zero_pass():
+    observed = _observe(
+        FakePrometheus({"prefix_cache_hit_rate": 0.002, "spec_decode_drafts": 0.0})
+    )
+    assert observed.point.tp == 2
 
 
 def test_ramp_that_only_preemption_gating_would_accept_is_refused():

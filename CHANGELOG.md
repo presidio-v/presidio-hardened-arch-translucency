@@ -41,6 +41,19 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   `instant_query_vector` accept an optional evaluation time. Prefill time is included only when the
   queue was empty and the batch small.
 
+- `pat infer-benchmark` drives load against a vLLM engine you run (pat never
+  launches engines) and records each level with `infer-observe`'s gates.
+  `--concurrency 1,4,16,64` keeps N requests in flight for calibration points;
+  `--rate` sends Poisson arrivals for SLO-capacity sweeps and stops at the
+  first saturated level. Initial submits are staggered and output lengths
+  jittered ±20 % so completions do not synchronise; every prompt is unique so
+  the prefix cache cannot share blocks; a probe calibrates prompt length and a
+  level whose achieved mean P or O misses the target by more than 5 % is
+  refused. Points go to stdout, every level to `--report`. API key from
+  `PAT_VLLM_API_KEY` only, https required, redirects refused.
+- `pat infer-observe` also refuses windows with a prefix-cache hit rate of
+  1 % or more, or with speculative-decoding draft tokens.
+
 ### Changed
 
 - Inference model: the decode step reads the mean live context `P + O/2`

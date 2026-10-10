@@ -12,6 +12,7 @@ digest are shown, and the profile must match the hardware being analysed.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from typing import Optional
 
@@ -1097,3 +1098,173 @@ def infer_observe_command(
         else ", prefill omitted (queue or batch too high)"
     )
     info_console.print(f"[green]{summary}[/]")
+
+
+# -- benchmark harness -------------------------------------------------------------
+
+
+def _parse_levels(raw: str, mode: str) -> tuple[float, ...]:
+    try:
+        levels = tuple(float(part) for part in raw.split(",") if part.strip())
+    except ValueError as exc:
+        raise InferenceCalibrationError(f"levels must be numbers: {raw!r}") from exc
+    if len(levels) > 64:
+        raise InferenceCalibrationError("at most 64 levels")
+    return levels
+
+
+def infer_benchmark_command(
+    endpoint: str = typer.Option(
+        ..., "--endpoint", help="vLLM OpenAI-compatible base URL (pat sends load)."
+    ),
+    prometheus: str = typer.Option(
+        ..., "--prometheus", help="Prometheus base URL scraping that engine."
+    ),
+    model: str = typer.Option(
+        ..., "--model", help="Served model name (request field and model_name label)."
+    ),
+    tp: int = typer.Option(..., "--tp", help="Tensor-parallel degree of the engine."),
+    prompt_tokens: int = typer.Option(
+        ..., "--prompt-tokens", "-p", help="Target mean prompt length P."
+    ),
+    output_tokens: int = typer.Option(
+        ..., "--output-tokens", "-o", help="Target mean output length O (±20%)."
+    ),
+    concurrency: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--concurrency",
+        help="Closed-loop levels, e.g. 1,4,16,64: requests kept in flight.",
+    ),
+    rate: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--rate",
+        help="Open-loop Poisson levels in req/s, e.g. 1,1.25,1.56,1.95.",
+    ),
+    window_s: int = typer.Option(120, "--window-s", help="Hold window per level."),
+    warmup_s: int = typer.Option(60, "--warmup-s", help="Warm-up before each hold."),
+    scrape_lag_s: int = typer.Option(
+        15, "--scrape-lag-s", help="Keep load on this long after the hold."
+    ),
+    min_requests: int = typer.Option(
+        20, "--min-requests", help="Refuse windows with fewer completions."
+    ),
+    engine: str = typer.Option("0", "--engine", help="vLLM engine label."),
+    seed: int = typer.Option(0, "--seed", help="Seed for prompts and arrivals."),
+    report: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--report", help="Write the per-level JSON report to this new file."
+    ),
+    keep_going: bool = typer.Option(
+        False,
+        "--keep-going",
+        help="Open loop: continue past a saturated level instead of stopping.",
+    ),
+) -> None:
+    """Drive load against a running vLLM engine and record each level.
+
+    pat never launches the engine: start vLLM at the tp you are measuring,
+    with prefix caching and speculative decoding off. Closed loop
+    (--concurrency) produces calibration points; open loop (--rate) produces
+    the per-layer SLO-capacity sweep. Recorded points go to stdout as JSON
+    lines (`>> points.jsonl`); every level, refused or not, goes to --report.
+    API key from PAT_VLLM_API_KEY only (https required).
+    """
+    from presidio_arch_translucency.infer_benchmark import (  # noqa: PLC0415
+        BenchmarkConfig,
+        BenchmarkReport,
+        InferenceBenchmarkError,
+        LevelReport,
+        run_benchmark,
+    )
+    from presidio_arch_translucency.infer_observe import (  # noqa: PLC0415
+        InferenceObserveError,
+    )
+
+    report_fd: int | None = None
+
+    def write_report(current: BenchmarkReport) -> None:
+        # Rewritten after every level through the held descriptor, so paid-for
+        # levels survive a later failure or an interrupt.
+        if report_fd is None:
+            return
+        data = (json.dumps(current.as_dict(), indent=2) + "\n").encode("utf-8")
+        os.ftruncate(report_fd, 0)
+        os.lseek(report_fd, 0, os.SEEK_SET)
+        os.write(report_fd, data)
+        os.fsync(report_fd)
+
+    def on_level(result: LevelReport, current: BenchmarkReport) -> None:
+        if result.point is not None:
+            typer.echo(json.dumps(result.point, separators=(",", ":")))
+        label = (
+            f"{result.mode} {result.level:g}: {result.completed} completed, "
+            f"{result.achieved_rps:.2f} req/s"
+        )
+        if result.verdict == "recorded":
+            info_console.print(f"[green]✓ {label}[/]")
+        else:
+            info_console.print(f"[yellow]✗ {label} — refused: {result.reason}[/]")
+        write_report(current)
+
+    try:
+        if (concurrency is None) == (rate is None):
+            raise InferenceCalibrationError(
+                "give exactly one of --concurrency / --rate"
+            )
+        mode = "closed" if concurrency is not None else "open"
+        levels = _parse_levels(concurrency or rate or "", mode)
+        config = BenchmarkConfig(
+            endpoint=endpoint,
+            prometheus=prometheus,
+            model=model,
+            tp=tp,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            mode=mode,
+            levels=levels,
+            window_s=window_s,
+            warmup_s=warmup_s,
+            scrape_lag_s=scrape_lag_s,
+            min_requests=min_requests,
+            engine=engine,
+            seed=seed,
+            stop_on_saturation=not keep_going,
+        )
+        if report is not None:
+            # Fail before spending GPU time if the report cannot be written.
+            report_fd = os.open(
+                report,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+    except (InferenceBenchmarkError, InferenceCalibrationError, OSError) as exc:
+        err_console.print(f"[bold red]Benchmark error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    result = BenchmarkReport(config={})
+    exit_code = 0
+    try:
+        run_benchmark(config, on_level=on_level, report=result)
+    except (InferenceBenchmarkError, InferenceObserveError, OSError) as exc:
+        result.error, result.stopped_early, exit_code = str(exc), True, 2
+        err_console.print(f"[bold red]Benchmark error:[/] {exc}")
+    except KeyboardInterrupt:
+        result.error, result.stopped_early, exit_code = "interrupted", True, 130
+        err_console.print("[bold red]Interrupted;[/] completed levels are kept.")
+    finally:
+        if report_fd is not None:
+            try:
+                write_report(result)
+            finally:
+                os.close(report_fd)
+
+    recorded = sum(1 for level in result.levels if level.verdict == "recorded")
+    log_security_event(
+        "INFER_BENCHMARK_INVOCATION",
+        {"mode": config.mode, "levels": len(result.levels), "recorded": recorded},
+    )
+    info_console.print(
+        f"{recorded}/{len(result.levels)} level(s) recorded"
+        + (" · stopped early" if result.stopped_early else "")
+    )
+    if exit_code:
+        raise typer.Exit(code=exit_code)
