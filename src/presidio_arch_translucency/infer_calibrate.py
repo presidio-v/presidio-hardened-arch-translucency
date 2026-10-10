@@ -319,29 +319,29 @@ def _reject_constant(name: str) -> float:
     raise InferenceCalibrationError(f"non-finite constant {name!r} is not allowed")
 
 
-def load_points_file(path: str | Path) -> list[InferencePoint]:
-    """Read JSON-Lines points from a regular, non-symlink file (fail-closed)."""
+def read_regular_file(path: str | Path, max_bytes: int, label: str) -> str:
+    """UTF-8 text of a regular, non-symlink file no larger than ``max_bytes``."""
     p = Path(path)
     try:
         if stat.S_ISLNK(p.lstat().st_mode):
-            raise InferenceCalibrationError("points file must not be a symbolic link")
+            raise InferenceCalibrationError(f"{label} must not be a symbolic link")
         fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, "rb") as fh:
             if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                raise InferenceCalibrationError("points file is not a regular file")
-            raw = fh.read(MAX_POINTS_FILE_BYTES + 1)
-        if len(raw) > MAX_POINTS_FILE_BYTES:
-            raise InferenceCalibrationError(
-                f"points file exceeds {MAX_POINTS_FILE_BYTES} bytes"
-            )
-        text = raw.decode("utf-8", errors="strict")
+                raise InferenceCalibrationError(f"{label} is not a regular file")
+            raw = fh.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise InferenceCalibrationError(f"{label} exceeds {max_bytes} bytes")
+        return raw.decode("utf-8", errors="strict")
     except InferenceCalibrationError:
         raise
     except (OSError, UnicodeDecodeError) as exc:
-        raise InferenceCalibrationError(
-            f"points file could not be read: {exc}"
-        ) from exc
+        raise InferenceCalibrationError(f"{label} could not be read: {exc}") from exc
 
+
+def load_points_file(path: str | Path) -> list[InferencePoint]:
+    """Read JSON-Lines points from a regular, non-symlink file (fail-closed)."""
+    text = read_regular_file(path, MAX_POINTS_FILE_BYTES, "points file")
     points: list[InferencePoint] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():

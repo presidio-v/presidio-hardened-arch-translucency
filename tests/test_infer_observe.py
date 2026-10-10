@@ -155,6 +155,27 @@ def test_untrustworthy_windows_are_refused(fake, match):
         _observe(fake)
 
 
+def test_raw_readings_travel_with_points_and_refusals():
+    observed = _observe(FakePrometheus())
+    assert observed.raw["tpot_ms"] == pytest.approx(30.0)
+    assert observed.raw["achieved_rps"] == pytest.approx(observed.requests / 120)
+    # A refused window still says where the engine was, ungated.
+    with pytest.raises(InferenceObserveError) as refused:
+        _observe(FakePrometheus({"preemptions": 3.0, "batch": 3.0}))
+    assert refused.value.code == "preemption"
+    assert refused.value.raw["tpot_ms"] == pytest.approx(30.0)
+    assert refused.value.raw["batch"] == 3.0
+    assert refused.value.raw["preemptions"] == 3.0
+    # Refusals before any reading carry none.
+    with pytest.raises(InferenceObserveError) as no_engine:
+        _observe(FakePrometheus(engines=0))
+    assert no_engine.value.raw is None
+    with pytest.raises(InferenceObserveError) as empty:
+        _observe(FakePrometheus({"requests": None, "tpot_s": None}))
+    assert empty.value.raw["achieved_rps"] is None
+    assert empty.value.raw["tpot_ms"] is None
+
+
 def test_cache_and_spec_decode_counters_at_zero_pass():
     observed = _observe(
         FakePrometheus({"prefix_cache_hit_rate": 0.002, "spec_decode_drafts": 0.0})

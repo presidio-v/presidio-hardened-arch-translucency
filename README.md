@@ -1125,8 +1125,10 @@ pat infer-benchmark --endpoint http://gpu-node:8000 \
   --tp 1 -p 900 -o 300 --concurrency 1,4,16,64 --report tp1.json >> points.jsonl
 
 # Restart vLLM at --tensor-parallel-size 2 and repeat with --tp 2 --concurrency 4,64.
-# SLO-capacity sweep (×1.25 spacing): Poisson arrivals, stops at saturation
-pat infer-benchmark ... --tp 2 --rate 2,2.5,3.1,3.9,4.9,6.1 --report sweep-tp2.json
+# SLO-capacity sweep (×1.25 spacing): Poisson arrivals, stops at saturation,
+# then two bisection levels inside each bracket (capacity and the TPOT SLO)
+pat infer-benchmark ... --tp 2 --rate 2,2.5,3.1,3.9,4.9,6.1 \
+  --refine 2 --tpot-slo-ms 45 --report sweep-tp2.json
 ```
 
 Each level warms up (`--warmup-s`, default 60), holds for `--window-s`
@@ -1154,6 +1156,10 @@ pat infer-calibrate --profile l40s-llama8b --points-file points.jsonl \
 pat infer-validate --calibration l40s-llama8b --leave-one-out
 pat infer-validate --calibration l40s-llama8b --points-file tp8-points.jsonl
 
+# And the capacity of each layout (H3): one open-loop sweep report per layout
+pat infer-validate --calibration l40s-llama8b --tpot-slo-ms 45 \
+  --sweep sweep-tp1.json --sweep sweep-tp2.json
+
 # Use it (fails closed if the weights/KV/bandwidth/memory differ by >1%):
 pat infer-analyze -r 10 -p 900 -o 300 -w 16 -k 131072 -n 4 -m 48 -b 864 \
   --tpot-slo-ms 50 --calibration l40s-llama8b
@@ -1171,6 +1177,28 @@ marks parameters that land on a physical bound — α and β are hard to separat
 with only tp = 2 and 4, so add another tp level when that happens. The fitted
 bandwidth efficiency is an *effective* figure: measured inter-token latency
 includes chunked-prefill interference.
+
+Sweep validation never reads λ_max off a single level. For capacity and for
+each SLO it takes the bracket between the highest passing level and the first
+failing one (a refused level that did not saturate tells nothing), predicts
+λ_max with the same criteria `infer-analyze` recommends by (ρ ≤ 0.95, SLOs
+met), and reports the error as an interval: **pass** when even the farther
+bracket edge is within 20 %, **fail** when the nearer edge is more than 25 %
+away, **inconclusive** otherwise or when passing levels follow a failing one.
+An unrefined ×1.25 bracket passes only a prediction within 20 % above its
+lower edge; `--refine` narrows the bracket so the verdict does not hinge on
+where in it the truth sits. The capacity row is a consistency check (model
+ρ = 1 against client-side saturation, which trips a little earlier), not the
+H3 verdict. Choose the SLOs after calibrating and before sweeping, so they
+bind inside the swept range: if the model's range ends at ρ = 0.95 and the
+sweep's at saturation, the SLO row is shown as "SLO (ρ-bound)" because
+latency was never tested, and if the two end for different reasons the row is
+inconclusive. A `--ttft-slo-ms` must be one
+of vLLM's TTFT bucket edges (e.g. 250 or 500): the validator judges it from
+the exact fraction of first tokens under that edge, because the
+histogram-interpolated p99 can be off by up to 2×. Sweep files are checked and
+their SHA-256 echoed, but they are unsigned. Replica layouts (several engines
+per sweep) are not measurable yet, so each sweep is one engine at one tp.
 
 ---
 

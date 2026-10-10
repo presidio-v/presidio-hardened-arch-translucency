@@ -5,6 +5,7 @@ import random
 import statistics
 import threading
 import time
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -16,6 +17,7 @@ from presidio_arch_translucency.infer_benchmark import (
     BenchmarkConfig,
     BenchmarkReport,
     InferenceBenchmarkError,
+    LevelReport,
     LoadGenerator,
     PromptCalibration,
     VllmClient,
@@ -25,6 +27,7 @@ from presidio_arch_translucency.infer_benchmark import (
     probe_prompt_calibration,
     run_benchmark,
     run_level,
+    server_ttft_cdf,
     server_ttft_p99_ms,
 )
 from presidio_arch_translucency.infer_calibrate import InferencePoint
@@ -33,6 +36,7 @@ from presidio_arch_translucency.infer_observe import (
     ObservedWindow,
     VllmSelector,
 )
+from presidio_arch_translucency.infer_sweep import classify_saturation, find_bracket
 
 
 def fake_tokens(prompt: str) -> int:
@@ -162,7 +166,9 @@ _UNSATURATED = {"levels": (100.0,), "level": 100.0, "window_s": 800, "warmup_s":
 EXACT = PromptCalibration(tokens_per_word=4 / 3, overhead_tokens=11.0)
 
 
-def _run(server, observe=None, ttft=None, prompts=EXACT, level=None, **kw):
+def _run(
+    server, observe=None, ttft=None, prompts=EXACT, level=None, ttft_cdf=None, **kw
+):
     config = _config(server.url, **kw)
     return run_level(
         config,
@@ -172,6 +178,7 @@ def _run(server, observe=None, ttft=None, prompts=EXACT, level=None, **kw):
         sleep=_fast_sleep,
         observe=observe or (lambda *a, **k: _observed()),
         ttft=ttft or (lambda *a, **k: 412.0),
+        ttft_cdf=ttft_cdf or (lambda *a, **k: None),
     )
 
 
@@ -484,6 +491,7 @@ def test_open_sweep_stops_at_first_saturated_level(vllm):
         sleep=_fast_sleep,
         observe=lambda *a, **k: _observed(waiting=next(queues)),
         ttft=lambda *a, **k: None,
+        ttft_cdf=lambda *a, **k: None,
     )
     assert [lv.level for lv in report.levels] == [100.0, 110.0]
     assert report.stopped_early and levels == [1, 2]
@@ -512,6 +520,7 @@ def test_run_benchmark_fills_the_callers_report_before_failing(vllm):
             sleep=_fast_sleep,
             observe=observe,
             ttft=lambda *a, **k: None,
+            ttft_cdf=lambda *a, **k: None,
         )
     assert len(report.levels) == 1 and report.levels[0].verdict == "recorded"
 
@@ -531,11 +540,144 @@ def test_run_benchmark_fills_the_callers_report_before_failing(vllm):
         {"window_s": 10},
         {"min_requests": 0},
         {"engine": "a\nb"},
+        {"refine": 2},  # closed loop
+        {"mode": "open", "levels": (1.0,), "refine": 5},
+        {"mode": "open", "levels": (1.0,), "refine": True},
+        {"mode": "open", "levels": (1.0,), "refine": 2, "tpot_slo_ms": 0.0},
+        {"mode": "open", "levels": (1.0,), "tpot_slo_ms": 45.0},  # inert alone
     ],
 )
 def test_config_validation(kw):
     with pytest.raises(InferenceBenchmarkError):
         _config("http://x", **kw)
+
+
+def test_server_ttft_cdf_is_exact_at_edges():
+    calls = []
+
+    def vector(base_url, query, token=None, eval_time=None):
+        calls.append((query, eval_time))
+        return [
+            ({"le": "0.1"}, 1.0),
+            ({"le": "0.25"}, 3.96),
+            ({"le": "+Inf"}, 4.0),
+            ({"le": "junk"}, 9.0),
+            ({}, 1.0),
+        ]
+
+    sel = VllmSelector(model_name="m")
+    cdf = server_ttft_cdf("http://p", sel, 60, 9.0, vector)
+    assert cdf == {"0.1": 0.25, "0.25": pytest.approx(0.99), "+Inf": 1.0}
+    query, at = calls[0]
+    assert query == (
+        "sum by (le) (rate(vllm:time_to_first_token_seconds_bucket"
+        '{model_name="m",engine="0"}[60s]))'
+    )
+    assert at == 9.0
+    assert server_ttft_cdf("http://p", sel, 60, 1.0, lambda *a, **k: []) is None
+    idle = [({"le": "+Inf"}, 0.0)]
+    assert server_ttft_cdf("http://p", sel, 60, 1.0, lambda *a, **k: idle) is None
+
+    def broken(*_a, **_k):
+        from presidio_arch_translucency.prometheus import PrometheusError
+
+        raise PrometheusError("down")
+
+    assert server_ttft_cdf("http://p", sel, 60, 1.0, broken) is None
+
+
+def test_levels_keep_raw_readings_and_ttft_cdf(vllm):
+    def refuse(*_a, **_k):
+        exc = InferenceObserveError("not steady", code="little")
+        exc.raw = {"tpot_ms": 88.0}
+        raise exc
+
+    cdf = {"0.25": 0.5, "+Inf": 1.0}
+    refused = _run(vllm, observe=refuse, ttft_cdf=lambda *a, **k: cdf)
+    assert refused.verdict == "refused" and refused.point is None
+    assert refused.observed == {"tpot_ms": 88.0}  # ungated, labelled
+    assert refused.ttft_cdf == cdf and not refused.refine
+
+    window = replace(_observed(), raw={"tpot_ms": 30.0})
+    recorded = _run(vllm, observe=lambda *a, **k: window)
+    assert recorded.verdict == "recorded" and recorded.observed == {"tpot_ms": 30.0}
+
+
+def _scripted_level(saturate_at, informative=True):
+    """A run_level stand-in: TPOT (ms) equals λ; saturated from saturate_at."""
+    calls = []
+
+    def run(config, client, level, prompts, refine=False, **_kw):
+        calls.append((level, refine))
+        saturated = level >= saturate_at
+        recorded = not saturated and (informative or not refine)
+        return LevelReport(
+            mode="open",
+            level=level,
+            tp=1,
+            window_s=120,
+            completed=50,
+            errors=0,
+            offered=50,
+            rejected=0,
+            achieved_rps=level,
+            e2e_p50_ms=None,
+            e2e_p99_ms=None,
+            mean_prompt_tokens=900.0,
+            mean_output_tokens=300.0,
+            ttft_p99_ms=None,
+            verdict="recorded" if recorded else "refused",
+            point={"tpot_ms": level} if recorded else None,
+            saturated=saturated,
+            refine=refine,
+        )
+
+    return run, calls
+
+
+def test_refine_bisects_each_bracket(vllm, monkeypatch):
+    run, calls = _scripted_level(saturate_at=56.0)
+    monkeypatch.setattr(infer_benchmark, "run_level", run)
+    config = _config(
+        vllm.url,
+        mode="open",
+        levels=(32.0, 40.0, 50.0, 62.5, 78.0),
+        refine=2,
+        tpot_slo_ms=45.0,
+    )
+    seen = []
+    report = run_benchmark(config, on_level=lambda r, _c: seen.append(r.level))
+    refined = [level for level, refine in calls if refine]
+    # Saturation in [50, 62.5]: 55.9 passes, 59.1 fails. TPOT 45 ms in [40, 50]:
+    # 44.7 passes, 47.3 fails.
+    assert refined == pytest.approx([55.90, 59.11, 44.72, 47.29], abs=0.01)
+    assert [lv.level for lv in report.levels][:4] == [32.0, 40.0, 50.0, 62.5]
+    assert report.stopped_early and len(seen) == 8
+    sat = find_bracket([lv.as_dict() for lv in report.levels], classify_saturation)
+    assert (sat.lo, sat.hi) == pytest.approx((55.90, 59.11), abs=0.01)
+
+
+def test_refine_stops_on_an_uninformative_level(vllm, monkeypatch):
+    run, calls = _scripted_level(saturate_at=56.0, informative=False)
+    monkeypatch.setattr(infer_benchmark, "run_level", run)
+    config = _config(
+        vllm.url,
+        mode="open",
+        levels=(32.0, 40.0, 50.0, 62.5),
+        refine=3,
+        tpot_slo_ms=45.0,
+    )
+    run_benchmark(config)
+    # Saturation always informs (3 levels); TPOT stops after its first refusal.
+    assert sum(1 for _, refine in calls if refine) == 4
+
+
+def test_refine_skips_a_sweep_that_never_saturates(vllm, monkeypatch):
+    run, calls = _scripted_level(saturate_at=1e9)
+    monkeypatch.setattr(infer_benchmark, "run_level", run)
+    config = _config(vllm.url, mode="open", levels=(1.0, 2.0), refine=2)
+    run_benchmark(config)
+    assert all(not refine for _, refine in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +706,7 @@ def fast_harness(monkeypatch):
         infer_benchmark, "observe_vllm_window", lambda *a, **k: _observed()
     )
     monkeypatch.setattr(infer_benchmark, "server_ttft_p99_ms", lambda *a, **k: None)
+    monkeypatch.setattr(infer_benchmark, "server_ttft_cdf", lambda *a, **k: None)
 
 
 def test_cli_records_points_and_writes_report(vllm, tmp_path, fast_harness):
@@ -635,6 +778,9 @@ def test_cli_context_refusal_sends_no_load(make_vllm, tmp_path):
         ["--concurrency", "two"],
         ["--concurrency", "2.5"],
         ["--concurrency", "2", "--window-s", "5"],
+        ["--concurrency", "2", "--refine", "2"],
+        ["--rate", "1", "--refine", "9"],
+        ["--rate", "1", "--tpot-slo-ms", "-1"],
     ],
 )
 def test_cli_level_errors(vllm, extra):
