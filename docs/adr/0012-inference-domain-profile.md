@@ -188,3 +188,45 @@ prints it as a calibration point.
   validates timing; the crossover prediction (H3) also depends on b_max, router
   cost and queueing, so it needs held-out *configurations* (other tp, n ≥ 2)
   and λ sweeps per layer.
+
+## Amendment — Phase 1c load harness (2026-10-09)
+
+`pat infer-benchmark` drives load against a vLLM engine the operator runs and
+records each level through `infer-observe`'s gates.
+
+- **pat never launches engines.** Starting vLLM, downloading models and
+  choosing tp stay with the operator (one run per tp); pat only sends
+  completion requests, in line with A1.
+- **Two submit policies, one loop.** Closed loop (N in flight) produces
+  calibration points with a steady batch; open loop (Poisson λ, in-flight
+  capped at 512, rejections counted) produces the per-layer SLO-capacity sweep.
+  An open sweep stops at the first saturated level. Saturation is judged from
+  the client side — completions below 90 % of the arrivals that fed them, a
+  queue, rejections, or a preemption/Little's-law refusal — because an
+  overloaded engine is steady *at capacity* and the observe gates alone would
+  record it and keep sweeping (adversarial review). The arrivals are counted
+  over the hold shifted back by the mean latency: comparing with the hold's own
+  arrivals leaves the change in in-flight requests as error, about 5–7 % at the
+  minimum window and enough to flag a healthy level (found as CI flakiness).
+- **Artefacts prevented, not detected.** Lockstep: initial submits are
+  staggered and `max_tokens` jittered ±20 % (mean preserved), because
+  identical lengths synchronise completions and inject a periodic prefill
+  spike no gate sees. Prefix cache: every prompt is fresh seeded random words
+  behind a unique nonce, and `infer-observe` refuses windows with a prefix-cache
+  hit rate ≥ 1 % or speculative-decoding draft tokens. Length drift: two
+  probes (256 and 512 words) separate tokens per word from the fixed nonce/BOS
+  overhead, which a single probe folded into the ratio and which refused every
+  short-prompt level; a level whose mean prompt misses P by more than 5 % is
+  refused. Output length is exact under `ignore_eos`, so a level is refused if
+  any completion differs from its requested `max_tokens`, rather than
+  comparing a jittered sample mean with O.
+- **No GPU time on doomed runs, no lost results.** tp, window and minimum
+  requests are validated before any load, and `P + 1.2·O` is checked against
+  the engine's `max_model_len`. The report is rewritten after every level and
+  kept, with the error, on failure or interrupt.
+- **H3 restated.** The sweep records server-side TTFT p99 per level, so H3
+  becomes "per-layer SLO capacity (largest λ meeting the SLO) predicted within
+  20 %", which implies the crossover. Level spacing ×1.25 resolves ±12 %;
+  computing λ_max from a sweep report is the next step.
+- **Deferred.** Energy per level (DCGM through the E1a gate), streaming
+  client-side TTFT, and the λ_max / λ* computation in `infer-validate`.

@@ -1110,6 +1110,37 @@ one low-load window per tp for it. Older vLLM versions: pass
 `--tpot-metric vllm:time_per_output_token_seconds` and
 `--kv-usage-metric vllm:gpu_cache_usage_perc`.
 
+Or let `pat infer-benchmark` drive the load and record the windows. pat never
+starts vLLM; run one engine per tp with prefix caching and speculative decoding
+off, and with metrics scraped by Prometheus:
+
+```bash
+# On the GPU node, one engine at a time:
+vllm serve meta-llama/Llama-3.1-8B-Instruct --tensor-parallel-size 1 \
+  --no-enable-prefix-caching
+
+# Calibration points: keep 1, 4, 16 and 64 requests in flight
+pat infer-benchmark --endpoint http://gpu-node:8000 \
+  --prometheus http://prometheus:9090 --model meta-llama/Llama-3.1-8B-Instruct \
+  --tp 1 -p 900 -o 300 --concurrency 1,4,16,64 --report tp1.json >> points.jsonl
+
+# Restart vLLM at --tensor-parallel-size 2 and repeat with --tp 2 --concurrency 4,64.
+# SLO-capacity sweep (×1.25 spacing): Poisson arrivals, stops at saturation
+pat infer-benchmark ... --tp 2 --rate 2,2.5,3.1,3.9,4.9,6.1 --report sweep-tp2.json
+```
+
+Each level warms up (`--warmup-s`, default 60), holds for `--window-s`
+(default 120), and keeps the load on for `--scrape-lag-s` (default 15) while
+the window is read. Refused levels are kept in the report with the reason and
+never printed as points. The report is rewritten after every level, so a
+failure or Ctrl-C keeps the levels already paid for. An open sweep stops at
+the first level where the engine no longer keeps up with the arrivals. Initial requests are staggered and output lengths
+jittered ±20 % so completions do not fall into lockstep; every prompt is
+unique; two probe requests calibrate prompt length, and a level is refused
+when its mean prompt misses the target by more than 5 % or any completion is
+cut short of its requested length. Before any load, `P + 1.2·O` is checked
+against the engine's `max_model_len`. The API key comes from `PAT_VLLM_API_KEY` only and needs https.
+
 ```bash
 # points.jsonl — one window per line:
 # {"tp": 1, "batch": 4,  "prompt_tokens": 900, "output_tokens": 300, "tpot_ms": 30.4, "prefill_ms": 63.9}
