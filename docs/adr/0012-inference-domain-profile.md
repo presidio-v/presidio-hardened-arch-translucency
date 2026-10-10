@@ -230,3 +230,77 @@ records each level through `infer-observe`'s gates.
   computing λ_max from a sweep report is the next step.
 - **Deferred.** Energy per level (DCGM through the E1a gate), streaming
   client-side TTFT, and the λ_max / λ* computation in `infer-validate`.
+
+## Amendment — Phase 1d capacity validation (2026-10-10)
+
+`pat infer-validate --sweep` compares each layout's predicted λ_max with the
+λ_max its open-loop sweep measured (H3). Design reviewed with the advisor
+before implementation.
+
+- **Measured λ_max is a bracket.** Per SLO, a level passes when recorded,
+  unsaturated and within the SLO; fails when saturated or recorded above it;
+  otherwise (refused, not saturated) it carries no information. λ_hi is the
+  first failing level and λ_lo the highest passing level below it; passing
+  levels above λ_hi are flagged `non_monotone`, never averaged away. The point
+  estimate is the geometric midpoint. The metric is not interpolated: the
+  failing level is usually saturated with no gated TPOT, and latency is
+  convex in λ, so a chord is biased.
+- **Error is an interval.** `to_bracket` is 0 inside the bracket, else the
+  distance to the nearer edge; `worst` the distance to the farther edge, both
+  relative to the measured edge. H3 passes at worst ≤ 20 %, fails (the kill
+  criterion) at to-bracket > 25 %, and is inconclusive otherwise, as is any
+  non-monotone bracket (the measurement itself is suspect). An unrefined
+  ×1.25 bracket passes only a prediction in [λ_lo, 1.2·λ_lo]; within that band
+  the verdict holds for every truth in the bracket, but where the prediction
+  lands near λ_hi it is inconclusive (adversarial review corrected an earlier
+  claim here that unrefined sweeps can never pass).
+- **`--refine K` on the sweep.** After the sweep, K geometric bisection levels
+  run inside each measured bracket (saturation, and TPOT when
+  `--tpot-slo-ms` is given), classified exactly as the validator does; an
+  uninformative level ends that bracket's refinement. K = 2 narrows ×1.25 to
+  about ±3 % for roughly two extra levels per bracket, so the verdict no
+  longer depends on where in a wide bracket the truth sits.
+- **Predicted λ_max uses the recommender's predicate** (feasible, ρ ≤ 0.95,
+  SLOs met), bisected in log λ to 0.5 %, on the sweep's target P and O (fixed
+  before the sweep; the harness already refuses levels off P).
+- **Say what was tested.** The SLO row records which constraint ends the
+  predicted range (the SLO, or ρ = 0.95) and why the measured λ_hi failed
+  (recorded over the SLO, or saturated). A mismatch is inconclusive; when both
+  are utilisation, the row is marked `latency_tested: false`, because a pass
+  then validates capacity with a 5 % offset, not the latency model.
+- **The capacity row is a mechanism check, not H3.** It compares the model's
+  capacity (ρ = 1) with client-side saturation, which trips somewhat below
+  ρ = 1 depending on window and burstiness, and words its verdict
+  consistent / inconsistent so it is never read as the kill criterion.
+- **TTFT only on bucket edges.** vLLM's TTFT histogram buckets are coarse and
+  `histogram_quantile` interpolates inside them, so the reported p99 can be
+  off by up to 2×. Every level now records the cumulative TTFT fraction at
+  each edge (`ttft_cdf`), and a TTFT SLO is accepted only on an edge, judged
+  as fraction ≥ 0.99 — exact, no interpolation. TPOT (the window mean, which
+  is what the model predicts) is the primary SLO for the pilot. SLOs are
+  pre-registered after calibration and before the sweeps, and chosen to bind
+  inside the swept range for at least one layout.
+- **Raw readings on refused levels.** A refused window keeps its ungated
+  readings (`observed`: TPOT, batch, queue, completions) next to the reason,
+  never as a point, so the failing level of a bracket still says where the
+  engine was.
+- **λ\* replaced by a ranking at equal budget.** With a fixed budget the
+  switching rate is trivially the smaller layout's λ_max. The claim becomes
+  the order of λ_max between layouts with the same GPU count, predicted vs
+  measured, reported as agreeing only when the measured brackets do not
+  overlap and are monotone; predictions within 1 % are a tie and give no
+  predicted order. The calibrated model puts tp2×1 and tp1×2 within about 2 %
+  of each other for an 8B model on L40S, so the ranking needs refined
+  brackets and may be decided by the SLO rather than the KV cache. Until 1e,
+  sweeps of replica layouts (`instances` > 1) are refused, so the ranking is
+  implemented but not yet reachable from measured data.
+- **Sweep reports are unsigned operator files.** The validator checks schema,
+  open-loop mode, a clean end (no `error`), level shape (unique,
+  non-decreasing TTFT edges; printable model label), one workload (model,
+  P, O) across sweeps and the profile's model name when set, and echoes each
+  file's SHA-256 with the profile commitment. Signing belongs to the Phase 2
+  bundle.
+- **Deferred.** Layouts with n ≥ 2 replicas need `instances` in the harness
+  and an observe gate for exactly n engine series (vLLM data parallelism);
+  until then a sweep is one engine and `instances` must be 1. Energy per
+  level (DCGM via E1a) and the dated EU price catalog follow.

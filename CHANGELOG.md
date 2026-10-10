@@ -53,6 +53,22 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   `PAT_VLLM_API_KEY` only, https required, redirects refused.
 - `pat infer-observe` also refuses windows with a prefix-cache hit rate of
   1 % or more, or with speculative-decoding draft tokens.
+- `pat infer-validate --sweep` checks a profile against open-loop sweeps,
+  one per layout (Inference Arc Phase 1d). For capacity and for the given
+  TPOT / TTFT SLOs it brackets the measured λ_max between the last passing
+  and first failing level, predicts λ_max with the recommender's own
+  criteria, and reports the error as an interval with a verdict: pass when
+  the worst case is within 20 %, fail when even the nearer edge is more than
+  25 % off, otherwise inconclusive. It says whether the SLO or utilisation
+  ended each range, and words the capacity comparison as a consistency check.
+  A TTFT SLO must sit on a histogram bucket edge. Replica layouts are refused
+  until the harness can measure them.
+- `pat infer-benchmark --refine K` runs K bisection levels inside each
+  measured bracket after an open-loop sweep (saturation, and TPOT with
+  `--tpot-slo-ms`, which requires `--refine`), so a ×1.25 sweep resolves
+  λ_max to about ±3 %. Each level
+  now records the TTFT fraction under every histogram edge (`ttft_cdf`) and,
+  for refused levels too, the ungated window readings (`observed`).
 
 ### Changed
 

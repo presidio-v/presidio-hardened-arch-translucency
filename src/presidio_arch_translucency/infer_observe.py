@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Final
 
 from presidio_arch_translucency.infer_calibrate import (
@@ -105,6 +105,10 @@ class InferenceObserveError(ValueError):
     def __init__(self, message: str, code: str = "refused") -> None:
         super().__init__(message)
         self.code = code
+        # Ungated readings of the window when the queries succeeded; a refused
+        # window still says where the engine was (e.g. TPOT at an overloaded
+        # level), labelled as unchecked rather than turned into a point.
+        self.raw: dict[str, float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +219,29 @@ class ObservedWindow:
     little_ratio: float  # observed completions / Little's-law prediction
     prefill_included: bool
     kv_usage_included: bool
+    raw: dict[str, float | None] | None = field(default=None, compare=False)
+
+
+def raw_readings(values: dict[str, float | None], window_s: int) -> dict:
+    """The window's readings before any gate: labelled, never a point."""
+
+    def scaled(name: str, factor: float) -> float | None:
+        value = values.get(name)
+        return None if value is None else value * factor
+
+    requests = values.get("requests")
+    return {
+        "requests": requests,
+        "achieved_rps": None if requests is None else requests / window_s,
+        "batch": values.get("batch"),
+        "waiting": values.get("waiting"),
+        "tpot_ms": scaled("tpot_s", 1e3),
+        "prefill_ms": scaled("prefill_s", 1e3),
+        "e2e_ms": scaled("e2e_s", 1e3),
+        "prompt_tokens": values.get("prompt_tokens"),
+        "output_tokens": values.get("output_tokens"),
+        "preemptions": values.get("preemptions"),
+    }
 
 
 ScalarQuery = Callable[..., "float | None"]
@@ -282,6 +309,33 @@ def observe_vllm_window(
     except PrometheusError as exc:
         raise InferenceObserveError(str(exc)) from exc
 
+    raw = raw_readings(values, window_s)
+    try:
+        window = _gate_window(
+            values,
+            tp,
+            window_s,
+            min_requests,
+            prefill_max_batch,
+            include_kv_usage,
+            at,
+        )
+    except InferenceObserveError as exc:
+        exc.raw = raw
+        raise
+    return replace(window, raw=raw)
+
+
+def _gate_window(
+    values: dict[str, float | None],
+    tp: int,
+    window_s: int,
+    min_requests: int,
+    prefill_max_batch: float,
+    include_kv_usage: bool,
+    at: float,
+) -> ObservedWindow:
+    """Every steadiness gate, in order; the first failure refuses the window."""
     requests = values["requests"] or 0.0
     if requests < min_requests:
         raise InferenceObserveError(

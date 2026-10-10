@@ -930,16 +930,44 @@ def infer_validate_command(
         "--leave-one-out",
         help="Refit on the profile's own points minus one, predict that one.",
     ),
+    sweep: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--sweep",
+        help="Open-loop infer-benchmark report, one per layout (repeatable).",
+    ),
+    tpot_slo_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None, "--tpot-slo-ms", help="Sweep mode: mean TPOT SLO."
+    ),
+    ttft_slo_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--ttft-slo-ms",
+        help="Sweep mode: TTFT p99 SLO; must be a vLLM histogram bucket edge.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of tables."),
 ) -> None:
-    """Report a profile's prediction error on held-out points.
+    """Report a profile's prediction error on held-out points or λ sweeps.
 
     Held-out mode predicts measured points the profile never saw (use other tp
     degrees to test transfer across layers). Leave-one-out mode refits on the
     profile's committed points; folds that leave the fit unidentifiable are
-    skipped and counted.
+    skipped and counted. Sweep mode (--sweep) compares each layout's predicted
+    λ_max with the bracket its open-loop sweep measured (H3): pass when the
+    worst case over the bracket is within 20%, fail when even the nearer edge
+    is more than 25% off, otherwise inconclusive.
     """
+    if sweep:
+        _validate_sweeps_command(
+            calibration,
+            sweep,
+            tpot_slo_ms,
+            ttft_slo_ms,
+            as_json,
+            other_mode=bool(point or points_file or leave_one_out),
+        )
+        return
     try:
+        if tpot_slo_ms is not None or ttft_slo_ms is not None:
+            raise InferenceCalibrationError("SLOs apply to --sweep validation only")
         profile = load_inference_profile(calibration)
         if leave_one_out:
             if point or points_file:
@@ -1002,6 +1030,129 @@ def infer_validate_command(
             "than the full set)"
         )
     console.print(line)
+
+
+def _validate_sweeps_command(
+    calibration: str,
+    paths: list[str],
+    tpot_slo_ms: float | None,
+    ttft_slo_ms: float | None,
+    as_json: bool,
+    other_mode: bool,
+) -> None:
+    from presidio_arch_translucency.infer_sweep import (  # noqa: PLC0415
+        Slo,
+        load_sweep,
+        validate_sweeps,
+    )
+
+    try:
+        if other_mode:
+            raise InferenceCalibrationError(
+                "--sweep cannot be combined with --point/--points-file/--leave-one-out"
+            )
+        slo = Slo(tpot_ms=tpot_slo_ms, ttft_ms=ttft_slo_ms)
+        profile = load_inference_profile(calibration)
+        result = validate_sweeps(profile, [load_sweep(path) for path in paths], slo)
+    except (InferenceDomainError, InferenceCalibrationError) as exc:
+        err_console.print(f"[bold red]Validation error:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except InferenceCalibrationTamperError as exc:
+        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "INFER_VALIDATE_INVOCATION",
+        {"mode": "sweep", "layouts": len(result["layouts"])},
+    )
+    result = {
+        "profile": profile.name,
+        "commitment": profile.digest,
+        "mode": "sweep",
+        **result,
+    }
+    if as_json:
+        typer.echo(json.dumps(result, separators=(",", ":")))
+        return
+
+    metrics = ["saturation"] + (["slo"] if slo.given else [])
+    table = Table(
+        title=f"Inference capacity validation: {profile.name}", box=box.SIMPLE_HEAVY
+    )
+    for col in (
+        "Layout",
+        "λ_max",
+        "Measured",
+        "Predicted",
+        "Err % near/far",
+        "Verdict",
+    ):
+        table.add_column(col, justify="right")
+    for row in result["layouts"]:
+        label = row["layout"] + (" †" if row["extrapolated"] else "")
+        for metric in metrics:
+            entry = row[metric]
+            measured = entry["measured"]
+            error = entry["error"]
+            if metric == "saturation":
+                kind = "capacity (check)"
+            else:
+                kind = "SLO" if entry["latency_tested"] else "SLO (ρ-bound)"
+            table.add_row(
+                label,
+                kind,
+                _bracket_label(measured),
+                f"{entry['predicted']:.3g}",
+                _error_label(error),
+                error["verdict"],
+            )
+            label = ""
+    console.print(table)
+    for row in result["layouts"]:
+        reason = (row["slo"] or {}).get("error", {}).get("reason")
+        if reason:
+            console.print(f"[yellow]{row['layout']}: {reason}[/]", markup=True)
+    slo_text = ", ".join(
+        f"{name} {value:g} ms"
+        for name, value in (("TPOT", slo.tpot_ms), ("TTFT p99", slo.ttft_ms))
+        if value is not None
+    )
+    console.print(
+        f"SLO: {slo_text or 'none (capacity only)'} · pass ≤ "
+        f"{result['thresholds']['pass_pct']:g}% worst case · fail > "
+        f"{result['thresholds']['kill_pct']:g}% to the bracket · capacity (check) "
+        "compares model ρ = 1 with client-side saturation · SLO (ρ-bound): the "
+        "SLO never bound, so latency was not tested · † extrapolated"
+    )
+    for ranking in result["ranking"]:
+        predicted = " > ".join(ranking["predicted"]) if ranking["predicted"] else "tie"
+        agree = {True: "agree", False: "DISAGREE"}.get(
+            ranking["agree"], f"no order ({ranking['reason']})"
+        )
+        console.print(
+            f"{ranking['gpus']} GPU(s): predicted {predicted} · measured: {agree}"
+        )
+
+
+def _bracket_label(measured: dict) -> str:
+    lo, hi = measured["lambda_lo"], measured["lambda_hi"]
+    if lo is None and hi is None:
+        return "no data"
+    if hi is None:
+        text = f"> {lo:.3g}"
+    elif lo is None:
+        text = f"< {hi:.3g}"
+    else:
+        text = f"{lo:.3g}–{hi:.3g}"
+    if measured["non_monotone"]:
+        text += " (non-monotone)"
+    return text
+
+
+def _error_label(error: dict) -> str:
+    if error["to_bracket_pct"] is None:
+        return "—"
+    return f"{error['to_bracket_pct']:.1f} / {error['worst_pct']:.1f}"
 
 
 # -- observation -----------------------------------------------------------------------
@@ -1158,6 +1309,17 @@ def infer_benchmark_command(
         "--keep-going",
         help="Open loop: continue past a saturated level instead of stopping.",
     ),
+    refine: int = typer.Option(
+        0,
+        "--refine",
+        help="Open loop: bisection levels per measured bracket after the sweep "
+        "(2 narrows ×1.25 spacing to about ±3%).",
+    ),
+    tpot_slo_ms: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--tpot-slo-ms",
+        help="Open loop: also refine the bracket where mean TPOT crosses this SLO.",
+    ),
 ) -> None:
     """Drive load against a running vLLM engine and record each level.
 
@@ -1196,7 +1358,9 @@ def infer_benchmark_command(
         if result.point is not None:
             typer.echo(json.dumps(result.point, separators=(",", ":")))
         label = (
-            f"{result.mode} {result.level:g}: {result.completed} completed, "
+            f"{result.mode} {result.level:.4g}"
+            + (" (refine)" if result.refine else "")
+            + f": {result.completed} completed, "
             f"{result.achieved_rps:.2f} req/s"
         )
         if result.verdict == "recorded":
@@ -1228,6 +1392,8 @@ def infer_benchmark_command(
             engine=engine,
             seed=seed,
             stop_on_saturation=not keep_going,
+            refine=refine,
+            tpot_slo_ms=tpot_slo_ms,
         )
         if report is not None:
             # Fail before spending GPU time if the report cannot be written.

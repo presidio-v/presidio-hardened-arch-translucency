@@ -58,7 +58,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Final
 
 from presidio_arch_translucency import __version__
-from presidio_arch_translucency.infer_calibrate import InferencePoint
+from presidio_arch_translucency.infer_calibrate import (
+    InferenceCalibrationError,
+    InferencePoint,
+)
 from presidio_arch_translucency.infer_observe import (
     DEFAULT_WINDOW_S,
     InferenceObserveError,
@@ -66,12 +69,21 @@ from presidio_arch_translucency.infer_observe import (
     _window,
     observe_vllm_window,
 )
+from presidio_arch_translucency.infer_sweep import (
+    FAIL,
+    PASS,
+    Slo,
+    classify_saturation,
+    find_bracket,
+    slo_classifier,
+)
 from presidio_arch_translucency.inference import SUPPORTED_TP_DEGREES
 from presidio_arch_translucency.prometheus import (
     PrometheusError,
     _has_control_chars,
     _resolve_token,
     instant_query,
+    instant_query_vector,
 )
 
 API_KEY_ENV: Final[str] = "PAT_VLLM_API_KEY"  # noqa: S105 -- env var name
@@ -80,6 +92,8 @@ _USER_AGENT: Final[str] = f"pat-cli/{__version__}"
 MAX_IN_FLIGHT: Final[int] = 512
 MAX_CONCURRENCY: Final[int] = 4096
 MAX_RATE: Final[float] = 10_000.0
+#: Bisection levels per bracket; each costs one warm-up plus one hold.
+MAX_REFINE: Final[int] = 4
 MAX_TOKENS_TARGET: Final[int] = 200_000
 OUTPUT_JITTER: Final[float] = 0.2
 STAGGER_S: Final[float] = 2.0
@@ -468,11 +482,17 @@ class LevelReport:
     e2e_p99_ms: float | None
     mean_prompt_tokens: float | None
     mean_output_tokens: float | None
-    ttft_p99_ms: float | None  # server histogram over the window
+    ttft_p99_ms: float | None  # server histogram over the window (display only)
     verdict: str  # "recorded" or "refused"
     reason: str | None = None
     point: dict | None = None
     saturated: bool = False
+    # Ungated window readings, present on refused levels too (never a point).
+    observed: dict | None = None
+    # Cumulative TTFT fraction per histogram edge (seconds → fraction): exact at
+    # each edge, so a TTFT SLO set on an edge can be judged after the fact.
+    ttft_cdf: dict[str, float] | None = None
+    refine: bool = False  # run by --refine inside a measured bracket
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -509,6 +529,45 @@ def server_ttft_p99_ms(
     return None if value is None else value * 1e3
 
 
+def server_ttft_cdf(
+    prometheus: str,
+    selector: VllmSelector,
+    window_s: int,
+    eval_time: float,
+    vector_query: Callable[..., list[tuple[dict[str, str], float]]] | None = None,
+) -> dict[str, float] | None:
+    """Fraction of first tokens under each TTFT bucket edge over the window.
+
+    Exact at every edge, unlike ``histogram_quantile``, which interpolates
+    inside vLLM's coarse buckets. ``None`` when the histogram is absent.
+    """
+    vector_query = vector_query or instant_query_vector
+    query = (
+        "sum by (le) (rate("
+        f"vllm:time_to_first_token_seconds_bucket{selector.promql()}"
+        f"[{window_s}s]))"
+    )
+    try:
+        series = vector_query(
+            prometheus, query, token=_resolve_token(prometheus), eval_time=eval_time
+        )
+    except PrometheusError:
+        return None
+    rates: dict[float, float] = {}
+    for labels, value in series:
+        try:
+            rates[float(labels.get("le", ""))] = value
+        except ValueError:
+            continue
+    total = rates.get(math.inf)
+    if not total or total <= 0.0:
+        return None
+    return {
+        ("+Inf" if math.isinf(edge) else f"{edge:g}"): min(1.0, rate / total)
+        for edge, rate in sorted(rates.items())
+    }
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     endpoint: str
@@ -526,6 +585,10 @@ class BenchmarkConfig:
     engine: str = "0"
     seed: int = 0
     stop_on_saturation: bool = True
+    # Open loop: geometric bisection levels run inside each measured bracket
+    # (saturation, and TPOT when tpot_slo_ms is given) after the sweep.
+    refine: int = 0
+    tpot_slo_ms: float | None = None
 
     def __post_init__(self) -> None:
         # Everything observe would refuse is refused here, before any load.
@@ -573,6 +636,21 @@ class BenchmarkConfig:
                 raise InferenceBenchmarkError(f"{name} must be whole seconds")
             if not low <= value <= high:
                 raise InferenceBenchmarkError(f"{name} must be in [{low}, {high}]")
+        if isinstance(self.refine, bool) or not isinstance(self.refine, int):
+            raise InferenceBenchmarkError("refine must be an integer")
+        if not 0 <= self.refine <= MAX_REFINE:
+            raise InferenceBenchmarkError(f"refine must be in [0, {MAX_REFINE}]")
+        if self.refine and self.mode != "open":
+            raise InferenceBenchmarkError("refine applies to open-loop (--rate) sweeps")
+        if self.tpot_slo_ms is not None:
+            if not self.refine:
+                raise InferenceBenchmarkError(
+                    "tpot_slo_ms only steers --refine; give --refine too"
+                )
+            try:
+                Slo(tpot_ms=self.tpot_slo_ms)
+            except InferenceCalibrationError as exc:
+                raise InferenceBenchmarkError(str(exc)) from exc
 
     def longest_request_tokens(self) -> int:
         return self.prompt_tokens + math.ceil(self.output_tokens * (1 + OUTPUT_JITTER))
@@ -598,6 +676,8 @@ def run_level(
     wall_clock: Callable[[], float] | None = None,
     observe: Callable[..., object] | None = None,
     ttft: Callable[..., float | None] | None = None,
+    ttft_cdf: Callable[..., dict[str, float] | None] | None = None,
+    refine: bool = False,
 ) -> LevelReport:
     """Warm up, hold, read the window, verify lengths; never raise on refusal."""
     # Resolved at call time so tests can substitute module attributes.
@@ -606,6 +686,7 @@ def run_level(
     wall_clock = wall_clock or time.time
     observe = observe or observe_vllm_window
     ttft = ttft or server_ttft_p99_ms
+    ttft_cdf = ttft_cdf or server_ttft_cdf
 
     selector = VllmSelector(model_name=config.model, engine=config.engine)
     load = LoadGenerator(
@@ -642,6 +723,7 @@ def run_level(
         except InferenceObserveError as exc:
             refusal = exc
         ttft_p99 = ttft(config.prometheus, selector, config.window_s, eval_time)
+        cdf = ttft_cdf(config.prometheus, selector, config.window_s, eval_time)
     finally:
         load.stop()
 
@@ -697,6 +779,7 @@ def run_level(
         )
 
     point = getattr(observed, "point", None)
+    raw = getattr(observed, "raw", None) or getattr(refusal, "raw", None)
     return LevelReport(
         mode=config.mode,
         level=level,
@@ -720,6 +803,9 @@ def run_level(
             else None
         ),
         saturated=saturated,
+        observed=raw,
+        ttft_cdf=cdf,
+        refine=refine,
     )
 
 
@@ -754,7 +840,7 @@ def run_benchmark(
     ``report`` (optional) is filled in place, so a caller still holds the
     completed levels if a later one raises. In open mode a saturated level
     ends the sweep (higher λ only saturates harder) unless
-    ``stop_on_saturation`` is False.
+    ``stop_on_saturation`` is False; ``refine`` then bisects the brackets.
     """
     client = client or VllmClient(config.endpoint, config.model)
     if report is None:
@@ -775,4 +861,45 @@ def run_benchmark(
         if config.mode == "open" and result.saturated and config.stop_on_saturation:
             report.stopped_early = level != config.levels[-1]
             break
+    if config.refine:
+        _refine(config, client, report, on_level, level_kwargs)
     return report
+
+
+def _refine(
+    config: BenchmarkConfig,
+    client: VllmClient,
+    report: BenchmarkReport,
+    on_level: Callable[[LevelReport, BenchmarkReport], None] | None,
+    level_kwargs: dict,
+) -> None:
+    """Bisect each measured bracket geometrically, ``refine`` levels each.
+
+    ×1.25 sweep spacing brackets λ_max to ±12 %, too wide to judge a 20 %
+    claim; two bisections narrow it to ±3 %. Levels are classified exactly as
+    ``pat infer-validate --sweep`` does. A level that tells nothing (refused,
+    not saturated) ends that bracket's refinement rather than guessing.
+    """
+    classifiers = [classify_saturation]
+    if config.tpot_slo_ms is not None:
+        classifiers.append(slo_classifier(Slo(tpot_ms=config.tpot_slo_ms)))
+    for classify in classifiers:
+        bracket = find_bracket([lv.as_dict() for lv in report.levels], classify)
+        lo, hi = bracket.lo, bracket.hi
+        if lo is None or hi is None:
+            continue
+        for _ in range(config.refine):
+            mid = math.sqrt(lo * hi)
+            result = run_level(
+                config, client, mid, report.prompts, refine=True, **level_kwargs
+            )
+            report.levels.append(result)
+            if on_level is not None:
+                on_level(result, report)
+            outcome = classify(result.as_dict())
+            if outcome == FAIL:
+                hi = mid
+            elif outcome == PASS:
+                lo = mid
+            else:
+                break
