@@ -31,10 +31,11 @@ Artefacts the harness prevents rather than detects:
   any load, and ``P + 1.2·O`` is checked against the engine's
   ``max_model_len``. An open sweep stops at the first saturated level,
   detected from the client side (completions below 90 % of the arrivals
-  offered during the hold, a queue, or rejections): an overloaded engine is
-  steady at capacity, so the observe gates alone would record it and carry
-  on. Comparing with offered arrivals rather than the nominal λ keeps Poisson
-  noise out of the verdict.
+  that fed them, a queue, or rejections): an overloaded engine is steady at
+  capacity, so the observe gates alone would record it and carry on.
+  Comparing with actual arrivals rather than the nominal λ keeps Poisson
+  noise out of the verdict, and shifting the arrival window back by the mean
+  latency keeps out the requests still in flight at either end of the hold.
 
 The API key comes from ``PAT_VLLM_API_KEY`` only and requires https; requests
 time out and redirects are refused. Energy is not measured here yet.
@@ -87,8 +88,8 @@ DEFAULT_WARMUP_S: Final[int] = 60
 DEFAULT_SCRAPE_LAG_S: Final[int] = 15
 DEFAULT_REQUEST_TIMEOUT_S: Final[float] = 600.0
 PROBE_WORDS: Final[tuple[int, int]] = (256, 512)
-#: Open loop: completions below this fraction of the arrivals offered during
-#: the hold mean the engine did not keep up (saturated).
+#: Open loop: completions below this fraction of the arrivals that fed them
+#: (latency-shifted hold window) mean the engine did not keep up (saturated).
 SATURATION_THROUGHPUT_RATIO: Final[float] = 0.9
 #: Open loop: a mean queue above this during the hold means saturation.
 SATURATION_WAITING: Final[float] = 1.0
@@ -618,6 +619,7 @@ def run_level(
     )
     observed = None
     refusal: InferenceObserveError | None = None
+    load_started = clock()
     load.start()
     try:
         sleep(config.warmup_s)
@@ -652,6 +654,14 @@ def run_level(
     mean_output = sum(r.completion_tokens for r in ok) / len(ok) if ok else None
     achieved_rps = len(ok) / max(hold_end - hold_start, 1e-9)
     offered = load.arrived_between(hold_start, hold_end)
+    # The hold's completions arrived about one mean latency earlier. Counting
+    # arrivals over that shifted window removes the boundary error from
+    # requests in flight at either end of the hold, which otherwise reaches a
+    # few percent at short windows. The arrival rate is constant, so clamping
+    # the shift to the loaded period stays honest when latency explodes.
+    lag = sum(r.ended - r.started for r in ok) / len(ok) if ok else 0.0
+    lag = min(lag, hold_start - load_started)
+    fed = load.arrived_between(hold_start - lag, hold_end - lag)
 
     reasons: list[str] = []
     if refusal is not None:
@@ -681,7 +691,7 @@ def run_level(
         waiting = getattr(observed, "waiting", 0.0)
         saturated = (
             rejected > 0
-            or (offered > 0 and len(ok) < SATURATION_THROUGHPUT_RATIO * offered)
+            or (fed > 0 and len(ok) < SATURATION_THROUGHPUT_RATIO * fed)
             or waiting > SATURATION_WAITING
             or (refusal is not None and refusal.code in ("little", "preemption"))
         )

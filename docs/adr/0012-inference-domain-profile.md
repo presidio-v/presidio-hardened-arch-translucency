@@ -201,10 +201,13 @@ records each level through `infer-observe`'s gates.
   calibration points with a steady batch; open loop (Poisson λ, in-flight
   capped at 512, rejections counted) produces the per-layer SLO-capacity sweep.
   An open sweep stops at the first saturated level. Saturation is judged from
-  the client side — completions below 90 % of the arrivals offered during the
-  hold, a queue, rejections, or a preemption/Little's-law refusal — because an
+  the client side — completions below 90 % of the arrivals that fed them, a
+  queue, rejections, or a preemption/Little's-law refusal — because an
   overloaded engine is steady *at capacity* and the observe gates alone would
-  record it and keep sweeping (adversarial review).
+  record it and keep sweeping (adversarial review). The arrivals are counted
+  over the hold shifted back by the mean latency: comparing with the hold's own
+  arrivals leaves the change in in-flight requests as error, about 5–7 % at the
+  minimum window and enough to flag a healthy level (found as CI flakiness).
 - **Artefacts prevented, not detected.** Lockstep: initial submits are
   staggered and `max_tokens` jittered ±20 % (mean preserved), because
   identical lengths synchronise completions and inject a periodic prefill

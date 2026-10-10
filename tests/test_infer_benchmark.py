@@ -155,6 +155,10 @@ def _config(url, **kw):
     return BenchmarkConfig(**{**base, **kw})
 
 
+# Open-loop settings the fake engine sustains even on a slow runner: 100 rps
+# over a 400 ms scaled hold after a 100 ms warmup.
+_UNSATURATED = {"levels": (100.0,), "level": 100.0, "window_s": 800, "warmup_s": 200}
+
 EXACT = PromptCalibration(tokens_per_word=4 / 3, overhead_tokens=11.0)
 
 
@@ -416,8 +420,10 @@ def test_open_level_saturation_from_client_side_signals(vllm, make_vllm):
     result = _run(slow, mode="open", levels=(1000.0,), level=1000.0)
     assert result.offered > 20 and result.completed < 0.9 * result.offered
     assert result.saturated
-    # The same rate against a fast engine is not saturated.
-    fine = _run(vllm, mode="open", levels=(1000.0,), level=1000.0)
+    # A fast engine well below its capacity is not saturated. The rate stays
+    # far under what the in-process fake serves on a starved CI runner, and
+    # the longer hold still collects enough arrivals.
+    fine = _run(vllm, mode="open", **_UNSATURATED)
     assert fine.offered > 20 and not fine.saturated, fine
     # A queue during the hold also means saturation, even at matching λ.
     queued = _run(
@@ -465,7 +471,13 @@ def test_server_ttft_query_and_failure_mode():
 def test_open_sweep_stops_at_first_saturated_level(vllm):
     levels = []
     queues = iter([0.0, 6.0, 0.0])  # the second level builds a queue
-    config = _config(vllm.url, mode="open", levels=(1000.0, 1100.0, 1200.0))
+    config = _config(
+        vllm.url,
+        mode="open",
+        levels=(100.0, 110.0, 120.0),
+        window_s=_UNSATURATED["window_s"],
+        warmup_s=_UNSATURATED["warmup_s"],
+    )
     report = run_benchmark(
         config,
         on_level=lambda result, current: levels.append(len(current.levels)),
@@ -473,7 +485,7 @@ def test_open_sweep_stops_at_first_saturated_level(vllm):
         observe=lambda *a, **k: _observed(waiting=next(queues)),
         ttft=lambda *a, **k: None,
     )
-    assert [lv.level for lv in report.levels] == [1000.0, 1100.0]
+    assert [lv.level for lv in report.levels] == [100.0, 110.0]
     assert report.stopped_early and levels == [1, 2]
     data = report.as_dict()
     assert data["schema"] == "presidio-hardened/inference-benchmark@1"
