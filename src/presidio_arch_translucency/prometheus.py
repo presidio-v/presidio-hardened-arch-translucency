@@ -162,12 +162,21 @@ def _parsed_prometheus_url(base_url: str) -> urllib.parse.ParseResult:
     return parsed
 
 
-def _build_query_url(base_url: str, query: str) -> str:
-    """Build the instant-query URL, rejecting non-HTTP(S) schemes."""
+def _build_query_url(base_url: str, query: str, eval_time: float | None = None) -> str:
+    """Build the instant-query URL, rejecting non-HTTP(S) schemes.
+
+    ``eval_time`` (Unix seconds) pins the evaluation instant, so several
+    queries can describe the same window; omitted, Prometheus uses "now".
+    """
     _parsed_prometheus_url(base_url)
     _reject_control_chars(query, "query")
+    params: dict[str, str] = {"query": query}
+    if eval_time is not None:
+        if not math.isfinite(eval_time) or eval_time <= 0:
+            raise PrometheusError(f"invalid evaluation time {eval_time!r}")
+        params["time"] = repr(float(eval_time))
     root = base_url.rstrip("/")
-    return f"{root}/api/v1/query?{urllib.parse.urlencode({'query': query})}"
+    return f"{root}/api/v1/query?{urllib.parse.urlencode(params)}"
 
 
 def _token_from_env() -> str | None:
@@ -198,6 +207,7 @@ def instant_query(
     query: str,
     token: str | None = None,
     timeout: float = 30.0,
+    eval_time: float | None = None,
 ) -> float | None:
     """
     Run a single instant PromQL query and return its scalar value.
@@ -207,7 +217,7 @@ def instant_query(
     :class:`PrometheusError` on transport errors, non-success responses, or
     malformed payloads.
     """
-    url = _build_query_url(base_url, query)
+    url = _build_query_url(base_url, query, eval_time)
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -268,6 +278,7 @@ def instant_query_vector(
     query: str,
     token: str | None = None,
     timeout: float = 30.0,
+    eval_time: float | None = None,
 ) -> list[tuple[dict[str, str], float]]:
     """
     Run an instant PromQL query and return **every** series with its label set.
@@ -280,7 +291,7 @@ def instant_query_vector(
     E1a platform gate, which inspects the label sets (not just a scalar) to
     prove a real power interface exists.
     """
-    url = _build_query_url(base_url, query)
+    url = _build_query_url(base_url, query, eval_time)
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

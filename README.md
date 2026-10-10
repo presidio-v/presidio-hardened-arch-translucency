@@ -1090,6 +1090,26 @@ batch, mean inter-token latency, and at low load the mean prefill time), at
 tp = 1 with two different loads and at one or more tp > 1. Then fit a named
 profile for that model and GPU:
 
+Measure them straight from Prometheus with `pat infer-observe` (vLLM 0.31
+metric names; one engine per window, filtered by `--model-name` / `--engine`):
+
+```bash
+# Drive steady load at the engine, then record the last two minutes as a point:
+pat infer-observe --prometheus https://prometheus.example:9090 --tp 2 \
+  --model-name meta-llama/Llama-3.1-8B-Instruct --window-s 120 >> points.jsonl
+```
+
+A window is refused (exit 2, nothing printed) unless it is steady: one engine
+series across the whole window, no restart or preemption, a running batch that
+never dropped to 0 and stayed within a 25% coefficient of variation,
+completions consistent with Little's law (±50%), a window at least five times
+the mean request latency, and at least `--min-requests` completions. Hold the
+load constant for the whole window. Prefill time is included only when
+the queue was empty and the mean batch at most `--prefill-max-batch`, so take
+one low-load window per tp for it. Older vLLM versions: pass
+`--tpot-metric vllm:time_per_output_token_seconds` and
+`--kv-usage-metric vllm:gpu_cache_usage_perc`.
+
 ```bash
 # points.jsonl — one window per line:
 # {"tp": 1, "batch": 4,  "prompt_tokens": 900, "output_tokens": 300, "tpot_ms": 30.4, "prefill_ms": 63.9}

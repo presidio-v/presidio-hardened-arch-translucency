@@ -64,6 +64,7 @@ from presidio_arch_translucency.security import (
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
+info_console = Console(stderr=True)
 
 _UNCALIBRATED_NOTE = (
     "[yellow]⚠ Modelled, uncalibrated: overhead α/β and engine efficiencies are "
@@ -1000,3 +1001,99 @@ def infer_validate_command(
             "than the full set)"
         )
     console.print(line)
+
+
+# -- observation -----------------------------------------------------------------------
+
+
+def infer_observe_command(
+    prometheus: str = typer.Option(
+        ..., "--prometheus", help="Prometheus base URL scraping the vLLM engine."
+    ),
+    tp: int = typer.Option(
+        ..., "--tp", help="Tensor-parallel degree of the engine (not in metrics)."
+    ),
+    window_s: int = typer.Option(
+        120, "--window-s", help="Steady-state window to average over (30–3600 s)."
+    ),
+    model_name: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--model-name", help="Match the vLLM model_name label exactly."
+    ),
+    engine: str = typer.Option(
+        "0", "--engine", help="Match the vLLM engine label (data-parallel rank)."
+    ),
+    min_requests: int = typer.Option(
+        20, "--min-requests", help="Refuse windows with fewer completed requests."
+    ),
+    prefill_max_batch: float = typer.Option(
+        4.0,
+        "--prefill-max-batch",
+        help="Include prefill time only at or below this mean batch, with no queue.",
+    ),
+    no_kv_usage: bool = typer.Option(
+        False, "--no-kv-usage", help="Omit KV-cache usage from the point."
+    ),
+    tpot_metric: str = typer.Option(
+        "vllm:inter_token_latency_seconds",
+        "--tpot-metric",
+        help="TPOT histogram (older vLLM: vllm:time_per_output_token_seconds).",
+    ),
+    kv_usage_metric: str = typer.Option(
+        "vllm:kv_cache_usage_perc",
+        "--kv-usage-metric",
+        help="KV usage gauge (older vLLM: vllm:gpu_cache_usage_perc).",
+    ),
+) -> None:
+    """Read one steady-state vLLM window from Prometheus as a calibration point.
+
+    Prints one JSON line for `pat infer-calibrate --points-file`; append it
+    with `>> points.jsonl`. All queries share one evaluation instant. Refuses
+    windows that are not steady: more than one engine series over the window,
+    a counter reset, preemptions, a running batch that reached 0 or varied by
+    CV ≥ 0.25, completions disagreeing with Little's law by more than 50%, a
+    window shorter than 5 mean request latencies, or too few requests.
+    Bearer token from PAT_PROMETHEUS_TOKEN only (https required).
+    """
+    from presidio_arch_translucency.infer_observe import (  # noqa: PLC0415
+        InferenceObserveError,
+        VllmSelector,
+        observe_vllm_window,
+    )
+
+    try:
+        observed = observe_vllm_window(
+            prometheus,
+            tp,
+            VllmSelector(model_name=model_name, engine=engine),
+            window_s=window_s,
+            min_requests=min_requests,
+            prefill_max_batch=prefill_max_batch,
+            include_kv_usage=not no_kv_usage,
+            tpot_metric=tpot_metric,
+            kv_usage_metric=kv_usage_metric,
+        )
+    except (InferenceObserveError, InferenceCalibrationError) as exc:
+        err_console.print(f"[bold red]Window refused:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    log_security_event(
+        "INFER_OBSERVE_INVOCATION",
+        {
+            "tp": tp,
+            "window_s": observed.window_s,
+            "prefill": observed.prefill_included,
+        },
+    )
+    typer.echo(json.dumps(observed.point.as_row(), separators=(",", ":")))
+    p = observed.point
+    summary = (
+        f"tp={p.tp} batch={p.batch:.2f} TPOT={p.tpot_ms:.2f} ms over "
+        f"{observed.window_s}s, {observed.requests:.0f} requests, batch CV "
+        f"{observed.batch_cv:.2f}, Little ratio {observed.little_ratio:.2f}"
+    )
+    summary += (
+        f", prefill {p.prefill_ms:.1f} ms"
+        if observed.prefill_included
+        else ", prefill omitted (queue or batch too high)"
+    )
+    info_console.print(f"[green]{summary}[/]")
