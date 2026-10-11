@@ -1087,9 +1087,13 @@ def _validate_sweeps_command(
         "Err % near/far",
         "Verdict",
     ):
-        table.add_column(col, justify="right")
+        table.add_column(col, justify="right", no_wrap=col == "Layout")
     for row in result["layouts"]:
-        label = row["layout"] + (" †" if row["extrapolated"] else "")
+        label = (
+            row["layout"]
+            + (" (server-routed)" if row["routing"] == "server" else "")
+            + (" †" if row["extrapolated"] else "")
+        )
         for metric in metrics:
             entry = row[metric]
             measured = entry["measured"]
@@ -1124,6 +1128,12 @@ def _validate_sweeps_command(
         "compares model ρ = 1 with client-side saturation · SLO (ρ-bound): the "
         "SLO never bound, so latency was not tested · † extrapolated"
     )
+    if any(row["routing"] == "server" for row in result["layouts"]):
+        console.print(
+            "[yellow]server-routed: the server's balancer fed the replicas, not "
+            "the model's random split; keep these rows out of H3[/]",
+            markup=True,
+        )
     for ranking in result["ranking"]:
         predicted = " > ".join(ranking["predicted"]) if ranking["predicted"] else "tie"
         agree = {True: "agree", False: "DISAGREE"}.get(
@@ -1265,8 +1275,11 @@ def _parse_levels(raw: str, mode: str) -> tuple[float, ...]:
 
 
 def infer_benchmark_command(
-    endpoint: str = typer.Option(
-        ..., "--endpoint", help="vLLM OpenAI-compatible base URL (pat sends load)."
+    endpoint: list[str] = typer.Option(  # noqa: B008
+        ...,
+        "--endpoint",
+        help="vLLM OpenAI-compatible base URL (pat sends load). Repeat once per "
+        "replica to route arrivals at random across independent servers.",
     ),
     prometheus: str = typer.Option(
         ..., "--prometheus", help="Prometheus base URL scraping that engine."
@@ -1300,6 +1313,13 @@ def infer_benchmark_command(
         20, "--min-requests", help="Refuse windows with fewer completions."
     ),
     engine: str = typer.Option("0", "--engine", help="vLLM engine label."),
+    instances: Optional[int] = typer.Option(  # noqa: UP045
+        None,
+        "--instances",
+        help="Open loop: replica engines in the layout (default: one per "
+        "--endpoint). More than one endpoint's worth means one endpoint fronts "
+        "all engines (vLLM data parallelism).",
+    ),
     seed: int = typer.Option(0, "--seed", help="Seed for prompts and arrivals."),
     report: Optional[str] = typer.Option(  # noqa: UP045
         None, "--report", help="Write the per-level JSON report to this new file."
@@ -1355,7 +1375,8 @@ def infer_benchmark_command(
         os.fsync(report_fd)
 
     def on_level(result: LevelReport, current: BenchmarkReport) -> None:
-        if result.point is not None:
+        # Replica levels are validation data: never offered as points.
+        if result.point is not None and result.instances == 1:
             typer.echo(json.dumps(result.point, separators=(",", ":")))
         label = (
             f"{result.mode} {result.level:.4g}"
@@ -1377,7 +1398,9 @@ def infer_benchmark_command(
         mode = "closed" if concurrency is not None else "open"
         levels = _parse_levels(concurrency or rate or "", mode)
         config = BenchmarkConfig(
-            endpoint=endpoint,
+            endpoint=endpoint[0],
+            extra_endpoints=tuple(endpoint[1:]),
+            instances=len(endpoint) if instances is None else instances,
             prometheus=prometheus,
             model=model,
             tp=tp,
@@ -1426,7 +1449,12 @@ def infer_benchmark_command(
     recorded = sum(1 for level in result.levels if level.verdict == "recorded")
     log_security_event(
         "INFER_BENCHMARK_INVOCATION",
-        {"mode": config.mode, "levels": len(result.levels), "recorded": recorded},
+        {
+            "mode": config.mode,
+            "instances": config.instances,
+            "levels": len(result.levels),
+            "recorded": recorded,
+        },
     )
     info_console.print(
         f"{recorded}/{len(result.levels)} level(s) recorded"

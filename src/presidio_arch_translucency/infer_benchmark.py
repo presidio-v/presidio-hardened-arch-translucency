@@ -1,7 +1,7 @@
 """
 vLLM load harness for calibration points and λ sweeps (Inference Arc Phase 1c).
 
-`pat infer-benchmark` drives load against a vLLM engine the operator already
+`pat infer-benchmark` drives load against vLLM engines the operator already
 runs (pat never launches engines, models or GPUs) and records each level with
 `pat infer-observe`'s steadiness gates. Two submit policies share one loop:
 
@@ -37,6 +37,18 @@ Artefacts the harness prevents rather than detects:
   noise out of the verdict, and shifting the arrival window back by the mean
   latency keeps out the requests still in flight at either end of the hold.
 
+Replica layouts (``instances`` n ≥ 2, open loop only) are n engines of tp
+GPUs. Given one endpoint per replica, the harness routes each arrival to a
+uniformly random endpoint, which splits the Poisson stream into n independent
+Poisson streams of λ/n — the model's assumption exactly; round robin or
+join-shortest-queue would smooth arrivals the model does not see. One
+endpoint fronting all engines (vLLM data parallelism) is read too, but its
+report says ``routing: "server"`` because the server's balancer is not the
+modelled one. Every engine passes every observe gate on its own, the batches
+must be balanced, and a queue on any engine saturates the level. Replica
+levels are validation data only; calibration points come from single
+engines.
+
 The API key comes from ``PAT_VLLM_API_KEY`` only and requires https; requests
 time out and redirects are refused. Energy is not measured here yet.
 """
@@ -52,7 +64,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Final
@@ -64,9 +76,11 @@ from presidio_arch_translucency.infer_calibrate import (
 )
 from presidio_arch_translucency.infer_observe import (
     DEFAULT_WINDOW_S,
+    MAX_REPLICAS,
     InferenceObserveError,
     VllmSelector,
     _window,
+    observe_vllm_replicas,
     observe_vllm_window,
 )
 from presidio_arch_translucency.infer_sweep import (
@@ -89,6 +103,7 @@ from presidio_arch_translucency.prometheus import (
 API_KEY_ENV: Final[str] = "PAT_VLLM_API_KEY"  # noqa: S105 -- env var name
 _USER_AGENT: Final[str] = f"pat-cli/{__version__}"
 
+#: In-flight cap per endpoint (a replica layout scales it by its endpoints).
 MAX_IN_FLIGHT: Final[int] = 512
 MAX_CONCURRENCY: Final[int] = 4096
 MAX_RATE: Final[float] = 10_000.0
@@ -98,6 +113,8 @@ MAX_TOKENS_TARGET: Final[int] = 200_000
 OUTPUT_JITTER: Final[float] = 0.2
 STAGGER_S: Final[float] = 2.0
 DRIFT_TOLERANCE: Final[float] = 0.05
+#: Replicas: probe tokens per word must agree this closely across endpoints.
+PROBE_AGREEMENT: Final[float] = 0.01
 DEFAULT_WARMUP_S: Final[int] = 60
 DEFAULT_SCRAPE_LAG_S: Final[int] = 15
 DEFAULT_REQUEST_TIMEOUT_S: Final[float] = 600.0
@@ -329,6 +346,7 @@ class _Record:
     prompt_tokens: int | None
     completion_tokens: int | None
     error: str | None
+    route: int = 0  # index of the endpoint that served it
 
 
 class LoadGenerator:
@@ -336,7 +354,7 @@ class LoadGenerator:
 
     def __init__(
         self,
-        client: VllmClient,
+        client: VllmClient | Sequence[VllmClient],
         mode: str,
         level: float,
         prompt_words: int,
@@ -346,7 +364,17 @@ class LoadGenerator:
     ) -> None:
         if mode not in ("closed", "open"):
             raise InferenceBenchmarkError("mode must be 'closed' or 'open'")
-        self.client = client
+        # Replicas: each open-loop arrival goes to a uniformly random endpoint,
+        # which splits a Poisson stream into independent Poisson streams of
+        # λ/n — exactly the model's assumption. Smarter routing (round robin,
+        # join-shortest-queue) would smooth arrivals the model does not see.
+        self.clients = [client] if isinstance(client, VllmClient) else list(client)
+        if not self.clients:
+            raise InferenceBenchmarkError("give at least one endpoint")
+        if mode == "closed" and len(self.clients) != 1:
+            raise InferenceBenchmarkError("closed loop drives one endpoint")
+        self.client = self.clients[0]
+        self.max_in_flight = MAX_IN_FLIGHT * len(self.clients)
         self.mode = mode
         self.level = level
         self.prompt_words = prompt_words
@@ -378,13 +406,13 @@ class LoadGenerator:
     def workers_alive(self) -> int:
         return sum(1 for thread in self._threads if thread.is_alive())
 
-    def _one(self, rng: random.Random) -> None:
+    def _one(self, rng: random.Random, route: int = 0) -> None:
         # Each rng belongs to one worker or one request: no sharing, no lock.
         prompt = make_prompt(self.prompt_words, rng)
         max_tokens = jittered_max_tokens(self.output_tokens, rng)
         started = self.clock()
         try:
-            result = self.client.complete(prompt, max_tokens)
+            result = self.clients[route].complete(prompt, max_tokens)
             record = _Record(
                 started,
                 self.clock(),
@@ -392,10 +420,11 @@ class LoadGenerator:
                 result.prompt_tokens,
                 result.completion_tokens,
                 None,
+                route,
             )
         except Exception as exc:  # noqa: BLE001 -- a worker must never die silently
             record = _Record(
-                started, self.clock(), max_tokens, None, None, str(exc)[:200]
+                started, self.clock(), max_tokens, None, None, str(exc)[:200], route
             )
         with self._lock:
             self.records.append(record)
@@ -410,20 +439,22 @@ class LoadGenerator:
     def _open_dispatcher(self) -> None:
         arrivals = random.Random(f"{self.seed}:arrivals")  # noqa: S311 -- load shape
         prompts = random.Random(f"{self.seed}:prompts")  # noqa: S311 -- load shape
+        routes = random.Random(f"{self.seed}:route")  # noqa: S311 -- load shape
         assert self._pool is not None
         while not self._stop.wait(arrivals.expovariate(self.level)):
+            route = routes.randrange(len(self.clients))
             with self._lock:
                 self.arrivals.append(self.clock())
-                if self._in_flight >= MAX_IN_FLIGHT:
+                if self._in_flight >= self.max_in_flight:
                     self.rejections.append(self.clock())
                     continue
                 self._in_flight += 1
                 request_rng = random.Random(prompts.getrandbits(64))  # noqa: S311
-            self._pool.submit(self._open_task, request_rng)
+            self._pool.submit(self._open_task, request_rng, route)
 
-    def _open_task(self, rng: random.Random) -> None:
+    def _open_task(self, rng: random.Random, route: int) -> None:
         try:
-            self._one(rng)
+            self._one(rng, route)
         finally:
             with self._lock:
                 self._in_flight -= 1
@@ -438,7 +469,7 @@ class LoadGenerator:
                 for i in range(count)
             ]
         else:
-            self._pool = ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT)
+            self._pool = ThreadPoolExecutor(max_workers=self.max_in_flight)
             self._threads = [
                 threading.Thread(target=self._open_dispatcher, daemon=True)
             ]
@@ -493,6 +524,13 @@ class LevelReport:
     # each edge, so a TTFT SLO set on an edge can be judged after the fact.
     ttft_cdf: dict[str, float] | None = None
     refine: bool = False  # run by --refine inside a measured bracket
+    instances: int = 1
+    # Replicas: hold completions per endpoint (client routing) and the largest
+    # engine batch deviation from the replicas' mean (server readings).
+    routed: list[int] | None = None
+    imbalance: float | None = None
+    # Observe's refusal class (e.g. "little", "preemption", "imbalance").
+    refusal_code: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -589,6 +627,22 @@ class BenchmarkConfig:
     # (saturation, and TPOT when tpot_slo_ms is given) after the sweep.
     refine: int = 0
     tpot_slo_ms: float | None = None
+    # Replica layouts (open loop only): ``instances`` engines of ``tp`` GPUs
+    # each. With ``extra_endpoints`` the harness routes each arrival to one of
+    # ``(endpoint, *extra_endpoints)`` at random; without, one endpoint fronts
+    # all engines (vLLM data parallelism) and the server routes.
+    instances: int = 1
+    extra_endpoints: tuple[str, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.endpoint, *self.extra_endpoints)
+
+    @property
+    def routing(self) -> str:
+        if self.instances == 1:
+            return "single"
+        return "client-random" if self.extra_endpoints else "server"
 
     def __post_init__(self) -> None:
         # Everything observe would refuse is refused here, before any load.
@@ -651,9 +705,36 @@ class BenchmarkConfig:
                 Slo(tpot_ms=self.tpot_slo_ms)
             except InferenceCalibrationError as exc:
                 raise InferenceBenchmarkError(str(exc)) from exc
+        if isinstance(self.instances, bool) or not isinstance(self.instances, int):
+            raise InferenceBenchmarkError("instances must be an integer")
+        if not 1 <= self.instances <= MAX_REPLICAS:
+            raise InferenceBenchmarkError(f"instances must be in [1, {MAX_REPLICAS}]")
+        if self.instances > 1 and self.mode != "open":
+            raise InferenceBenchmarkError(
+                "replica layouts are measured open loop only (--rate); calibration "
+                "points come from single engines"
+            )
+        if not isinstance(self.extra_endpoints, tuple):
+            raise InferenceBenchmarkError("extra_endpoints must be a tuple")
+        if self.extra_endpoints and len(self.endpoints) != self.instances:
+            raise InferenceBenchmarkError(
+                f"{len(self.endpoints)} endpoints for {self.instances} instances; "
+                "give one endpoint per replica, or one endpoint fronting all"
+            )
+        if len(set(self.endpoints)) != len(self.endpoints):
+            raise InferenceBenchmarkError("replica endpoints must be distinct")
+        if self.instances > 1 and self.engine != "0":
+            raise InferenceBenchmarkError(
+                "--engine selects one engine; replica layouts read every engine "
+                "of the model"
+            )
 
     def longest_request_tokens(self) -> int:
         return self.prompt_tokens + math.ceil(self.output_tokens * (1 + OUTPUT_JITTER))
+
+
+def _clients(client: VllmClient | Sequence[VllmClient]) -> list[VllmClient]:
+    return [client] if isinstance(client, VllmClient) else list(client)
 
 
 def check_context_fits(config: BenchmarkConfig, client: VllmClient) -> None:
@@ -668,7 +749,7 @@ def check_context_fits(config: BenchmarkConfig, client: VllmClient) -> None:
 
 def run_level(
     config: BenchmarkConfig,
-    client: VllmClient,
+    client: VllmClient | Sequence[VllmClient],
     level: float,
     prompts: PromptCalibration,
     sleep: Callable[[float], None] | None = None,
@@ -678,6 +759,7 @@ def run_level(
     ttft: Callable[..., float | None] | None = None,
     ttft_cdf: Callable[..., dict[str, float] | None] | None = None,
     refine: bool = False,
+    observe_replicas: Callable[..., object] | None = None,
 ) -> LevelReport:
     """Warm up, hold, read the window, verify lengths; never raise on refusal."""
     # Resolved at call time so tests can substitute module attributes.
@@ -687,8 +769,13 @@ def run_level(
     observe = observe or observe_vllm_window
     ttft = ttft or server_ttft_p99_ms
     ttft_cdf = ttft_cdf or server_ttft_cdf
+    observe_replicas = observe_replicas or observe_vllm_replicas
 
-    selector = VllmSelector(model_name=config.model, engine=config.engine)
+    replicas = config.instances > 1
+    # Replicas: TTFT pools every engine of the model (the user-facing SLO).
+    selector = VllmSelector(
+        model_name=config.model, engine=None if replicas else config.engine
+    )
     load = LoadGenerator(
         client,
         config.mode,
@@ -712,14 +799,25 @@ def run_level(
         # Keep the load on until Prometheus has scraped the end of the hold.
         sleep(config.scrape_lag_s)
         try:
-            observed = observe(
-                config.prometheus,
-                config.tp,
-                selector,
-                window_s=config.window_s,
-                min_requests=config.min_requests,
-                eval_time=eval_time,
-            )
+            if replicas:
+                observed = observe_replicas(
+                    config.prometheus,
+                    config.tp,
+                    config.instances,
+                    model_name=config.model,
+                    window_s=config.window_s,
+                    min_requests=config.min_requests,
+                    eval_time=eval_time,
+                )
+            else:
+                observed = observe(
+                    config.prometheus,
+                    config.tp,
+                    selector,
+                    window_s=config.window_s,
+                    min_requests=config.min_requests,
+                    eval_time=eval_time,
+                )
         except InferenceObserveError as exc:
             refusal = exc
         ttft_p99 = ttft(config.prometheus, selector, config.window_s, eval_time)
@@ -768,18 +866,53 @@ def run_level(
             "(context limit or early stop)"
         )
 
+    # Client routing: failures on some endpoints only are an endpoint fault.
+    # Their missing completions would trip the throughput signal and cap the
+    # bracket at whatever level the fault hit, so the level says nothing
+    # about capacity unless a server-side signal shows saturation.
+    failed_routes = sorted({r.route for r in held if r.error is not None})
+    endpoint_fault = (
+        replicas
+        and bool(config.extra_endpoints)
+        and 0 < len(failed_routes) < len(config.endpoints)
+    )
+    if endpoint_fault:
+        reasons.append(
+            f"requests failed on endpoint(s) {', '.join(map(str, failed_routes))} "
+            "only: an endpoint fault, not capacity"
+        )
+
     saturated = False
     if config.mode == "open":
-        waiting = getattr(observed, "waiting", 0.0)
+        # A refused window still reports its queue (the worst engine's, for
+        # replicas): a queue is saturation whatever else refused the window.
+        waiting = (
+            observed.waiting
+            if observed is not None
+            else (getattr(refusal, "raw", None) or {}).get("waiting") or 0.0
+        )
         saturated = (
             rejected > 0
-            or (fed > 0 and len(ok) < SATURATION_THROUGHPUT_RATIO * fed)
+            or (
+                not endpoint_fault
+                and fed > 0
+                and len(ok) < SATURATION_THROUGHPUT_RATIO * fed
+            )
             or waiting > SATURATION_WAITING
             or (refusal is not None and refusal.code in ("little", "preemption"))
         )
 
     point = getattr(observed, "point", None)
     raw = getattr(observed, "raw", None) or getattr(refusal, "raw", None)
+    row = point.as_row() if isinstance(point, InferencePoint) else None
+    if row is not None and replicas:
+        # Validation only: calibration refuses rows with unknown keys.
+        row["instances"] = config.instances
+    routed = None
+    if replicas and config.extra_endpoints:
+        routed = [0] * len(config.endpoints)
+        for record in ok:
+            routed[record.route] += 1
     return LevelReport(
         mode=config.mode,
         level=level,
@@ -797,15 +930,19 @@ def run_level(
         ttft_p99_ms=ttft_p99,
         verdict="refused" if reasons else "recorded",
         reason="; ".join(reasons) or None,
-        point=(
-            point.as_row()
-            if not reasons and isinstance(point, InferencePoint)
-            else None
-        ),
+        point=row if not reasons else None,
         saturated=saturated,
         observed=raw,
         ttft_cdf=cdf,
         refine=refine,
+        instances=config.instances,
+        routed=routed,
+        imbalance=(raw or {}).get("imbalance") if replicas else None,
+        refusal_code=(
+            "endpoint"
+            if endpoint_fault
+            else (None if refusal is None else refusal.code)
+        ),
     )
 
 
@@ -830,7 +967,7 @@ class BenchmarkReport:
 
 def run_benchmark(
     config: BenchmarkConfig,
-    client: VllmClient | None = None,
+    client: VllmClient | Sequence[VllmClient] | None = None,
     on_level: Callable[[LevelReport, BenchmarkReport], None] | None = None,
     report: BenchmarkReport | None = None,
     **level_kwargs: object,
@@ -842,17 +979,46 @@ def run_benchmark(
     ends the sweep (higher λ only saturates harder) unless
     ``stop_on_saturation`` is False; ``refine`` then bisects the brackets.
     """
-    client = client or VllmClient(config.endpoint, config.model)
+    clients = (
+        _clients(client)
+        if client is not None
+        else [VllmClient(endpoint, config.model) for endpoint in config.endpoints]
+    )
+    if len(clients) != len(config.endpoints):
+        raise InferenceBenchmarkError(
+            f"{len(clients)} clients for {len(config.endpoints)} endpoints"
+        )
+    client = clients[0] if len(clients) == 1 else clients
     if report is None:
         report = BenchmarkReport(config={})
     report.config = {
         key: value
         for key, value in asdict(config).items()
-        if key not in ("endpoint", "prometheus")
+        if key not in ("endpoint", "prometheus", "extra_endpoints")
     }
-    check_context_fits(config, client)
-    probe_rng = random.Random(f"{config.seed}:probe")  # noqa: S311 -- load shape
-    report.prompts = probe_prompt_calibration(client, probe_rng)
+    report.config["routing"] = config.routing
+    for each in clients:
+        check_context_fits(config, each)
+    # The same probe prompts on every replica: they must size them the same,
+    # or the endpoints do not serve one model with one tokenizer.
+    probes = [
+        probe_prompt_calibration(
+            each,
+            random.Random(f"{config.seed}:probe"),  # noqa: S311 -- load shape
+        )
+        for each in clients
+    ]
+    for other in probes[1:]:
+        if (
+            abs(other.tokens_per_word / probes[0].tokens_per_word - 1.0)
+            > PROBE_AGREEMENT
+            or abs(other.overhead_tokens - probes[0].overhead_tokens) > 1.0
+        ):
+            raise InferenceBenchmarkError(
+                "replica endpoints size the same prompts differently "
+                f"({probes[0]} vs {other}); they do not serve one model"
+            )
+    report.prompts = probes[0]
     for level in config.levels:
         result = run_level(config, client, level, report.prompts, **level_kwargs)
         report.levels.append(result)
@@ -868,7 +1034,7 @@ def run_benchmark(
 
 def _refine(
     config: BenchmarkConfig,
-    client: VllmClient,
+    client: VllmClient | Sequence[VllmClient],
     report: BenchmarkReport,
     on_level: Callable[[LevelReport, BenchmarkReport], None] | None,
     level_kwargs: dict,

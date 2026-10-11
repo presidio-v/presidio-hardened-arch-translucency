@@ -10,6 +10,7 @@ from presidio_arch_translucency.cli import app
 from presidio_arch_translucency.infer_observe import (
     InferenceObserveError,
     VllmSelector,
+    observe_vllm_replicas,
     observe_vllm_window,
     vllm_queries,
 )
@@ -79,6 +80,170 @@ def _observe(fake, **kw):
     return observe_vllm_window(
         URL, 2, scalar_query=fake.scalar, vector_query=fake.vector, **kw
     )
+
+
+class FakeReplicas:
+    """n independent servers, each one ``engine="0"`` under its own instance."""
+
+    RUNNING = 'vllm:num_requests_running{model_name="m"}'
+
+    def __init__(self, per_engine, series=None, over_window=None):
+        self.fakes = {
+            f"host{i}:8000": FakePrometheus(
+                values,
+                selector=VllmSelector(
+                    model_name="m", engine="0", instance=f"host{i}:8000"
+                ),
+            )
+            for i, values in enumerate(per_engine)
+        }
+        self.series = series or [
+            ({"instance": name, "engine": "0", "job": "vllm"}, 1.0)
+            for name in self.fakes
+        ]
+        self.over_window = (
+            float(len(self.fakes)) if over_window is None else over_window
+        )
+        self.at = set()
+
+    def _fake(self, query):
+        return next(f for f in self.fakes.values() if query in f.by_query)
+
+    def scalar(self, base_url, query, token=None, eval_time=None):
+        self.at.add(eval_time)
+        if query == f"count(count_over_time({self.RUNNING}[120s]))":
+            return self.over_window
+        return self._fake(query).scalar(base_url, query, token, eval_time)
+
+    def vector(self, base_url, query, token=None, eval_time=None):
+        self.at.add(eval_time)
+        if query == self.RUNNING:
+            return self.series
+        return self._fake(query).vector(base_url, query, token, eval_time)
+
+
+def _replicas(fake, instances=2, **kw):
+    kw.setdefault("eval_time", EVAL_AT)
+    return observe_vllm_replicas(
+        URL,
+        1,
+        instances,
+        model_name="m",
+        scalar_query=fake.scalar,
+        vector_query=fake.vector,
+        **kw,
+    )
+
+
+def test_replicas_pool_per_instance_at_one_instant():
+    fake = FakeReplicas(
+        [{"batch": 2.4, "tpot_s": 0.030}, {"batch": 2.6, "tpot_s": 0.032}]
+    )
+    observed = _replicas(fake)
+    assert fake.at == {EVAL_AT}
+    assert observed.instances == 2
+    assert observed.point.batch == pytest.approx(2.5)
+    # Token-weighted: the busier engine completed more requests.
+    assert 31.0 < observed.point.tpot_ms < 32.0
+    assert observed.point.prefill_ms == pytest.approx(60.0)
+    assert observed.imbalance == pytest.approx(0.04)
+    assert observed.requests == pytest.approx(
+        sum(f.values["requests"] for f in fake.fakes.values())
+    )
+    engines = observed.raw["engines"]
+    assert [e["instance"] for e in engines] == ["host0:8000", "host1:8000"]
+    assert all(e["reason"] is None for e in engines)
+    assert observed.raw["batch"] == pytest.approx(2.5)
+    assert observed.raw["requests"] == pytest.approx(observed.requests)
+
+
+def test_replica_waiting_is_the_worst_engine():
+    fake = FakeReplicas([{"waiting": 0.0}, {"waiting": 0.4}])
+    observed = _replicas(fake)
+    assert observed.waiting == pytest.approx(0.4)
+    assert not observed.prefill_included and observed.point.prefill_ms is None
+
+
+@pytest.mark.parametrize(
+    ("fake", "match"),
+    [
+        (FakeReplicas([{}]), "expected exactly 2 replicas"),
+        (FakeReplicas([{}, {}, {}]), "expected exactly 2 replicas"),
+        (
+            FakeReplicas(
+                [{}, {}],
+                series=[({"instance": "a", "engine": "0"}, 1.0)] * 2,
+            ),
+            "1 distinct",
+        ),
+        (FakeReplicas([{}, {}], over_window=3.0), "appeared during the window"),
+    ],
+)
+def test_replica_set_must_be_exactly_n_engines(fake, match):
+    with pytest.raises(InferenceObserveError, match=match):
+        _replicas(fake)
+
+
+def test_replicas_with_and_without_instance_labels_are_read_not_crashed():
+    fake = FakeReplicas([{}, {}])
+    fake.series = [
+        ({"engine": "0"}, 1.0),
+        ({"instance": "host1:8000", "engine": "0"}, 1.0),
+    ]
+    # The unlabelled engine cannot be read on its own: a refusal, not a crash.
+    with pytest.raises(InferenceObserveError, match="instance label"):
+        _replicas(fake)
+
+
+def test_imbalance_limit_scales_with_replicas():
+    assert infer_observe.replica_imbalance_limit(2) == pytest.approx(0.25)
+    assert infer_observe.replica_imbalance_limit(8) == pytest.approx(0.25 * 3**0.5)
+    four = FakeReplicas(
+        [{"batch": 2.0}, {"batch": 2.0}, {"batch": 2.0}, {"batch": 2.8}]
+    )
+    four.over_window = 4.0
+    # 0.8/2.2 − 1 ≈ 27 %: refused for two engines, within the 35 % for four.
+    assert _replicas(four, instances=4).imbalance == pytest.approx(2.8 / 2.2 - 1)
+
+
+def test_one_overloaded_replica_refuses_the_window_with_its_code():
+    fake = FakeReplicas([{"resets": 1.0}, {"preemptions": 2.0}])
+    with pytest.raises(InferenceObserveError) as info:
+        _replicas(fake)
+    assert info.value.code == "preemption"
+    assert "host0:8000" in str(info.value) and "host1:8000" in str(info.value)
+    engines = info.value.raw["engines"]
+    assert engines[0]["reason"] and engines[1]["reason"]
+    assert info.value.raw["preemptions"] == 2.0
+
+
+def test_unbalanced_replicas_are_refused():
+    fake = FakeReplicas([{"batch": 2.0}, {"batch": 3.5}])
+    with pytest.raises(InferenceObserveError, match="not split evenly") as info:
+        _replicas(fake)
+    assert info.value.code == "imbalance"
+    assert info.value.raw["imbalance"] == pytest.approx(1.5 / 5.5)
+
+
+@pytest.mark.parametrize("instances", [1, 9, True, 2.0])
+def test_replica_count_bounds(instances):
+    with pytest.raises(InferenceObserveError, match="instances"):
+        _replicas(FakeReplicas([{}, {}]), instances=instances)
+
+
+def test_replica_transport_errors_become_refusals():
+    def broken(*_a, **_k):
+        raise PrometheusError("down")
+
+    with pytest.raises(InferenceObserveError, match="down"):
+        observe_vllm_replicas(
+            URL, 1, 2, scalar_query=broken, vector_query=broken, eval_time=EVAL_AT
+        )
+
+
+def test_instance_label_is_escaped():
+    selector = VllmSelector(model_name="m", engine="0", instance='h"1\\')
+    assert selector.promql() == '{model_name="m",engine="0",instance="h\\"1\\\\"}'
 
 
 def test_healthy_low_load_window_includes_prefill_and_kv_usage():

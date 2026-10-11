@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -547,6 +548,28 @@ def test_run_benchmark_fills_the_callers_report_before_failing(vllm):
         {"mode": "open", "levels": (1.0,), "refine": True},
         {"mode": "open", "levels": (1.0,), "refine": 2, "tpot_slo_ms": 0.0},
         {"mode": "open", "levels": (1.0,), "tpot_slo_ms": 45.0},  # inert alone
+        {"instances": 2},  # closed loop
+        {"mode": "open", "levels": (1.0,), "instances": 9},
+        {"mode": "open", "levels": (1.0,), "instances": True},
+        {"mode": "open", "levels": (1.0,), "extra_endpoints": ("http://y",)},
+        {
+            "mode": "open",
+            "levels": (1.0,),
+            "instances": 3,
+            "extra_endpoints": ("http://y",),
+        },
+        {
+            "mode": "open",
+            "levels": (1.0,),
+            "instances": 2,
+            "extra_endpoints": ("http://x",),
+        },
+        {
+            "mode": "open",
+            "levels": (1.0,),
+            "instances": 2,
+            "extra_endpoints": ["http://y"],
+        },
     ],
 )
 def test_config_validation(kw):
@@ -788,3 +811,227 @@ def test_cli_context_refusal_sends_no_load(make_vllm, tmp_path):
 def test_cli_level_errors(vllm, extra):
     assert _cli(vllm, *extra).exit_code == 2
     assert vllm.bodies == []
+
+
+# ---------------------------------------------------------------------------
+# Replica layouts
+# ---------------------------------------------------------------------------
+
+
+def _replica_config(servers, **kw):
+    return _config(
+        servers[0].url,
+        mode="open",
+        instances=len(servers),
+        extra_endpoints=tuple(server.url for server in servers[1:]),
+        levels=_UNSATURATED["levels"],
+        window_s=_UNSATURATED["window_s"],
+        warmup_s=_UNSATURATED["warmup_s"],
+        **kw,
+    )
+
+
+def _pooled(waiting=0.0):
+    return replace(
+        _observed(waiting=waiting),
+        instances=2,
+        imbalance=0.05,
+        raw={"batch": 3.0, "imbalance": 0.05, "engines": []},
+    )
+
+
+def _replica_level(servers, observe_replicas, **kw):
+    config = _replica_config(servers, **kw)
+
+    def single(*_a, **_k):
+        raise AssertionError("a replica level must not read one engine")
+
+    return run_level(
+        config,
+        [VllmClient(server.url, "m") for server in servers],
+        config.levels[0],
+        EXACT,
+        sleep=_fast_sleep,
+        observe=single,
+        observe_replicas=observe_replicas,
+        ttft=lambda *a, **k: None,
+        ttft_cdf=lambda *a, **k: None,
+    )
+
+
+def test_replica_config_routing():
+    assert _config("http://x").routing == "single"
+    one = _config("http://x", mode="open", levels=(1.0,), instances=2)
+    assert one.routing == "server" and one.endpoints == ("http://x",)
+    two = _config(
+        "http://x",
+        mode="open",
+        levels=(1.0,),
+        instances=2,
+        extra_endpoints=("http://y",),
+    )
+    assert two.routing == "client-random"
+    assert two.endpoints == ("http://x", "http://y")
+
+
+def test_load_generator_endpoint_rules(vllm):
+    client = VllmClient(vllm.url, "m")
+    with pytest.raises(InferenceBenchmarkError, match="closed loop"):
+        LoadGenerator([client, client], "closed", 2, 1, 1, seed="s")
+    with pytest.raises(InferenceBenchmarkError, match="at least one"):
+        LoadGenerator([], "open", 2.0, 1, 1, seed="s")
+
+
+def test_replica_level_routes_to_every_endpoint(make_vllm):
+    servers = [make_vllm(), make_vllm()]
+    seen = {}
+
+    def observe_replicas(prometheus, tp, instances, **kw):
+        seen.update(instances=instances, **kw)
+        return _pooled()
+
+    result = _replica_level(servers, observe_replicas)
+    # Every arrival goes to a random endpoint: both must have served load
+    # (counts are not asserted — slow runners thin the arrivals).
+    assert all(len(server.bodies) > 0 for server in servers)
+    assert seen["instances"] == 2 and seen["model_name"] == "m"
+    assert result.verdict == "recorded", result.reason
+    assert result.instances == 2 and result.imbalance == 0.05
+    assert result.completed > 0 and sum(result.routed) == result.completed
+    assert result.point["instances"] == 2
+
+
+def test_replica_level_saturates_on_any_engine_queue(make_vllm):
+    servers = [make_vllm(), make_vllm()]
+    result = _replica_level(servers, lambda *a, **k: _pooled(waiting=3.0))
+    assert result.saturated
+
+
+def test_replica_overload_code_saturates_but_imbalance_does_not(make_vllm):
+    servers = [make_vllm(), make_vllm()]
+
+    def refuse(code):
+        def observe_replicas(*_a, **_k):
+            error = InferenceObserveError(f"refused: {code}", code=code)
+            error.raw = {"engines": [], "imbalance": 0.6}
+            raise error
+
+        return observe_replicas
+
+    overloaded = _replica_level(servers, refuse("preemption"))
+    assert overloaded.saturated and overloaded.verdict == "refused"
+    assert overloaded.refusal_code == "preemption"
+    uneven = _replica_level(servers, refuse("imbalance"))
+    assert not uneven.saturated and uneven.verdict == "refused"
+    assert uneven.imbalance == 0.6 and "imbalance" in uneven.reason
+    assert classify_saturation(uneven.as_dict()) is None
+
+
+def test_uneven_replicas_with_a_queue_still_saturate(make_vllm):
+    servers = [make_vllm(), make_vllm()]
+
+    def observe_replicas(*_a, **_k):
+        error = InferenceObserveError("not split evenly", code="imbalance")
+        error.raw = {"engines": [], "imbalance": 0.4, "waiting": 3.0}
+        raise error
+
+    result = _replica_level(servers, observe_replicas)
+    assert result.saturated and result.refusal_code == "imbalance"
+    assert classify_saturation(result.as_dict()) == "fail"
+
+
+def test_a_failing_replica_endpoint_is_a_fault_not_saturation(make_vllm):
+    servers = [make_vllm(), make_vllm(fail=True)]
+    result = _replica_level(servers, lambda *a, **k: _pooled())
+    assert result.errors > 0 and result.verdict == "refused"
+    assert result.refusal_code == "endpoint" and not result.saturated
+    assert "endpoint(s) 1 only" in result.reason
+    assert classify_saturation(result.as_dict()) is None
+
+
+def test_in_flight_cap_scales_with_replica_endpoints(vllm):
+    client = VllmClient(vllm.url, "m")
+    one = LoadGenerator(client, "open", 1.0, 1, 1, seed="s")
+    two = LoadGenerator([client, client], "open", 1.0, 1, 1, seed="s")
+    assert two.max_in_flight == 2 * one.max_in_flight
+
+
+def test_server_routed_replicas_use_one_endpoint(vllm):
+    config = _config(
+        vllm.url, mode="open", instances=2, levels=_UNSATURATED["levels"],
+        window_s=_UNSATURATED["window_s"], warmup_s=_UNSATURATED["warmup_s"],
+    )  # fmt: skip
+    result = run_level(
+        config,
+        VllmClient(vllm.url, "m"),
+        config.levels[0],
+        EXACT,
+        sleep=_fast_sleep,
+        observe_replicas=lambda *a, **k: _pooled(),
+        ttft=lambda *a, **k: None,
+        ttft_cdf=lambda *a, **k: None,
+    )
+    assert result.instances == 2 and result.routed is None
+
+
+def test_replica_sweep_report_and_probe_agreement(make_vllm, monkeypatch):
+    servers = [make_vllm(), make_vllm()]
+    config = _replica_config(servers)
+    report = run_benchmark(
+        config,
+        sleep=_fast_sleep,
+        observe_replicas=lambda *a, **k: _pooled(),
+        ttft=lambda *a, **k: None,
+        ttft_cdf=lambda *a, **k: None,
+    )
+    data = report.as_dict()
+    assert data["config"]["instances"] == 2
+    assert data["config"]["routing"] == "client-random"
+    assert not {"endpoint", "extra_endpoints", "prometheus"} & set(data["config"])
+    assert servers[1].url not in json.dumps(data)
+
+    sizes = iter([EXACT, replace(EXACT, tokens_per_word=1.5)])
+    monkeypatch.setattr(
+        infer_benchmark, "probe_prompt_calibration", lambda *a, **k: next(sizes)
+    )
+    before = [len(server.bodies) for server in servers]
+    with pytest.raises(InferenceBenchmarkError, match="do not serve one model"):
+        run_benchmark(config)
+    assert [len(server.bodies) for server in servers] == before
+
+
+def test_run_benchmark_refuses_a_client_count_mismatch(vllm):
+    config = _replica_config([vllm, SimpleNamespace(url="http://other.test")])
+    with pytest.raises(InferenceBenchmarkError, match="clients for 2 endpoints"):
+        run_benchmark(config, client=VllmClient(vllm.url, "m"))
+
+
+def test_cli_replicas_report_but_never_echo_points(
+    make_vllm, tmp_path, fast_harness, monkeypatch
+):
+    servers = [make_vllm(), make_vllm()]
+    monkeypatch.setattr(
+        infer_benchmark, "observe_vllm_replicas", lambda *a, **k: _pooled()
+    )
+    report = tmp_path / "report.json"
+    result = _cli(
+        servers[0], "--endpoint", servers[1].url, "--rate", "100",
+        "--window-s", "800", "--report", str(report),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert not [line for line in result.stdout.splitlines() if line.startswith("{")]
+    data = json.loads(report.read_text())
+    assert data["config"]["routing"] == "client-random"
+    assert data["levels"][0]["instances"] == 2
+
+
+def test_replicas_refuse_an_engine_filter():
+    with pytest.raises(InferenceBenchmarkError, match="--engine"):
+        _config("http://x", mode="open", levels=(1.0,), instances=2, engine="1")
+
+
+def test_cli_refuses_replicas_in_closed_loop(make_vllm, tmp_path):
+    servers = [make_vllm(), make_vllm()]
+    result = _cli(servers[0], "--endpoint", servers[1].url, "--concurrency", "2")
+    assert result.exit_code == 2
+    assert "open loop only" in " ".join(result.output.split())

@@ -1129,7 +1129,26 @@ pat infer-benchmark --endpoint http://gpu-node:8000 \
 # then two bisection levels inside each bracket (capacity and the TPOT SLO)
 pat infer-benchmark ... --tp 2 --rate 2,2.5,3.1,3.9,4.9,6.1 \
   --refine 2 --tpot-slo-ms 45 --report sweep-tp2.json
+
+# The replica layout on the same two GPUs: one engine per GPU, each its own
+# server; pat routes every arrival to a random endpoint (the model's split)
+CUDA_VISIBLE_DEVICES=0 vllm serve ... --port 8000 --no-enable-prefix-caching
+CUDA_VISIBLE_DEVICES=1 vllm serve ... --port 8001 --no-enable-prefix-caching
+pat infer-benchmark --endpoint http://gpu-node:8000 --endpoint http://gpu-node:8001 \
+  ... --tp 1 --rate 2,2.5,3.1,3.9,4.9,6.1 --refine 2 --tpot-slo-ms 45 \
+  --report sweep-tp1x2.json
 ```
+
+Replica sweeps are open loop only. Every engine must pass every gate on its
+own (`--min-requests` applies per engine, so the lowest rate needs
+λ/n · window ≥ 20), engine batches must agree within 25 % (two replicas; the
+limit grows slowly with n), and a queue on any one engine saturates the
+level. Failures on some endpoints only are reported as an endpoint fault, not
+as saturation. Their levels are validation data and never
+print calibration points. One endpoint with `--instances n` reads a vLLM
+data-parallel engine set instead, but the server's balancer is not the
+modelled random split, so `infer-validate` marks those rows server-routed and
+outside H3.
 
 Each level warms up (`--warmup-s`, default 60), holds for `--window-s`
 (default 120), and keeps the load on for `--scrape-lag-s` (default 15) while
