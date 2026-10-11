@@ -61,14 +61,25 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   the worst case is within 20 %, fail when even the nearer edge is more than
   25 % off, otherwise inconclusive. It says whether the SLO or utilisation
   ended each range, and words the capacity comparison as a consistency check.
-  A TTFT SLO must sit on a histogram bucket edge. Replica layouts are refused
-  until the harness can measure them.
+  A TTFT SLO must sit on a histogram bucket edge.
 - `pat infer-benchmark --refine K` runs K bisection levels inside each
   measured bracket after an open-loop sweep (saturation, and TPOT with
   `--tpot-slo-ms`, which requires `--refine`), so a ×1.25 sweep resolves
   λ_max to about ±3 %. Each level
   now records the TTFT fraction under every histogram edge (`ttft_cdf`) and,
   for refused levels too, the ungated window readings (`observed`).
+- Replica layouts are measurable (Inference Arc Phase 1e). `pat
+  infer-benchmark --rate` takes `--endpoint` once per replica and routes each
+  arrival to a random endpoint, which is the model's even Poisson split; one
+  endpoint with `--instances n` reads a vLLM data-parallel engine set, but its
+  report is marked `routing: server`. Every engine must pass every observe
+  gate, engine batches must agree within 25 % (two replicas, growing with
+  √log₂ n), and a queue on any engine saturates the level. A level refused
+  for uneven load, or with failures on some endpoints only, carries no
+  capacity information. Replica levels never print calibration points, and
+  `infer-validate --sweep` accepts them, flags them as extrapolated, and
+  marks server-routed rows as outside H3, so the ranking at equal GPU budget
+  can now be measured.
 
 ### Changed
 

@@ -293,7 +293,7 @@ before implementation.
   of each other for an 8B model on L40S, so the ranking needs refined
   brackets and may be decided by the SLO rather than the KV cache. Until 1e,
   sweeps of replica layouts (`instances` > 1) are refused, so the ranking is
-  implemented but not yet reachable from measured data.
+  implemented but not yet reachable from measured data (lifted in 1e).
 - **Sweep reports are unsigned operator files.** The validator checks schema,
   open-loop mode, a clean end (no `error`), level shape (unique,
   non-decreasing TTFT edges; printable model label), one workload (model,
@@ -304,3 +304,70 @@ before implementation.
   and an observe gate for exactly n engine series (vLLM data parallelism);
   until then a sweep is one engine and `instances` must be 1. Energy per
   level (DCGM via E1a) and the dated EU price catalog follow.
+
+## Amendment — Phase 1e replica layouts (2026-10-10)
+
+Replica layouts (n ≥ 2 engines of tp GPUs) become measurable, so the λ_max
+ranking at equal GPU budget (I10) can be tested. Design reviewed with the
+advisor before implementation.
+
+- **Topology: independent servers, random client-side routing.** The model
+  splits λ evenly and treats each instance as its own M/M/c. Uniformly random
+  routing splits a Poisson stream into n independent Poisson streams of λ/n,
+  so with one endpoint per replica (`--endpoint` repeated) the measured object
+  is the modelled one. Round robin or join-shortest-queue, which vLLM's
+  data-parallel balancer approximates, smooths arrivals and lowers the batch
+  variance — unmodelled advantages that could decide a ranking the model
+  puts within 2 %. One endpoint fronting n engines (`--instances n`) is still
+  read, but the report records `routing: "server"` and the validator marks
+  those rows as outside H3. Whether vLLM 0.31 still steps dense-model
+  data-parallel ranks in lockstep is unverified; that is a second reason the
+  pilot uses independent servers.
+- **Per-engine gates, all or nothing.** Engines are told apart by
+  `(instance, engine)`. Exactly n series must be present at the evaluation
+  instant and over the whole window, and each engine passes every
+  single-engine gate on its own at the shared instant (`--min-requests` is per
+  engine). Any refusal refuses the level and carries the first overload code
+  (`little`, `preemption`), so an overloaded replica still reads as
+  saturation.
+- **Balance gate.** Engine batches must agree with their mean within 25 % for
+  two replicas, scaled by √(log₂ n) because the largest of n noisy
+  deviations grows like √(ln n) (about 43 % at n = 8). A level refused for
+  imbalance (`refusal_code: "imbalance"`) carries no capacity information
+  unless a hard signal (a queue on any engine, rejected arrivals, an
+  overload refusal) still shows saturation.
+- **Endpoint faults are not capacity.** Under client routing, failures on
+  some endpoints only mark the level `refusal_code: "endpoint"`; the missing
+  completions are kept out of the throughput signal, so a dead replica cannot
+  cap the bracket at whatever level it died (adversarial review found this
+  case classified as saturation).
+- **Pooled per-instance point.** Mean batch, token-weighted TPOT and
+  request-weighted lengths: what the model's `t(b_eff)` at λ/n predicts.
+  Per-engine readings travel in `observed.engines`; the worst engine is
+  visible, not judged. TTFT pools every engine of the model, which under
+  random routing is the per-instance distribution.
+- **Saturation: any engine.** A queue on any engine saturates the level, next
+  to the global client-side signals, also when the window was refused for
+  another reason (its ungated readings keep the queue). The in-flight cap
+  scales with the number of endpoints, so it does not reject arrivals below a
+  replica layout's capacity. This biases measured λ_max slightly low,
+  in the same direction as the existing client-side trip; the capacity row's
+  definition says so for replicas.
+- **Validation only.** Replica sweeps are open loop only, never print
+  calibration points, and their point rows carry `instances`, which
+  calibration refuses as an unknown key. `extrapolated` stays true for
+  n ≥ 2, so replica layouts test the router and host cost (α_replica = 0)
+  out of sample rather than fit it.
+- **Before load.** Every endpoint's context is checked and every endpoint
+  sizes the same probe prompts; disagreement (different model or tokenizer
+  behind the replicas) is refused, as are `--engine` with replicas (every
+  engine of the model is read) and series that mix present and missing
+  `instance` labels.
+- **Risks.** Two vLLM frontends on one host contend for CPU, raising the
+  effective per-step overhead against a single-engine calibration; a replica
+  miss may be real physics that α_replica = 0 omits, so host CPU belongs in
+  the run notes. Near capacity, random-routing noise can queue one engine
+  first, a few percent below the even-split capacity; TPOT remains the
+  primary SLO.
+- **Deferred to 1f.** DCGM energy per level through the E1a gate and the dated
+  EU GPU price catalog.

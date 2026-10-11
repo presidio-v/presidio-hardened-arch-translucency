@@ -1728,7 +1728,8 @@ inference.
 | 1b | `pat infer-observe`: one vLLM window from Prometheus as a calibration point (vLLM 0.31 names; single-engine, preemption, request-count and idle gates; prefill only at low load) | Implemented 2026-10-09 |
 | 1c | `pat infer-benchmark`: closed-loop calibration and open-loop λ sweeps against an operator-run vLLM (stagger and output jitter against lockstep, unique prompts, `usage`-verified lengths); prefix-cache and spec-decode gates in `infer-observe` | Implemented 2026-10-09 |
 | 1d | `pat infer-validate --sweep`: measured λ_max brackets vs the recommender's predicted λ_max, interval error and H3 verdict, binding-constraint check, capacity mechanism check, ranking logic at equal GPU budget; `--refine K` bisection, per-level `ttft_cdf` and raw readings in `infer-benchmark` | Implemented 2026-10-10 |
-| 1e | Replica layouts (`instances`, n-engine observe gate via vLLM data parallelism); DCGM energy per level through the E1a gate; dated EU GPU price catalog | Planned |
+| 1e | Replica layouts: `--endpoint` per replica with random client-side routing (or one data-parallel endpoint, marked `server`), per-engine observe gates plus a 25 % batch-balance gate, pooled per-instance point, any-engine saturation, `infer-validate --sweep` for n ≥ 2 | Implemented 2026-10-10 |
+| 1f | DCGM energy per level through the E1a gate; dated EU GPU price catalog | Planned |
 | 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
 | 3 | Hosted continuous-report shell; only after two paid audits | Gated |
 
@@ -1765,7 +1766,9 @@ after calibration by 2026-11-30 drops the predictive claim).
 | I7 | Bounded refinement reports parameters at a bound instead of refusing | α/β are near-collinear with few tp levels; predictions stay accurate while the split is uncertain |
 | I8 | Measured λ_max is a bracket and error an interval; H3 pass at worst ≤ 20 %, fail at nearer edge > 25 %, non-monotone always inconclusive | An unrefined ×1.25 bracket passes only predictions in [λ_lo, 1.2·λ_lo]; `--refine` narrows it instead of interpolating a convex, often missing metric |
 | I9 | TTFT SLOs only on histogram bucket edges, judged from the recorded CDF | `histogram_quantile` interpolates inside coarse vLLM buckets; the edge fraction is exact |
-| I10 | λ* replaced by the λ_max ranking at equal GPU budget (reachable once replica layouts land in 1e) | With a fixed budget the switching rate is trivial; the layer question is which layout serves more |
+| I10 | λ* replaced by the λ_max ranking at equal GPU budget (measurable since 1e) | With a fixed budget the switching rate is trivial; the layer question is which layout serves more |
+| I11 | Replicas measured as independent servers behind pat's uniformly random router; data-parallel endpoints readable but kept out of H3 | Random routing splits Poisson into Poisson λ/n, the modelled object; a queue-aware balancer smooths arrivals and could decide a ranking within 2 % |
+| I12 | Replica levels are validation data only; calibration stays single-engine | Keeps n ≥ 2 an out-of-sample extrapolation (the router and host cost α_replica = 0 is tested, not fitted) |
 
 ## SDLC
 

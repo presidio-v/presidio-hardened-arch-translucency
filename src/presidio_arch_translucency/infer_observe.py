@@ -52,6 +52,7 @@ batches count more; the model predicts ``t(E[b])``, and the bias
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -88,6 +89,11 @@ MIN_WINDOWS_PER_REQUEST: Final[float] = 5.0
 #: Prefix-cache hit rate above which prompts were not independent.
 MAX_PREFIX_CACHE_HIT_RATE: Final[float] = 0.01
 MAX_LABEL_VALUE_LEN: Final[int] = 256
+#: Replicas behind one router: largest engine batch deviation from their mean,
+#: for two engines. The largest of n noisy deviations grows like √(ln n), so
+#: the limit scales by √(log₂ n): 0.25 at n = 2, about 0.43 at n = 8.
+MAX_REPLICA_IMBALANCE: Final[float] = 0.25
+MAX_REPLICAS: Final[int] = 8
 
 _METRIC_NAME_CHARS: Final[frozenset[str]] = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:"
@@ -108,18 +114,30 @@ class InferenceObserveError(ValueError):
         # Ungated readings of the window when the queries succeeded; a refused
         # window still says where the engine was (e.g. TPOT at an overloaded
         # level), labelled as unchecked rather than turned into a point.
-        self.raw: dict[str, float | None] | None = None
+        self.raw: dict | None = None
 
 
 @dataclass(frozen=True)
 class VllmSelector:
-    """Which engine to read: label values matched exactly."""
+    """Which engine to read: label values matched exactly.
+
+    ``instance`` (Prometheus' scrape target) tells apart independent servers,
+    which all label their single engine ``engine="0"``.
+    """
 
     model_name: str | None = None
     engine: str | None = "0"
+    instance: str | None = None
+
+    def _labels(self) -> tuple[tuple[str, str | None], ...]:
+        return (
+            ("model_name", self.model_name),
+            ("engine", self.engine),
+            ("instance", self.instance),
+        )
 
     def __post_init__(self) -> None:
-        for name, value in (("model_name", self.model_name), ("engine", self.engine)):
+        for name, value in self._labels():
             if value is None:
                 continue
             if (
@@ -135,7 +153,7 @@ class VllmSelector:
     def promql(self) -> str:
         """``{model_name="…",engine="…"}`` with values escaped for PromQL."""
         parts = []
-        for name, value in (("model_name", self.model_name), ("engine", self.engine)):
+        for name, value in self._labels():
             if value is not None:
                 escaped = value.replace("\\", "\\\\").replace('"', '\\"')
                 parts.append(f'{name}="{escaped}"')
@@ -219,7 +237,10 @@ class ObservedWindow:
     little_ratio: float  # observed completions / Little's-law prediction
     prefill_included: bool
     kv_usage_included: bool
-    raw: dict[str, float | None] | None = field(default=None, compare=False)
+    raw: dict | None = field(default=None, compare=False)
+    instances: int = 1
+    # Largest relative deviation of an engine's batch from the replicas' mean.
+    imbalance: float | None = None
 
 
 def raw_readings(values: dict[str, float | None], window_s: int) -> dict:
@@ -324,6 +345,247 @@ def observe_vllm_window(
         exc.raw = raw
         raise
     return replace(window, raw=raw)
+
+
+def observe_vllm_replicas(
+    base_url: str,
+    tp: int,
+    instances: int,
+    model_name: str | None = None,
+    window_s: int = DEFAULT_WINDOW_S,
+    min_requests: int = DEFAULT_MIN_REQUESTS,
+    prefill_max_batch: float = DEFAULT_PREFILL_MAX_BATCH,
+    include_kv_usage: bool = True,
+    tpot_metric: str = DEFAULT_TPOT_METRIC,
+    kv_usage_metric: str = DEFAULT_KV_USAGE_METRIC,
+    scalar_query: ScalarQuery | None = None,
+    vector_query: VectorQuery | None = None,
+    eval_time: float | None = None,
+) -> ObservedWindow:
+    """Read one window of ``instances`` replica engines and pool them.
+
+    Every engine must pass every single-engine gate on its own (``min_requests``
+    applies per engine), at one shared instant; any refusal refuses the window
+    and carries the first overload code (``little``, ``preemption``) so a
+    saturated replica still reads as saturation. A window whose engine batches
+    differ by more than :data:`MAX_REPLICA_IMBALANCE` is refused with code
+    ``imbalance``: the load was not split evenly, so it says nothing about the
+    layout. The pooled point is per instance — mean batch, token-weighted
+    TPOT, request-weighted lengths — which is what the model's ``t(b_eff)`` at
+    ``λ/n`` predicts. Engines are told apart by ``(instance, engine)``, so both
+    independent servers and one data-parallel server can be read.
+    """
+    scalar_query = scalar_query or instant_query
+    vector_query = vector_query or instant_query_vector
+    if isinstance(instances, bool) or not isinstance(instances, int):
+        raise InferenceObserveError("instances must be an integer")
+    if not 2 <= instances <= MAX_REPLICAS:
+        raise InferenceObserveError(f"instances must be in [2, {MAX_REPLICAS}]")
+    loose = VllmSelector(model_name=model_name, engine=None)
+    running = f"vllm:num_requests_running{loose.promql()}"
+    at = time.time() if eval_time is None else eval_time
+    try:
+        token = _resolve_token(base_url)
+        series = vector_query(base_url, running, token=token, eval_time=at)
+        over_window = scalar_query(
+            base_url,
+            f"count(count_over_time({running}[{_window(window_s)}s]))",
+            token=token,
+            eval_time=at,
+        )
+    except PrometheusError as exc:
+        raise InferenceObserveError(str(exc)) from exc
+    keys = sorted(
+        {(lb.get("instance"), lb.get("engine")) for lb, _ in series},
+        key=lambda key: (key[0] or "", key[1] or ""),
+    )
+    if len(keys) != instances or len(series) != instances:
+        raise InferenceObserveError(
+            f"{len(series)} engine series ({len(keys)} distinct instance/engine "
+            f"pairs) match {loose.promql()}; expected exactly {instances} replicas"
+        )
+    labelled = {instance is not None for instance, _ in keys}
+    if len(labelled) > 1:
+        raise InferenceObserveError(
+            "some replica series carry an instance label and some do not "
+            "(relabelling or federation); engines cannot be read one by one"
+        )
+    if over_window != float(instances):
+        raise InferenceObserveError(
+            f"{over_window or 0:.0f} engine series appeared during the window for "
+            f"{instances} replicas (restart or relabel); not steady replicas"
+        )
+
+    windows: list[ObservedWindow] = []
+    engines: list[dict] = []
+    refusals: list[InferenceObserveError] = []
+    for instance, engine in keys:
+        label = f"{instance or '?'}/engine {engine or '?'}"
+        try:
+            window = observe_vllm_window(
+                base_url,
+                tp,
+                VllmSelector(model_name=model_name, engine=engine, instance=instance),
+                window_s=window_s,
+                min_requests=min_requests,
+                prefill_max_batch=prefill_max_batch,
+                include_kv_usage=include_kv_usage,
+                tpot_metric=tpot_metric,
+                kv_usage_metric=kv_usage_metric,
+                scalar_query=scalar_query,
+                vector_query=vector_query,
+                eval_time=at,
+            )
+        except InferenceObserveError as exc:
+            refusals.append(exc)
+            engines.append(
+                {
+                    "instance": instance,
+                    "engine": engine,
+                    **(exc.raw or {}),
+                    "reason": f"{label}: {exc}",
+                }
+            )
+            continue
+        windows.append(window)
+        engines.append(
+            {
+                "instance": instance,
+                "engine": engine,
+                **(window.raw or {}),
+                "reason": None,
+            }
+        )
+
+    raw = _pool_raw([e for e in engines if e.get("requests") is not None])
+    raw["engines"] = engines
+    if refusals:
+        overload = [e for e in refusals if e.code in ("little", "preemption")]
+        first = (overload or refusals)[0]
+        reasons = "; ".join(e["reason"] for e in engines if e["reason"])
+        error = InferenceObserveError(reasons, code=first.code)
+        error.raw = raw
+        raise error
+
+    batches = [w.point.batch for w in windows]
+    mean_batch = sum(batches) / len(batches)
+    imbalance = max(abs(b / mean_batch - 1.0) for b in batches)
+    raw["imbalance"] = imbalance
+    limit = replica_imbalance_limit(instances)
+    if imbalance > limit:
+        error = InferenceObserveError(
+            f"replica batches {', '.join(f'{b:.2f}' for b in batches)} differ by up "
+            f"to {imbalance:.0%} from their mean (limit {limit:.0%}); "
+            "the load was not split evenly",
+            code="imbalance",
+        )
+        error.raw = raw
+        raise error
+    return _pool_windows(windows, tp, window_s, at, raw, imbalance)
+
+
+def replica_imbalance_limit(instances: int) -> float:
+    """Largest allowed engine batch deviation from the mean for n replicas."""
+    return MAX_REPLICA_IMBALANCE * math.sqrt(math.log2(instances))
+
+
+def _weighted_mean(
+    rows: list[dict], key: str, weight: Callable[[dict], float]
+) -> float | None:
+    pairs = [(row[key], weight(row)) for row in rows if row.get(key) is not None]
+    total = sum(w for _, w in pairs)
+    return sum(v * w for v, w in pairs) / total if total > 0.0 else None
+
+
+def _pool_raw(rows: list[dict]) -> dict:
+    """Per-instance readings across replicas (engine readings are per engine)."""
+
+    def requests(row: dict) -> float:
+        return row.get("requests") or 0.0
+
+    def tokens(row: dict) -> float:
+        return requests(row) * (row.get("output_tokens") or 0.0)
+
+    def known(key: str) -> list[float]:
+        return [row[key] for row in rows if row.get(key) is not None]
+
+    batches, waiting = known("batch"), known("waiting")
+    return {
+        "requests": sum(known("requests")) if rows else None,
+        "achieved_rps": sum(known("achieved_rps")) if rows else None,
+        "batch": sum(batches) / len(batches) if batches else None,
+        "waiting": max(waiting) if waiting else None,
+        "tpot_ms": _weighted_mean(rows, "tpot_ms", tokens),
+        "prefill_ms": _weighted_mean(rows, "prefill_ms", requests),
+        "e2e_ms": _weighted_mean(rows, "e2e_ms", requests),
+        "prompt_tokens": _weighted_mean(rows, "prompt_tokens", requests),
+        "output_tokens": _weighted_mean(rows, "output_tokens", requests),
+        "preemptions": sum(known("preemptions")) if rows else None,
+    }
+
+
+def _pool_windows(
+    windows: list[ObservedWindow],
+    tp: int,
+    window_s: int,
+    at: float,
+    raw: dict,
+    imbalance: float,
+) -> ObservedWindow:
+    def requests(row: dict) -> float:
+        return row["requests"]
+
+    rows = [
+        {
+            "requests": w.requests,
+            "batch": w.point.batch,
+            "prompt_tokens": w.point.prompt_tokens,
+            "output_tokens": w.point.output_tokens,
+            "tpot_ms": w.point.tpot_ms,
+            "tokens": w.requests * w.point.output_tokens,
+            "prefill_ms": w.point.prefill_ms,
+            "kv_usage": w.point.kv_usage,
+        }
+        for w in windows
+    ]
+    prefill_included = all(w.prefill_included for w in windows)
+    kv_usage_included = all(w.kv_usage_included for w in windows)
+    try:
+        point = InferencePoint(
+            tp=tp,
+            batch=sum(r["batch"] for r in rows) / len(rows),
+            prompt_tokens=_weighted_mean(rows, "prompt_tokens", requests),
+            output_tokens=_weighted_mean(rows, "output_tokens", requests),
+            tpot_ms=_weighted_mean(rows, "tpot_ms", lambda r: r["tokens"]),
+            prefill_ms=(
+                _weighted_mean(rows, "prefill_ms", requests)
+                if prefill_included
+                else None
+            ),
+            kv_usage=(
+                sum(r["kv_usage"] for r in rows) / len(rows)
+                if kv_usage_included
+                else None
+            ),
+        )
+    except InferenceCalibrationError as exc:
+        raise InferenceObserveError(f"pooled window is out of domain: {exc}") from exc
+    total = sum(w.requests for w in windows)
+    implied = sum(w.requests / w.little_ratio for w in windows)
+    return ObservedWindow(
+        point=point,
+        window_s=window_s,
+        eval_time=at,
+        requests=total,
+        waiting=max(w.waiting for w in windows),
+        batch_cv=max(w.batch_cv for w in windows),
+        little_ratio=total / implied,
+        prefill_included=prefill_included,
+        kv_usage_included=kv_usage_included,
+        raw=raw,
+        instances=len(windows),
+        imbalance=imbalance,
+    )
 
 
 def _gate_window(

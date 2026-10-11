@@ -36,6 +36,12 @@ measured on it — the paper's H3. Definitions (ADR-0012, 1d amendment):
   capacity row (model ρ = 1 against client-side saturation, which trips
   somewhat below ρ = 1) is a mechanism check with its own wording, not H3.
 
+* **Replica layouts** (``instances`` ≥ 2) are always extrapolated: the
+  profile is calibrated on single engines. Each row echoes how arrivals
+  reached the engines; ``client-random`` is the model's even Poisson split,
+  ``server`` (one endpoint fronting a data-parallel engine set) is not, and
+  does not belong in the H3 figure.
+
 Sweep reports are operator-written, unsigned files: they are checked for
 shape and consistency and their SHA-256 is echoed, but not trusted further.
 """
@@ -58,6 +64,7 @@ from presidio_arch_translucency.infer_calibrate import (
     _reject_duplicate_keys,
     read_regular_file,
 )
+from presidio_arch_translucency.infer_observe import MAX_REPLICAS
 from presidio_arch_translucency.inference import (
     SUPPORTED_TP_DEGREES,
     EngineSpec,
@@ -70,6 +77,11 @@ from presidio_arch_translucency.inference import (
 BENCHMARK_SCHEMA: Final[str] = "presidio-hardened/inference-benchmark@1"
 MAX_SWEEP_FILE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_SWEEPS: Final[int] = 16
+#: How arrivals reached the engines: one engine; uniformly random client-side
+#: routing (the model's even Poisson split); or a server-side balancer.
+ROUTINGS: Final[tuple[str, ...]] = ("single", "client-random", "server")
+#: Refusals that describe the harness or an endpoint, never the layout.
+UNINFORMATIVE_CODES: Final[tuple[str, ...]] = ("imbalance", "endpoint")
 #: TTFT passes at an edge when at least this fraction of first tokens is under it.
 TTFT_QUANTILE: Final[float] = 0.99
 #: H3: the worst case over the bracket is within this many percent.
@@ -119,11 +131,15 @@ Classifier = Callable[[dict], "str | None"]
 def classify_saturation(level: dict) -> str | None:
     """Capacity: a level fails by saturating (client-side signals).
 
-    An unsaturated level whose requests failed proves nothing about capacity.
+    An unsaturated level whose requests failed proves nothing about capacity,
+    nor does a replica level refused for uneven load or for failures on some
+    endpoints only (routing or endpoint faults, not the layout's capacity).
     """
     if level.get("saturated"):
         return FAIL
-    return None if level.get("errors") else PASS
+    if level.get("errors") or level.get("refusal_code") in UNINFORMATIVE_CODES:
+        return None
+    return PASS
 
 
 def ttft_fraction_at(level: dict, edge_ms: float) -> float | None:
@@ -351,6 +367,7 @@ class Sweep:
     prompt_tokens: int
     output_tokens: int
     levels: list[dict]
+    routing: str = "single"
 
     @property
     def gpus(self) -> int:
@@ -395,6 +412,9 @@ def _level(entry: object, index: int) -> dict:
     errors = entry.get("errors", 0)
     if isinstance(errors, bool) or not isinstance(errors, int) or errors < 0:
         raise InferenceCalibrationError(f"level {index} has a malformed error count")
+    code = entry.get("refusal_code")
+    if code is not None and (not isinstance(code, str) or not code.isidentifier()):
+        raise InferenceCalibrationError(f"level {index} has a malformed refusal code")
     cdf = entry.get("ttft_cdf")
     if cdf is not None:
         _check_cdf(cdf, index)
@@ -456,11 +476,13 @@ def load_sweep(path: str | Path) -> Sweep:
     tp = _positive_int(config.get("tp"), "tp", max(SUPPORTED_TP_DEGREES))
     if tp not in SUPPORTED_TP_DEGREES:
         raise InferenceCalibrationError(f"tp must be one of {SUPPORTED_TP_DEGREES}")
-    instances = _positive_int(config.get("instances", 1), "instances", 64)
-    if instances != 1:
+    instances = _positive_int(config.get("instances", 1), "instances", MAX_REPLICAS)
+    # Reports before replica layouts carry neither key: one engine.
+    routing = config.get("routing", "single" if instances == 1 else None)
+    allowed = (ROUTINGS[0],) if instances == 1 else ROUTINGS[1:]
+    if not isinstance(routing, str) or routing not in allowed:
         raise InferenceCalibrationError(
-            "replica layouts (instances > 1) are not measurable yet: the harness "
-            "and the observe gate read exactly one engine"
+            f"sweep routing {routing!r} does not fit instances={instances}"
         )
     model = config.get("model")
     if model is None or model == "":
@@ -482,6 +504,7 @@ def load_sweep(path: str | Path) -> Sweep:
             config.get("output_tokens"), "output_tokens", 10**6
         ),
         levels=[_level(entry, i) for i, entry in enumerate(levels)],
+        routing=routing,
     )
 
 
@@ -558,6 +581,7 @@ def _layout(profile: InferenceProfile, sweep: Sweep, slo: Slo) -> dict:
         "layout": sweep.label,
         "tp": sweep.tp,
         "instances": sweep.instances,
+        "routing": sweep.routing,
         "gpus": sweep.gpus,
         "levels": len(sweep.levels),
         "extrapolated": predicted.extrapolated,
@@ -566,6 +590,12 @@ def _layout(profile: InferenceProfile, sweep: Sweep, slo: Slo) -> dict:
             "definition": (
                 "model capacity at ρ = 1 vs client-side saturation, which trips "
                 "below ρ = 1; expect the measured bracket to sit a few percent low"
+                + (
+                    ", lower still for replicas, where a queue on any one engine "
+                    "saturates the level"
+                    if sweep.instances > 1
+                    else ""
+                )
             ),
             "measured": sat.as_dict(),
             "predicted": round(predicted.lambda_sat, 4),

@@ -104,7 +104,9 @@ def _ladder(capacity, start=0.4, ratio=1.25, steps=8):
     return levels
 
 
-def _report(levels, tp=1, instances=None, model="m", error=None, mode="open"):
+def _report(
+    levels, tp=1, instances=None, model="m", error=None, mode="open", routing=None
+):
     config = {
         "model": model,
         "tp": tp,
@@ -114,6 +116,8 @@ def _report(levels, tp=1, instances=None, model="m", error=None, mode="open"):
     }
     if instances is not None:
         config["instances"] = instances
+    if routing is not None:
+        config["routing"] = routing
     return {
         "schema": BENCHMARK_SCHEMA,
         "config": config,
@@ -141,6 +145,11 @@ def test_saturation_classifier():
     assert classify_saturation(_level(1.0, saturated=True)) == FAIL
     # Failed requests without saturation prove nothing about capacity.
     assert classify_saturation({**_level(1.0, verdict="refused"), "errors": 2}) is None
+    uneven = {**_level(1.0, verdict="refused"), "refusal_code": "imbalance"}
+    assert classify_saturation(uneven) is None
+    assert classify_saturation({**uneven, "saturated": True}) == FAIL
+    faulted = {**_level(1.0, verdict="refused"), "refusal_code": "endpoint"}
+    assert classify_saturation(faulted) is None
 
 
 def test_slo_classifier_tpot():
@@ -312,7 +321,15 @@ def test_load_sweep_reads_shape_and_digest(tmp_path):
         (_report([_level(1.0)], mode="closed"), "open-loop"),
         (_report([_level(1.0)], tp=3), "tp must be one of"),
         (_report([_level(1.0)], instances=0), "instances"),
-        (_report([_level(1.0)], instances=2), "not measurable yet"),
+        (_report([_level(1.0)], instances=9), "instances"),
+        (_report([_level(1.0)], instances=2), "routing None"),
+        (_report([_level(1.0)], instances=2, routing="single"), "routing"),
+        (_report([_level(1.0)], routing="client-random"), "routing"),
+        (_report([_level(1.0)], instances=2, routing="jsq"), "routing"),
+        (_report([_level(1.0)], routing="ing"), "routing"),
+        (_report([_level(1.0)], routing=""), "routing"),
+        (_report([_level(1.0)], instances=2, routing=5), "routing"),
+        (_report([_level(1.0)], instances=2, routing=["server"]), "routing"),
         (_report([_level(1.0)], model=""), "no model"),
         (_report([_level(1.0)], model="[bold]x\x1b"), "printable"),
         (_report([_level(1.0)], model=7), "printable"),
@@ -331,6 +348,8 @@ def test_load_sweep_reads_shape_and_digest(tmp_path):
         (_report([{**_level(1.0), "point": {"tpot_ms": 0}}]), "TPOT"),
         (_report([{**_level(1.0), "ttft_cdf": {"0.1": 2.0}}]), "ttft_cdf"),
         (_report(["x"]), "not an object"),
+        (_report([{**_level(1.0), "refusal_code": 3}]), "refusal code"),
+        (_report([{**_level(1.0), "refusal_code": "a b"}]), "refusal code"),
     ],
 )
 def test_load_sweep_refuses_malformed_reports(tmp_path, data, message):
@@ -521,6 +540,45 @@ def test_ttft_slo_must_be_a_bucket_edge(tmp_path):
 # ---------------------------------------------------------------------------
 
 runner = CliRunner()
+
+
+def test_replica_sweeps_rank_from_files(tmp_path):
+    profile = _profile()
+    replica = predict_capacity(profile, 1, 2, PROMPT, OUTPUT, Slo()).lambda_sat
+    tensor = predict_capacity(profile, 2, 1, PROMPT, OUTPUT, Slo()).lambda_sat
+
+    def levels(capacity):
+        return [_level(capacity * f, saturated=f >= 1.0) for f in (0.5, 0.99, 1.01)]
+
+    paths = [
+        _write(
+            tmp_path,
+            "r.json",
+            _report(levels(replica * 0.9), instances=2, routing="client-random"),
+        ),
+        _write(tmp_path, "t.json", _report(levels(tensor), tp=2)),
+    ]
+    sweeps = [load_sweep(path) for path in paths]
+    assert (sweeps[0].label, sweeps[0].routing) == ("tp1×2", "client-random")
+    assert (sweeps[1].label, sweeps[1].routing) == ("tp2×1", "single")
+    result = validate_sweeps(profile, sweeps, Slo())
+    rows = {row["layout"]: row for row in result["layouts"]}
+    assert rows["tp1×2"]["extrapolated"] is True
+    assert rows["tp1×2"]["routing"] == "client-random"
+    assert "any one engine" in rows["tp1×2"]["saturation"]["definition"]
+    assert "any one engine" not in rows["tp2×1"]["saturation"]["definition"]
+    assert result["ranking"][0]["agree"] is True
+
+
+def test_cli_marks_server_routed_replicas(tmp_path):
+    profile = _profile()
+    capacity = predict_capacity(profile, 1, 2, PROMPT, OUTPUT, Slo()).lambda_sat
+    levels = [_level(capacity * f, saturated=f >= 1.0) for f in (0.6, 0.97, 1.03)]
+    path = _write(tmp_path, "s.json", _report(levels, instances=2, routing="server"))
+    out = _invoke("--calibration", "p", "--sweep", path)
+    assert out.exit_code == 0, out.output
+    flat = " ".join(out.output.split())
+    assert "tp1×2 (server-routed)" in flat and "keep these rows out of H3" in flat
 
 
 def _invoke(*args):

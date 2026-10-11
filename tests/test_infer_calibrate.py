@@ -22,6 +22,7 @@ from presidio_arch_translucency.infer_calibrate import (
     load_points_file,
     parse_point,
     point_context_tokens,
+    point_from_mapping,
     predict_point,
     require_hardware_match,
     validate_holdout,
@@ -554,3 +555,12 @@ def test_cli_engine_override_without_calibration():
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["calibrated"] is False
+
+
+def test_replica_point_rows_are_refused_as_calibration_points():
+    # infer-benchmark marks pooled replica points with "instances": they are
+    # validation data, never calibration input.
+    row = InferencePoint(1, 3.0, 900.0, 300.0, 30.0).as_row()
+    assert point_from_mapping(row).batch == 3.0
+    with pytest.raises(InferenceCalibrationError, match="instances"):
+        point_from_mapping({**row, "instances": 2})
