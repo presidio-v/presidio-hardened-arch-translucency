@@ -538,7 +538,7 @@ def commit_price_catalog(
     fd = os.open(
         target,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o644,
+        0o600,  # owner-only, like every file pat writes; share it deliberately
     )
     with os.fdopen(fd, "wb") as fh:
         fh.write(payload)

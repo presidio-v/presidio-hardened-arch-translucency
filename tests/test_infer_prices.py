@@ -90,6 +90,7 @@ def test_commit_round_trip_and_digest(tmp_path):
     path = _committed(tmp_path)
     record = json.loads(path.read_text())
     assert record[COMMITMENT_KEY]["digest"] == catalog_digest(record)
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
     catalog = load_price_catalog(path, today=TODAY)
     assert catalog.name == "prices.json" and len(catalog.entries) == 3
     assert catalog.digest == record[COMMITMENT_KEY]["digest"]
