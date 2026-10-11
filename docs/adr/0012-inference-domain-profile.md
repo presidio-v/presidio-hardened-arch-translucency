@@ -370,4 +370,54 @@ advisor before implementation.
   first, a few percent below the even-split capacity; TPOT remains the
   primary SLO.
 - **Deferred to 1f.** DCGM energy per level through the E1a gate and the dated
-  EU GPU price catalog.
+  EU GPU price catalog (1f took the catalog; energy moved to 1g).
+
+## Amendment — Phase 1f price catalogs (2026-10-11)
+
+H4 (energy-optimal vs cost-optimal layout) needs a price per layout that is
+not simply proportional to GPUs. Design reviewed with the advisor before
+implementation; DCGM energy per level moves to 1g.
+
+- **No prices in the package.** pat ships the schema
+  (`presidio-hardened/gpu-price-catalog@1`), the loader, the pricing rule and
+  a `--template` skeleton without prices. Fixtures use provider `example` on
+  `example.invalid`. List prices move monthly and per tier; keeping catalogs
+  fresh sits on the closed side of the open-core line, and a stale shipped
+  price would end up in someone's audit.
+- **Strict, decimal, EUR.** Unknown keys, duplicate keys and non-finite
+  constants are refused; currency is EUR and VAT excluded by schema; prices
+  are decimal strings bounded to 0.05–500 EUR per GPU-hour after normalising
+  basis (instance or GPU) and unit (hour or minute). Every price carries an
+  https source URL (never fetched) and a UTC retrieval time.
+- **Committed and dated.** `pat infer-prices FILE --commit OUT` writes a
+  SHA-256 over the canonical content; loading fails closed on any change and
+  never re-blesses a committed file. A catalog is one retrieval campaign:
+  every price retrieved on `as_of` or up to 30 days before it and never in
+  the future, no `as_of` more than a day ahead. At use,
+  older than 30 days warns and is marked stale, older than 90 days is refused
+  with no override. Output cites name, `as_of`, digest, selection and every
+  price used with its source.
+- **One family, matched hardware.** Provider, region, GPU and tier must
+  resolve to exactly one family (ambiguity lists the candidates, never picks
+  the cheapest). The priced GPU must match the analysed memory and bandwidth
+  within 1 % and the calibration's `gpu_type`, and `--gpus-per-node` must
+  cover the largest instance sold. `--price-catalog` and `--cost-per-gpu-hour`
+  are mutually exclusive; output without a catalog is unchanged.
+- **Instance packing.** A layout (tp, n) is priced on one SKU of the family:
+  among SKUs holding a TP group, ⌊g/tp⌋ engines per instance, ⌈n/⌊g/tp⌋⌉
+  instances, at least the committed tier's minimum, cheapest SKU wins; a
+  layout no SKU holds has no price. Replicas may share an instance, which
+  holds for VMs but not every bare-metal offer. The recommendation stays the
+  fewest GPUs meeting the SLO; `cheapest` reports the lowest-cost qualifying
+  layout beside it, so the two can be compared (H4).
+- **Review fixes.** Adversarial review found catalog labels reaching Rich
+  markup in refusal messages (escaped now), whole-euro prices cited as
+  `1E+1` (plain decimals now), a hardware gate that checked only one SKU per
+  family (declared bandwidth now splits families and every SKU is checked),
+  future retrieval times, and options silently ignored by
+  `infer-prices --commit` / `--template` (refused now).
+- **Bounded.** Hourly prices only (no egress, storage or network); committed
+  and spot tiers carry term and interruption semantics the hourly model
+  ignores, so the tier is always printed. The digest makes an audit
+  reproducible, not correct.
+

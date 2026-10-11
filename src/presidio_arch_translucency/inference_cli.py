@@ -19,6 +19,7 @@ from typing import Optional
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -40,6 +41,21 @@ from presidio_arch_translucency.infer_calibrate import (
     validate_profile_name,
     write_inference_profile,
 )
+from presidio_arch_translucency.infer_prices import (
+    TIERS,
+    LayoutPrice,
+    PriceCatalogError,
+    PriceFamily,
+    catalog_age,
+    catalog_template,
+    commit_price_catalog,
+    layout_price,
+    load_price_catalog,
+    money,
+    price_catalog_json,
+    require_gpu_match,
+    select_family,
+)
 from presidio_arch_translucency.inference import (
     DEFAULT_ENGINE_PARAMS,
     DEFAULT_GPU_MEMORY_UTILIZATION,
@@ -54,6 +70,7 @@ from presidio_arch_translucency.inference import (
     InferenceDomainError,
     InferenceWorkload,
     ModelSpec,
+    _qualifies,
     analyze_inference,
     evaluate_config,
     representative_configs,
@@ -171,6 +188,113 @@ def _cost_option() -> Optional[float]:  # noqa: UP045
     return typer.Option(
         None, "--cost-per-gpu-hour", help="Uniform GPU price for $/h and $/Mtok."
     )
+
+
+def _price_catalog_option() -> Optional[str]:  # noqa: UP045
+    return typer.Option(
+        None,
+        "--price-catalog",
+        help="Committed, dated EUR GPU price catalog (see `pat infer-prices`); "
+        "prices each layout by instance packing. Not with --cost-per-gpu-hour.",
+    )
+
+
+def _price_provider_option() -> Optional[str]:  # noqa: UP045
+    return typer.Option(None, "--price-provider", help="Catalog provider slug.")
+
+
+def _price_region_option() -> Optional[str]:  # noqa: UP045
+    return typer.Option(
+        None,
+        "--price-region",
+        help="Catalog country code (e.g. FR) or datacenter label, matched exactly.",
+    )
+
+
+def _price_gpu_option() -> Optional[str]:  # noqa: UP045
+    return typer.Option(None, "--price-gpu", help="Catalog GPU model, e.g. L40S.")
+
+
+def _price_tier_option() -> str:
+    return typer.Option(
+        "on-demand", "--price-tier", help="on-demand, committed or spot."
+    )
+
+
+class _Pricing:
+    """One selected price family, remembering what each layout was billed."""
+
+    def __init__(self, family: PriceFamily, age_days: int, stale: bool) -> None:
+        self.family = family
+        self.age_days = age_days
+        self.stale = stale
+        self.prices: dict[tuple[int, int], LayoutPrice] = {}
+
+    def cost(self, tp: int, instances: int) -> float | None:
+        price = layout_price(self.family, tp, instances)
+        self.prices[(tp, instances)] = price
+        return None if price.eur_per_hour is None else float(price.eur_per_hour)
+
+    def price_of(self, c: ConfigResult) -> dict | None:
+        price = self.prices.get((c.tp, c.instances))
+        return None if price is None else price.as_dict()
+
+    def as_json(self) -> dict:
+        used = [p.entry for p in self.prices.values() if p.entry is not None]
+        return price_catalog_json(self.family, self.age_days, self.stale, used)
+
+    def note(self) -> str:
+        catalog = self.family.catalog
+        text = (
+            f"[dim]Prices (EUR, VAT excluded): {escape(self.family.describe())} · "
+            f"{escape(catalog.name)} as_of {catalog.as_of} · commitment "
+            f"{catalog.digest[:16]}… · billed SKU per layout in --json[/]"
+        )
+        if self.stale:
+            text += f"\n[yellow]Price catalog is {self.age_days} days old.[/]"
+        return text
+
+
+def _resolve_pricing(
+    catalog: str | None,
+    provider: str | None,
+    region: str | None,
+    gpu: str | None,
+    tier: str,
+    cost_per_gpu_hour: float | None,
+    gpu_memory_gb: float,
+    gpu_bandwidth_gbs: float,
+    gpus_per_node: int,
+    profile: InferenceProfile | None,
+) -> _Pricing | None:
+    """A verified, fresh price family, or None for uniform / no pricing."""
+    if catalog is None:
+        if provider or region or gpu or tier != "on-demand":
+            raise PriceCatalogError("--price-* options need --price-catalog")
+        return None
+    if cost_per_gpu_hour is not None:
+        raise PriceCatalogError(
+            "--price-catalog cannot be combined with --cost-per-gpu-hour; the "
+            "catalog supplies the prices"
+        )
+    if provider is None:
+        raise PriceCatalogError("--price-catalog needs --price-provider")
+    loaded = load_price_catalog(catalog)
+    age, stale = catalog_age(loaded)
+    family = select_family(loaded, provider, region, gpu, tier)
+    require_gpu_match(
+        family,
+        gpu_memory_gb,
+        gpu_bandwidth_gbs,
+        gpu_type=profile.hardware.gpu_type if profile is not None else None,
+        gpus_per_node=gpus_per_node,
+    )
+    if stale:
+        err_console.print(
+            f"[yellow]Warning:[/] price catalog {escape(loaded.name)} is {age} "
+            f"days old (as_of {loaded.as_of})."
+        )
+    return _Pricing(family, age, stale)
 
 
 def _bw_eff_option() -> Optional[float]:  # noqa: UP045
@@ -353,11 +477,43 @@ def _fmt(value: float | None, spec: str) -> str:
     return "—" if value is None else format(value, spec)
 
 
-def _config_json(c: ConfigResult, profile: InferenceProfile | None = None) -> dict:
+def _config_json(
+    c: ConfigResult,
+    profile: InferenceProfile | None = None,
+    pricing: _Pricing | None = None,
+) -> dict:
     data = asdict(c)
     data["strategy"] = c.strategy.value
     data["extrapolated"] = _extrapolated(c, profile)
+    if pricing is not None:
+        data["price"] = pricing.price_of(c)
     return data
+
+
+def _pricing_json(
+    pricing: _Pricing | None,
+    analysis: InferenceAnalysis,
+    profile: InferenceProfile | None,
+) -> dict:
+    """Catalog fields, only when a catalog priced the layouts (else unchanged)."""
+    if pricing is None:
+        return {}
+    cheapest = _cheapest(analysis)
+    return {
+        "price_catalog": pricing.as_json(),
+        "cheapest": (
+            _config_json(cheapest, profile, pricing) if cheapest is not None else None
+        ),
+    }
+
+
+def _cheapest(analysis: InferenceAnalysis) -> ConfigResult | None:
+    """The lowest-cost layout meeting the SLO (H4: may differ from the fewest
+    GPUs once instance packing prices layouts differently)."""
+    priced = [
+        c for c in analysis.configs if _qualifies(c) and c.cost_per_hour is not None
+    ]
+    return min(priced, key=lambda c: (c.cost_per_hour, c.gpus)) if priced else None
 
 
 # -- rendering -------------------------------------------------------------------
@@ -368,6 +524,7 @@ def _render_analysis(
     show_all: bool,
     note: str = _UNCALIBRATED_NOTE,
     profile: InferenceProfile | None = None,
+    pricing: _Pricing | None = None,
 ) -> None:
     rows = analysis.configs if show_all else representative_configs(analysis)
     has_cost = any(c.cost_per_hour is not None for c in rows)
@@ -389,8 +546,9 @@ def _render_analysis(
         ("SLO", "center"),
     ):
         table.add_column(name, justify=justify, no_wrap=True)
+    money = "€" if pricing is not None else "$"
     if has_cost:
-        table.add_column("$/M out", justify="right", no_wrap=True)
+        table.add_column(f"{money}/M out", justify="right", no_wrap=True)
 
     rec = analysis.recommended
     for c in rows:
@@ -447,6 +605,17 @@ def _render_analysis(
                 f"(demand {analysis.workload.requests_per_second:g} req/s)"
             )
         console.print(Panel(body, title="Recommendation", border_style="red"))
+    if pricing is not None:
+        cheapest = _cheapest(analysis)
+        if cheapest is not None:
+            billed = pricing.prices[(cheapest.tp, cheapest.instances)]
+            console.print(
+                f"Cheapest meeting the SLO: {cheapest.strategy.value} "
+                f"tp={cheapest.tp} × {cheapest.instances} on {billed.instances_billed}"
+                f"× {escape(billed.entry.sku) if billed.entry else '?'} → "
+                f"€{cheapest.cost_per_hour:.2f}/h"
+            )
+        console.print(pricing.note())
     console.print(note)
 
 
@@ -473,6 +642,11 @@ def infer_analyze_command(
     ttft_slo_ms: Optional[float] = _ttft_slo_option(),  # noqa: UP045
     tpot_slo_ms: Optional[float] = _tpot_slo_option(),  # noqa: UP045
     cost_per_gpu_hour: Optional[float] = _cost_option(),  # noqa: UP045
+    price_catalog: Optional[str] = _price_catalog_option(),  # noqa: UP045
+    price_provider: Optional[str] = _price_provider_option(),  # noqa: UP045
+    price_region: Optional[str] = _price_region_option(),  # noqa: UP045
+    price_gpu: Optional[str] = _price_gpu_option(),  # noqa: UP045
+    price_tier: str = _price_tier_option(),
     bandwidth_efficiency: Optional[float] = _bw_eff_option(),  # noqa: UP045
     step_overhead_ms: Optional[float] = _step_overhead_option(),  # noqa: UP045
     prefill_tokens_per_s: Optional[float] = _prefill_rate_option(),  # noqa: UP045
@@ -516,6 +690,18 @@ def infer_analyze_command(
             gpu_bandwidth_gbs,
             gpu_memory_gb,
         )
+        pricing = _resolve_pricing(
+            price_catalog,
+            price_provider,
+            price_region,
+            price_gpu,
+            price_tier,
+            cost_per_gpu_hour,
+            gpu_memory_gb,
+            gpu_bandwidth_gbs,
+            gpus_per_node,
+            profile,
+        )
         analysis = analyze_inference(
             workload,
             model,
@@ -525,12 +711,16 @@ def infer_analyze_command(
             ttft_slo_ms=ttft_slo_ms,
             tpot_slo_ms=tpot_slo_ms,
             cost_per_gpu_hour=cost_per_gpu_hour,
+            layout_cost=pricing.cost if pricing is not None else None,
         )
     except (InferenceDomainError, InferenceCalibrationError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
         err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except PriceCatalogError as exc:
+        err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
     rec = analysis.recommended
@@ -546,18 +736,23 @@ def infer_analyze_command(
                     "modelled": True,
                     **_calibration_json(profile, gpu, engine),
                     "ttft_p99_basis": "prefill + M/M/c wait; no interference",
-                    "recommended": _config_json(rec, profile) if rec else None,
+                    **_pricing_json(pricing, analysis, profile),
+                    "recommended": (
+                        _config_json(rec, profile, pricing) if rec else None
+                    ),
                     "best_effort": (
-                        _config_json(analysis.best_effort, profile)
+                        _config_json(analysis.best_effort, profile, pricing)
                         if analysis.best_effort
                         else None
                     ),
                     "baseline": (
-                        _config_json(analysis.baseline, profile)
+                        _config_json(analysis.baseline, profile, pricing)
                         if analysis.baseline
                         else None
                     ),
-                    "configs": [_config_json(c, profile) for c in analysis.configs],
+                    "configs": [
+                        _config_json(c, profile, pricing) for c in analysis.configs
+                    ],
                 },
                 separators=(",", ":"),
             )
@@ -568,6 +763,7 @@ def infer_analyze_command(
         show_all=show_all,
         note=_note(profile, gpu, engine),
         profile=profile,
+        pricing=pricing,
     )
 
 
@@ -589,6 +785,11 @@ def infer_what_if_command(
     ttft_slo_ms: Optional[float] = _ttft_slo_option(),  # noqa: UP045
     tpot_slo_ms: Optional[float] = _tpot_slo_option(),  # noqa: UP045
     cost_per_gpu_hour: Optional[float] = _cost_option(),  # noqa: UP045
+    price_catalog: Optional[str] = _price_catalog_option(),  # noqa: UP045
+    price_provider: Optional[str] = _price_provider_option(),  # noqa: UP045
+    price_region: Optional[str] = _price_region_option(),  # noqa: UP045
+    price_gpu: Optional[str] = _price_gpu_option(),  # noqa: UP045
+    price_tier: str = _price_tier_option(),
     bandwidth_efficiency: Optional[float] = _bw_eff_option(),  # noqa: UP045
     step_overhead_ms: Optional[float] = _step_overhead_option(),  # noqa: UP045
     prefill_tokens_per_s: Optional[float] = _prefill_rate_option(),  # noqa: UP045
@@ -625,6 +826,18 @@ def infer_what_if_command(
             gpu_bandwidth_gbs,
             gpu_memory_gb,
         )
+        pricing = _resolve_pricing(
+            price_catalog,
+            price_provider,
+            price_region,
+            price_gpu,
+            price_tier,
+            cost_per_gpu_hour,
+            gpu_memory_gb,
+            gpu_bandwidth_gbs,
+            gpus_per_node,
+            profile,
+        )
         c = evaluate_config(
             tp,
             instances,
@@ -636,12 +849,16 @@ def infer_what_if_command(
             ttft_slo_ms=ttft_slo_ms,
             tpot_slo_ms=tpot_slo_ms,
             cost_per_gpu_hour=cost_per_gpu_hour,
+            layout_cost=pricing.cost if pricing is not None else None,
         )
     except (InferenceDomainError, InferenceCalibrationError) as exc:
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
         err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    except PriceCatalogError as exc:
+        err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
     log_security_event(
@@ -652,8 +869,10 @@ def infer_what_if_command(
         payload = {
             "modelled": True,
             **_calibration_json(profile, gpu, engine),
-            **_config_json(c, profile),
+            **_config_json(c, profile, pricing),
         }
+        if pricing is not None:
+            payload["price_catalog"] = pricing.as_json()
         typer.echo(json.dumps(payload, separators=(",", ":")))
         return
 
@@ -664,6 +883,18 @@ def infer_what_if_command(
     )
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
+    money = "€" if pricing is not None else "$"
+    billed: list[tuple[str, str]] = []
+    if pricing is not None and (price := pricing.prices.get((c.tp, c.instances))):
+        billed.append(
+            (
+                "Billed",
+                f"{price.instances_billed}× {escape(price.entry.sku)} "
+                f"({price.gpus_billed} GPUs)"
+                if price.entry is not None
+                else str(price.reason),
+            )
+        )
     status = (
         "infeasible (weights or KV cache do not fit)"
         if not c.feasible
@@ -689,11 +920,14 @@ def infer_what_if_command(
         ("TTFT p99 ms", _fmt(c.ttft_p99_ms, ".1f")),
         ("TPOT ms", _fmt(c.tpot_ms, ".1f")),
         ("SLO met", "yes" if c.slo_ok else "no"),
-        ("$/h", _fmt(c.cost_per_hour, ".2f")),
-        ("$/M output tokens", _fmt(c.cost_per_million_output_tokens, ".4f")),
+        (f"{money}/h", _fmt(c.cost_per_hour, ".2f")),
+        (f"{money}/M output tokens", _fmt(c.cost_per_million_output_tokens, ".4f")),
+        *billed,
     ):
         table.add_row(label, value)
     console.print(table)
+    if pricing is not None:
+        console.print(pricing.note())
     console.print(_note(profile, gpu, engine))
 
 
@@ -1462,3 +1696,151 @@ def infer_benchmark_command(
     )
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+# -- price catalogs ------------------------------------------------------------------
+
+
+def infer_prices_command(
+    catalog: Optional[str] = typer.Argument(  # noqa: UP045
+        None, help="Price catalog JSON (committed, or the input of --commit)."
+    ),
+    provider: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--provider", help="Only this provider slug."
+    ),
+    region: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--region", help="Only this country code or datacenter label."
+    ),
+    gpu: Optional[str] = typer.Option(None, "--gpu", help="Only this GPU model."),  # noqa: UP045
+    tier: Optional[str] = typer.Option(  # noqa: UP045
+        None, "--tier", help="Only this tier: on-demand, committed or spot."
+    ),
+    commit: Optional[str] = typer.Option(  # noqa: UP045
+        None,
+        "--commit",
+        help="Validate CATALOG (uncommitted) and write it, committed, to this new "
+        "file.",
+    ),
+    template: bool = typer.Option(
+        False, "--template", help="Print an empty catalog skeleton to fill in."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
+) -> None:
+    """List, commit or start a dated EUR GPU price catalog.
+
+    pat ships no prices: an operator records one retrieval campaign (source
+    URL and retrieval time per price, VAT excluded), commits it, and passes it
+    to `infer-analyze` / `infer-what-if --price-catalog`. Catalogs older than
+    90 days are refused.
+    """
+    filters = {
+        "--provider": provider,
+        "--region": region,
+        "--gpu": gpu,
+        "--tier": tier,
+        "--json": as_json or None,
+    }
+    try:
+        if template:
+            if catalog is not None or commit is not None or any(filters.values()):
+                raise PriceCatalogError("--template takes no other arguments")
+            typer.echo(json.dumps(catalog_template(), indent=2))
+            return
+        if commit is not None and any(filters.values()):
+            used = ", ".join(k for k, v in filters.items() if v)
+            raise PriceCatalogError(f"--commit does not take {used}")
+        if catalog is None:
+            raise PriceCatalogError("give a CATALOG file (or --template)")
+        if commit is not None:
+            try:
+                digest = commit_price_catalog(catalog, commit)
+            except FileExistsError as exc:
+                raise PriceCatalogError(f"{commit} already exists") from exc
+            except OSError as exc:
+                raise PriceCatalogError(f"cannot write {commit}: {exc}") from exc
+            log_security_event("INFER_PRICES_COMMIT", {"digest": digest})
+            info_console.print(f"Committed {commit} (digest {digest})")
+            return
+        if tier is not None and tier not in TIERS:
+            raise PriceCatalogError(f"tier must be one of {TIERS}")
+        loaded = load_price_catalog(catalog)
+        age, stale = catalog_age(loaded)
+    except PriceCatalogError as exc:
+        err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
+
+    entries = [
+        e
+        for e in loaded.entries
+        if (provider is None or e.provider == provider)
+        and (region is None or region in (e.country, e.datacenter))
+        and (gpu is None or e.gpu_model.casefold() == gpu.casefold())
+        and (tier is None or e.tier == tier)
+    ]
+    log_security_event(
+        "INFER_PRICES_INVOCATION", {"entries": len(entries), "stale": stale}
+    )
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "name": loaded.name,
+                    "as_of": loaded.as_of.isoformat(),
+                    "digest": loaded.digest,
+                    "age_days": age,
+                    "stale": stale,
+                    "currency": "EUR",
+                    "vat": "excluded",
+                    "entries": [
+                        {
+                            "provider": e.provider,
+                            "country": e.country,
+                            "datacenter": e.datacenter,
+                            "gpu": e.gpu_model,
+                            "memory_gb": e.memory_gb,
+                            "tier": e.tier,
+                            "term_months": e.term_months,
+                            "min_instances": e.min_instances,
+                            "eur_per_instance_hour": money(e.eur_per_instance_hour),
+                            **e.cited(),
+                        }
+                        for e in entries
+                    ],
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+    table = Table(
+        title=f"GPU prices: {escape(loaded.name)} (EUR, VAT excluded)",
+        box=box.SIMPLE_HEAVY,
+    )
+    for col, justify in (
+        ("Provider", "left"),
+        ("Region", "left"),
+        ("GPU", "left"),
+        ("SKU", "left"),
+        ("GPUs", "right"),
+        ("Tier", "left"),
+        ("€/GPU-h", "right"),
+        ("€/inst-h", "right"),
+        ("Retrieved", "left"),
+    ):
+        table.add_column(col, justify=justify)
+    for e in entries:
+        table.add_row(
+            escape(e.provider),
+            escape(e.country + (f"/{e.datacenter}" if e.datacenter else "")),
+            escape(e.gpu_model),
+            escape(e.sku),
+            str(e.gpus_per_instance),
+            e.tier + (f" {e.term_months}mo" if e.term_months else ""),
+            f"{e.eur_per_gpu_hour:.2f}",
+            f"{e.eur_per_instance_hour:.2f}",
+            e.retrieved_at.strftime("%Y-%m-%d"),
+        )
+    console.print(table)
+    console.print(
+        f"as_of {loaded.as_of} · {age} days old · commitment {loaded.digest}"
+        + (" · [yellow]stale[/]" if stale else "")
+    )

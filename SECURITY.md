@@ -167,6 +167,11 @@ sidecar authors must not treat shape validation as measured-ness.
   measured-mode integrity arrives with the v0.21 chained `energy_observations`
   store. Per invariant E1, pat never actuates power (no DVFS, no capping), so
   the energy surface adds no write path to infrastructure.
+- GPU price catalogs (`pat infer-prices`, `--price-catalog`) are operator
+  files. pat ships no prices and never fetches any: the catalog commitment
+  proves a file is unchanged since it was committed, not that its prices were
+  right at the source. Source URLs are validated (https, no credentials) and
+  only displayed, never requested. Catalogs older than 90 days are refused.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
 - GCP pricing is sourced from an unofficial third-party pricelist endpoint and
   should be treated as a best-effort estimate.

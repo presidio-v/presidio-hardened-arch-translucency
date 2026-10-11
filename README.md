@@ -1216,8 +1216,39 @@ inconclusive. A `--ttft-slo-ms` must be one
 of vLLM's TTFT bucket edges (e.g. 250 or 500): the validator judges it from
 the exact fraction of first tokens under that edge, because the
 histogram-interpolated p99 can be off by up to 2×. Sweep files are checked and
-their SHA-256 echoed, but they are unsigned. Replica layouts (several engines
-per sweep) are not measurable yet, so each sweep is one engine at one tp.
+their SHA-256 echoed, but they are unsigned. Replica sweeps (several engines
+per sweep) are always marked extrapolated, and server-routed ones are flagged
+as outside H3, so give one sweep per layout to rank layouts at equal GPU count.
+
+### GPU price catalogs
+
+pat ships no prices. To price layouts in EUR, record one retrieval campaign in
+a catalog (one entry per instance type, with its source URL and retrieval
+time, VAT excluded), commit it, and pass it to `infer-analyze` or
+`infer-what-if`:
+
+```bash
+pat infer-prices --template > draft.json      # fill in; the skeleton has no prices
+pat infer-prices draft.json --commit prices-2026-10.json
+pat infer-prices prices-2026-10.json --gpu L40S
+
+pat infer-analyze -r 10 -p 900 -o 300 -w 16 -k 131072 -n 4 -m 48 -b 864 \
+  --tpot-slo-ms 50 --calibration l40s-llama8b \
+  --price-catalog prices-2026-10.json --price-provider <provider> --price-region FR
+```
+
+Each layout is priced on the cheapest instance type of the selected family
+that holds one TP group, packing replicas onto shared instances: two replicas
+on a 2-GPU instance can cost less than two 1-GPU instances, and tp4 on an
+8-GPU instance pays for eight GPUs. A committed tier bills at least its minimum
+instances. The selection (provider, region, GPU, tier) must match exactly one
+family, the priced GPU must match the analysed memory and bandwidth (and the
+calibration's GPU type), and `--gpus-per-node` must cover the largest instance.
+JSON output cites the catalog's `as_of`, digest and every price used with its
+source; `cheapest` is the lowest-cost layout meeting the SLO, which can differ
+from the fewest-GPU recommendation. A catalog edited after commit is refused;
+one older than 30 days warns, older than 90 days is refused. Hourly prices only:
+egress, storage and network are out of scope.
 
 ---
 

@@ -51,6 +51,7 @@ speculative decoding, MoE, quantized KV, heterogeneous GPUs, energy.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
@@ -451,6 +452,7 @@ def evaluate_config(
     ttft_slo_ms: float | None = None,
     tpot_slo_ms: float | None = None,
     cost_per_gpu_hour: float | None = None,
+    layout_cost: Callable[[int, int], float | None] | None = None,
 ) -> ConfigResult:
     """Evaluate one ``(tp, n)`` configuration — the ``infer-what-if`` primitive.
 
@@ -480,6 +482,10 @@ def evaluate_config(
         _require_positive(tpot_slo_ms, "tpot_slo_ms", 3_600_000.0)
     if cost_per_gpu_hour is not None:
         _require_positive(cost_per_gpu_hour, "cost_per_gpu_hour", 1e4)
+        if layout_cost is not None:
+            raise InferenceDomainError(
+                "give either a uniform GPU price or a layout price, not both"
+            )
 
     b_max = max_batch(workload, model, gpu, engine, tp)
     if b_max < 1:
@@ -503,9 +509,16 @@ def evaluate_config(
     denom = 1.0 - lam_i * s1
     b_eff = lam_i * s0 / denom if denom > 0.0 else math.inf
     saturated = b_eff >= b_max or lam_i >= capacity_i
-    cost_per_hour = (
-        cost_per_gpu_hour * tp * instances if cost_per_gpu_hour is not None else None
-    )
+    # A layout price (instance packing from a price catalog) replaces the
+    # uniform per-GPU price when given; None means the layout has no price.
+    if layout_cost is not None:
+        cost_per_hour = layout_cost(tp, instances)
+    else:
+        cost_per_hour = (
+            cost_per_gpu_hour * tp * instances
+            if cost_per_gpu_hour is not None
+            else None
+        )
 
     if saturated:
         served = capacity
@@ -592,6 +605,7 @@ def analyze_inference(
     ttft_slo_ms: float | None = None,
     tpot_slo_ms: float | None = None,
     cost_per_gpu_hour: float | None = None,
+    layout_cost: Callable[[int, int], float | None] | None = None,
 ) -> InferenceAnalysis:
     """Sweep every ``(tp, n)`` with ``tp · n ≤ N`` and recommend one.
 
@@ -619,6 +633,7 @@ def analyze_inference(
                     ttft_slo_ms,
                     tpot_slo_ms,
                     cost_per_gpu_hour,
+                    layout_cost,
                 )
             )
 
