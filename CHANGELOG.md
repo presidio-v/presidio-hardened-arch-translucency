@@ -81,6 +81,15 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   marks server-routed rows as outside H3, so the ranking at equal GPU budget
   can now be measured.
 
+- `pat infer-prices` and `--price-catalog` on `infer-analyze` / `infer-what-if`
+  price layouts from a dated EUR GPU price catalog (Inference Arc Phase 1f).
+  pat ships the schema and loader, no prices. A catalog is one retrieval
+  campaign with a source URL and time per price, committed by digest and
+  refused after any edit or past 90 days (warned past 30). Each layout is
+  priced by packing TP groups onto the cheapest instance type that holds one,
+  so equal GPU counts can cost different amounts; JSON cites the catalog and
+  every price used and names the cheapest layout meeting the SLO.
+
 ### Changed
 
 - Inference model: the decode step reads the mean live context `P + O/2`
