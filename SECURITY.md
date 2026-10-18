@@ -172,6 +172,14 @@ sidecar authors must not treat shape validation as measured-ness.
   proves a file is unchanged since it was committed, not that its prices were
   right at the source. Source URLs are validated (https, no credentials) and
   only displayed, never requested. Catalogs older than 90 days are refused.
+- `pat infer-benchmark --energy-gpu` reads direct DCGM counters through the
+  E1a gate (a `gpu` label, no estimator tell, exactly one series per named
+  GPU) over the existing Prometheus path (`PAT_PROMETHEUS_TOKEN`, https). Its
+  joules go into the unsigned benchmark report only, never into the chained
+  `energy_observations` store or an `energy-reading@1`. GPU UUIDs are
+  validated to hex and hyphens before they enter PromQL. Which GPUs serve the
+  model is the operator's statement; the landing check can falsify it, not
+  prove it.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
 - GCP pricing is sourced from an unofficial third-party pricelist endpoint and
   should be treated as a best-effort estimate.
