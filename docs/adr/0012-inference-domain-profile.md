@@ -473,3 +473,59 @@ gates.
 - **Bounded.** GPU board energy only; no host CPU, memory, NIC or cooling,
   while catalog prices cover whole instances (hosts per layout recorded).
   Host RAPL is not read here.
+
+## Amendment — Phase 1h H4 verdict (2026-10-18)
+
+`pat infer-validate --sweep … --energy-at λ*` answers H4 from the measured
+energy (1g) and the price catalog (1f). Measured only: pat has no inference
+energy model. Design reviewed with the advisor before implementation.
+
+- **Pre-registered statement.** At λ*, the qualifying layout with the least
+  measured energy per output token is not among the qualifying layouts with
+  the lowest price per hour (within 0.5 %), and its advantage exceeds the tie
+  margin. `diverge` passes; `coincide` and `cost_tied` fail, because a cost
+  optimiser that breaks ties on energy loses nothing; otherwise
+  `inconclusive` with a reason (fewer than two qualifying layouts,
+  `energy_unresolved`, `no_prices`, `host_scope`). λ* must be a non-refine
+  level of every sweep and is echoed, never derived from the data. An SLO is
+  required.
+- **Two quantities, two bases.** Cost ranks €/h, which at a common λ* is the
+  price per nominal output token λ*·O. Dividing by measured tokens would let
+  counter noise (in-flight edges, rejections) break exact price ties between
+  equal-GPU layouts on one SKU. Energy per token stays measured. A layout
+  whose measured output-token rate misses λ*·O by more than 5 % does not
+  qualify (`throughput_miss`).
+- **Qualification.** SLO pass at λ*, energy recorded and steady, throughput
+  within 5 %, drift control not flagged (a missing control qualifies but is
+  marked and warned). Sweeps of different GPU models or different power
+  limits are refused. GPU names compare as casefolded tokens without a
+  vendor between profile, catalog and `--price-gpu`; DCGM's `modelName`
+  spells out the variant ("NVIDIA H100 80GB HBM3", "NVIDIA A100-SXM4-80GB"),
+  so it is matched to the profile by family ("h100", "a100") while memory
+  and bandwidth pin the variant; "L40" ≠ "L40S" either way; different drivers
+  and mean temperatures more than 10 °C apart are warned. The loader checks
+  every energy record for self-consistency (watts = J/window, J/token =
+  J/tokens) and the energy section's GPU groups against tp × instances.
+- **Tie margin from the measurement.** Any layout within max(5 %,
+  |drift_e| + |drift_r|) of the least-energy layout e is a close contender:
+  two sweeps that each pass the 5 % drift control can still differ by about
+  10 %. `diverge` needs no close contender (so e also beats every cheapest
+  layout by its own margin, not just the runner-up); a fail needs e among the
+  cheapest and every close contender among them too, since the optimum is
+  then cheapest whichever it is; otherwise `energy_unresolved`
+  (implementation review).
+- **Host scope, relative to e.** Joules cover GPU boards, prices whole
+  instances. Host draw can only help layouts on fewer hosts than e, so
+  `diverge` stands unless such a layout qualifies, and a fail stands unless
+  such a layout lies outside the cost set; otherwise `host_scope`, with the
+  least host draw per host that would let one overtake e (J_e + s_e·P =
+  J_r + s_r·P, s = hosts·window/tokens), arithmetic on measured quantities.
+  A layout on more hosts than e never blocks a verdict.
+- **λ* carries the claim.** At a low λ every layout idles and the fewest GPUs
+  win on both axes. Each layout reports power above idle (flagged
+  idle-dominated below twice the landing rise) and λ* over its measured SLO
+  capacity (the bracket midpoint, or an upper bound from the highest passing
+  level when the sweep never failed), and the verdict is repeated at every other shared level so a
+  reader sees whether λ* is representative. The comparison is the cheapest
+  layout with the least energy (conservative); `tie_energy_spread` reports
+  what a cost-only optimiser could lose by chance inside a price tie.

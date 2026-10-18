@@ -368,6 +368,9 @@ class Sweep:
     output_tokens: int
     levels: list[dict]
     routing: str = "single"
+    window_s: int | None = None
+    # Measured energy (1g): gated GPUs, idle baselines, drift control.
+    energy: dict | None = None
 
     @property
     def gpus(self) -> int:
@@ -386,7 +389,119 @@ def _positive_int(value: object, name: str, maximum: int) -> int:
     return value
 
 
-def _level(entry: object, index: int) -> dict:
+def _finite_positive(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value > 0.0
+    )
+
+
+def _check_level_energy(energy: object, index: int, window_s: int | None) -> None:
+    """A level's energy record is self-consistent (the file is unsigned)."""
+    malformed = InferenceCalibrationError(
+        f"level {index} has a malformed energy record"
+    )
+    if not isinstance(energy, dict) or energy.get("verdict") not in (
+        "recorded",
+        "refused",
+    ):
+        raise malformed
+    if not isinstance(energy.get("steady"), bool):
+        raise malformed
+    if energy["verdict"] != "recorded":
+        return
+    names = ("joules", "watts", "output_tokens", "j_per_output_token", "window_s")
+    if not all(_finite_positive(energy.get(name)) for name in names):
+        raise malformed
+    if window_s is not None and energy["window_s"] != window_s:
+        raise malformed
+    if not math.isclose(
+        energy["watts"], energy["joules"] / energy["window_s"], rel_tol=1e-6
+    ) or not math.isclose(
+        energy["j_per_output_token"],
+        energy["joules"] / energy["output_tokens"],
+        rel_tol=1e-6,
+    ):
+        raise malformed
+    gpus = energy.get("gpus")
+    if not isinstance(gpus, list) or not gpus:
+        raise malformed
+    for gpu in gpus:
+        if not (
+            isinstance(gpu, dict)
+            and isinstance(gpu.get("uuid"), str)
+            and isinstance(gpu.get("host"), str)
+        ):
+            raise malformed
+        temp = gpu.get("temp_mean_c")
+        if temp is not None and (
+            isinstance(temp, bool)
+            or not isinstance(temp, (int, float))
+            or not math.isfinite(temp)
+        ):
+            raise malformed
+
+
+def _check_report_energy(energy: object, tp: int, instances: int) -> dict:
+    """The report's energy section matches the layout and is well formed."""
+    malformed = InferenceCalibrationError("sweep report has a malformed energy section")
+    if not isinstance(energy, dict):
+        raise malformed
+    groups = energy.get("gpus")
+    if (
+        not isinstance(groups, list)
+        or len(groups) != instances
+        or not all(
+            isinstance(group, list)
+            and len(group) == tp
+            and all(isinstance(uuid, str) for uuid in group)
+            for group in groups
+        )
+    ):
+        raise InferenceCalibrationError(
+            f"sweep energy names GPUs that do not form {instances} engine(s) of tp={tp}"
+        )
+    labels = energy.get("labels")
+    hosts = energy.get("hosts")
+    if (
+        not isinstance(labels, dict)
+        or not all(isinstance(entry, dict) for entry in labels.values())
+        or isinstance(hosts, bool)
+        or not isinstance(hosts, int)
+        or hosts < 1
+    ):
+        raise malformed
+    idle = energy.get("idle_before")
+    if idle is not None and not (
+        isinstance(idle, dict)
+        and all(
+            isinstance(entry, dict) and _finite_positive(entry.get("watts"))
+            for entry in idle.values()
+        )
+    ):
+        raise malformed
+    drift = energy.get("drift_control")
+    if drift is not None:
+        value = drift.get("drift") if isinstance(drift, dict) else None
+        if (
+            not isinstance(drift, dict)
+            or drift.get("drifted") not in (True, False, None)
+            or (
+                value is not None
+                and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                )
+            )
+        ):
+            raise malformed
+    return energy
+
+
+def _level(entry: object, index: int, window_s: int | None = None) -> dict:
     if not isinstance(entry, dict):
         raise InferenceCalibrationError(f"level {index} is not an object")
     lam = entry.get("level")
@@ -418,6 +533,9 @@ def _level(entry: object, index: int) -> dict:
     cdf = entry.get("ttft_cdf")
     if cdf is not None:
         _check_cdf(cdf, index)
+    energy = entry.get("energy")
+    if energy is not None:
+        _check_level_energy(energy, index, window_s)
     return entry
 
 
@@ -491,6 +609,12 @@ def load_sweep(path: str | Path) -> Sweep:
     levels = data.get("levels")
     if not isinstance(levels, list) or not levels:
         raise InferenceCalibrationError("sweep report has no levels")
+    window_s = config.get("window_s")
+    if window_s is not None:
+        window_s = _positive_int(window_s, "window_s", 86_400)
+    energy = data.get("energy")
+    if energy is not None:
+        energy = _check_report_energy(energy, tp, instances)
     return Sweep(
         path=str(path),
         sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -503,8 +627,10 @@ def load_sweep(path: str | Path) -> Sweep:
         output_tokens=_positive_int(
             config.get("output_tokens"), "output_tokens", 10**6
         ),
-        levels=[_level(entry, i) for i, entry in enumerate(levels)],
+        levels=[_level(entry, i, window_s) for i, entry in enumerate(levels)],
         routing=routing,
+        window_s=window_s,
+        energy=energy,
     )
 
 

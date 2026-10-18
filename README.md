@@ -1267,6 +1267,32 @@ their SHA-256 echoed, but they are unsigned. Replica sweeps (several engines
 per sweep) are always marked extrapolated, and server-routed ones are flagged
 as outside H3, so give one sweep per layout to rank layouts at equal GPU count.
 
+To test H4 (does the cheapest layout also use the least energy?), sweep every
+layout with `--energy-gpu` on one level ladder, register a common rate λ*
+from that ladder before sweeping, and compare at it:
+
+```bash
+pat infer-validate --calibration l40s-llama8b --tpot-slo-ms 45 \
+  --sweep sweep-tp1.json --sweep sweep-tp2.json --sweep sweep-tp1x2.json \
+  --energy-at 2.5 --price-catalog prices.json --price-provider example
+```
+
+A layout qualifies at λ* when its level there meets the SLO, its energy was
+recorded on a steady window, its measured output-token rate is within 5 % of
+λ*·O, and its drift control did not flag. Cost ranks euros per hour, which at
+one λ* is the price per nominal output token; energy ranks measured joules
+per output token. **diverge** (H4 passes) means the least-energy layout is
+not among the cheapest (within 0.5 %) and beats every other qualifying
+layout by more than 5 %, widened by both sweeps' measured drift.
+**coincide** and **cost_tied** (the least-energy layout is one of several
+equally cheap) fail H4. Joules cover GPU boards while prices cover whole
+instances, so a verdict that a layout on fewer hosts could overturn is
+reported as `host_scope`, with the host draw per host that would flip it. Each layout also
+shows its power above idle (flagged when idle dominates, which favours the
+fewest GPUs on both axes) and λ* over its measured λ_max, and the verdict is
+repeated at every other shared level. Sweeps of different GPU models or power
+limits are refused.
+
 ### GPU price catalogs
 
 pat ships no prices. To price layouts in EUR, record one retrieval campaign in

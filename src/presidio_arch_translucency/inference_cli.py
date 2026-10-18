@@ -264,7 +264,7 @@ def _resolve_pricing(
     cost_per_gpu_hour: float | None,
     gpu_memory_gb: float,
     gpu_bandwidth_gbs: float,
-    gpus_per_node: int,
+    gpus_per_node: int | None,
     profile: InferenceProfile | None,
 ) -> _Pricing | None:
     """A verified, fresh price family, or None for uniform / no pricing."""
@@ -717,7 +717,7 @@ def infer_analyze_command(
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
-        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        err_console.print(f"[bold red]Calibration refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
     except PriceCatalogError as exc:
         err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
@@ -855,7 +855,7 @@ def infer_what_if_command(
         err_console.print(f"[bold red]Input validation error:[/] {exc}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
-        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        err_console.print(f"[bold red]Calibration refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
     except PriceCatalogError as exc:
         err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
@@ -1177,6 +1177,17 @@ def infer_validate_command(
         "--ttft-slo-ms",
         help="Sweep mode: TTFT p99 SLO; must be a vLLM histogram bucket edge.",
     ),
+    energy_at: Optional[float] = typer.Option(  # noqa: UP045
+        None,
+        "--energy-at",
+        help="Sweep mode (H4): compare measured J/output token and price per "
+        "layout at this pre-registered rate, a level of every sweep.",
+    ),
+    price_catalog: Optional[str] = _price_catalog_option(),  # noqa: UP045
+    price_provider: Optional[str] = _price_provider_option(),  # noqa: UP045
+    price_region: Optional[str] = _price_region_option(),  # noqa: UP045
+    price_gpu: Optional[str] = _price_gpu_option(),  # noqa: UP045
+    price_tier: str = _price_tier_option(),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of tables."),
 ) -> None:
     """Report a profile's prediction error on held-out points or λ sweeps.
@@ -1187,8 +1198,18 @@ def infer_validate_command(
     skipped and counted. Sweep mode (--sweep) compares each layout's predicted
     λ_max with the bracket its open-loop sweep measured (H3): pass when the
     worst case over the bracket is within 20%, fail when even the nearer edge
-    is more than 25% off, otherwise inconclusive.
+    is more than 25% off, otherwise inconclusive. With --energy-at (H4) it
+    also compares the layouts' measured energy per output token with their
+    catalog price at that rate: pass when the least-energy layout is not among
+    the cheapest.
     """
+    pricing_args = (
+        price_catalog,
+        price_provider,
+        price_region,
+        price_gpu,
+        price_tier,
+    )
     if sweep:
         _validate_sweeps_command(
             calibration,
@@ -1197,11 +1218,24 @@ def infer_validate_command(
             ttft_slo_ms,
             as_json,
             other_mode=bool(point or points_file or leave_one_out),
+            energy_at=energy_at,
+            pricing_args=pricing_args,
         )
         return
     try:
         if tpot_slo_ms is not None or ttft_slo_ms is not None:
             raise InferenceCalibrationError("SLOs apply to --sweep validation only")
+        if (
+            energy_at is not None
+            or price_catalog
+            or price_provider
+            or price_region
+            or price_gpu
+            or price_tier != "on-demand"
+        ):
+            raise InferenceCalibrationError(
+                "--energy-at and --price-* apply to --sweep validation only"
+            )
         profile = load_inference_profile(calibration)
         if leave_one_out:
             if point or points_file:
@@ -1217,10 +1251,10 @@ def infer_validate_command(
             )
             mode = "holdout"
     except InferenceCalibrationError as exc:
-        err_console.print(f"[bold red]Validation error:[/] {exc}")
+        err_console.print(f"[bold red]Validation error:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
-        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        err_console.print(f"[bold red]Calibration refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
     log_security_event(
@@ -1273,26 +1307,67 @@ def _validate_sweeps_command(
     ttft_slo_ms: float | None,
     as_json: bool,
     other_mode: bool,
+    energy_at: float | None = None,
+    pricing_args: tuple = (None, None, None, None, "on-demand"),
 ) -> None:
+    from presidio_arch_translucency.infer_h4 import analyze_h4  # noqa: PLC0415
     from presidio_arch_translucency.infer_sweep import (  # noqa: PLC0415
         Slo,
         load_sweep,
         validate_sweeps,
     )
 
+    pricing: _Pricing | None = None
+    h4: dict | None = None
     try:
         if other_mode:
             raise InferenceCalibrationError(
                 "--sweep cannot be combined with --point/--points-file/--leave-one-out"
             )
+        if energy_at is None and pricing_args[0] is not None:
+            raise InferenceCalibrationError(
+                "--price-catalog prices the H4 comparison; give --energy-at too"
+            )
         slo = Slo(tpot_ms=tpot_slo_ms, ttft_ms=ttft_slo_ms)
         profile = load_inference_profile(calibration)
-        result = validate_sweeps(profile, [load_sweep(path) for path in paths], slo)
+        sweeps = [load_sweep(path) for path in paths]
+        result = validate_sweeps(profile, sweeps, slo)
+        if energy_at is not None:
+            catalog, provider, region, gpu, tier = pricing_args
+            pricing = _resolve_pricing(
+                catalog,
+                provider,
+                region,
+                gpu,
+                tier,
+                None,
+                profile.hardware.gpu_memory_gb,
+                profile.hardware.gpu_bandwidth_gbs,
+                None,
+                profile,
+            )
+            priced = pricing
+
+            def price(tp: int, instances: int) -> tuple[float | None, dict | None]:
+                assert priced is not None  # noqa: S101 -- bound only when priced
+                cost = priced.cost(tp, instances)
+                return cost, priced.prices[(tp, instances)].as_dict()
+
+            h4 = analyze_h4(
+                sweeps,
+                slo,
+                energy_at,
+                gpu_type=profile.hardware.gpu_type,
+                price=price if pricing is not None else None,
+            )
+    except PriceCatalogError as exc:
+        err_console.print(f"[bold red]Price catalog refused:[/] {escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
     except (InferenceDomainError, InferenceCalibrationError) as exc:
-        err_console.print(f"[bold red]Validation error:[/] {exc}")
+        err_console.print(f"[bold red]Validation error:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
     except InferenceCalibrationTamperError as exc:
-        err_console.print(f"[bold red]Calibration refused:[/] {exc}")
+        err_console.print(f"[bold red]Calibration refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
     log_security_event(
@@ -1305,6 +1380,9 @@ def _validate_sweeps_command(
         "mode": "sweep",
         **result,
     }
+    if h4 is not None:
+        result["h4"] = h4
+        result["prices"] = None if pricing is None else pricing.as_json()
     if as_json:
         typer.echo(json.dumps(result, separators=(",", ":")))
         return
@@ -1376,6 +1454,90 @@ def _validate_sweeps_command(
         console.print(
             f"{ranking['gpus']} GPU(s): predicted {predicted} · measured: {agree}"
         )
+    if h4 is not None:
+        _print_h4(h4, pricing)
+
+
+def _print_h4(h4: dict, pricing: _Pricing | None) -> None:
+    table = Table(title=f"H4 at λ* = {h4['lambda_star']:g} req/s", box=box.SIMPLE_HEAVY)
+    for col in (
+        "Layout",
+        "Hosts",
+        "J/out tok",
+        "W over idle",
+        "λ*/λ̂",
+        "€/h",
+        "€/M out",
+    ):
+        table.add_column(col, justify="right", no_wrap=col == "Layout")
+
+    def num(value: float | None, fmt: str) -> str:
+        return "—" if value is None else format(value, fmt)
+
+    for row in h4["layouts"]:
+        label = row["layout"] + ("" if row["drift_checked"] else " ‡")
+        if not row["qualifies"]:
+            label += " ✗"
+        table.add_row(
+            label,
+            num(row["hosts"], "d"),
+            num(row["j_per_output_token"], ".3f"),
+            num(row["watts_over_idle"], ".0f")
+            + (" (idle)" if row["idle_dominated"] else ""),
+            ("≤ " if row["lambda_over_capacity_bound"] == "at_most" else "")
+            + num(row["lambda_over_capacity"], ".2f"),
+            num(row["eur_per_hour"], ".2f"),
+            num(row["eur_per_mtok"], ".2f"),
+        )
+    console.print(table)
+    for row in h4["layouts"]:
+        if row["reasons"]:
+            console.print(
+                f"[yellow]{row['layout']} does not qualify: "
+                f"{escape('; '.join(row['reasons']))}[/]"
+            )
+    verdict = h4["verdict"]
+    style = {"diverge": "green", "coincide": "red", "cost_tied": "red"}.get(
+        verdict, "yellow"
+    )
+    text = f"[{style}]H4 {verdict}"
+    if h4["h4"]:
+        text += f" ({h4['h4']})"
+    if h4["reason"]:
+        text += f": {h4['reason']}"
+    text += "[/]"
+    console.print(text)
+    if h4["energy_optimal"]:
+        cost = ", ".join(h4["cost_optimal"] or []) or "unpriced"
+        line = (
+            f"least energy: {h4['energy_optimal']} (margin "
+            f"{h4['tie_margin_pct']:.1f}%) · cheapest: {cost}"
+        )
+        if h4["energy_saving"] is not None:
+            line += (
+                f" · saving {h4['energy_saving']:.1%} J/token for "
+                f"{h4['cost_premium']:+.1%} €/h"
+            )
+        console.print(line)
+    if h4["host_watts_to_flip"] is not None:
+        console.print(
+            f"Host draw that would flip the energy order: "
+            f"{h4['host_watts_to_flip']:.0f} W per host (GPU board energy only)"
+        )
+    for entry in h4["ladder"]:
+        console.print(
+            f"  at λ = {entry['lambda']:g}: {entry['verdict']}"
+            + (f" ({entry['reason']})" if entry["reason"] else "")
+        )
+    for warning in h4["warnings"]:
+        console.print(f"[yellow]Warning: {escape(warning)}[/]")
+    console.print(
+        "‡ no drift control · ✗ does not qualify · λ*/λ̂: λ* over the measured "
+        "SLO capacity (≤ when the sweep never failed) · cost ranks € per hour, "
+        "i.e. per nominal output token at λ*; J/token is measured"
+    )
+    if pricing is not None:
+        console.print(pricing.note())
 
 
 def _bracket_label(measured: dict) -> str:

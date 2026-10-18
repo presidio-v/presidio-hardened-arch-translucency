@@ -98,6 +98,14 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   Each level reports watts and joules per output token from vLLM's token
   counters, independent of its capacity verdict; the first level is repeated
   at the end as a drift control.
+- `--energy-at λ*` on `pat infer-validate --sweep` answers H4 (Inference Arc
+  Phase 1h): at a pre-registered common rate, is the layout with the least
+  measured energy per output token among the cheapest per hour? With
+  `--price-catalog` it reports `diverge` (H4 passes), `coincide` or
+  `cost_tied` (fails), or `inconclusive` with a reason, plus the energy saved
+  and the price premium. Layouts qualify only when they meet the SLO, their
+  energy is clean and steady and their token rate matches λ*; sweeps of
+  different GPUs or power limits are refused.
 
 ### Changed
 
