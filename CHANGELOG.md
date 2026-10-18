@@ -12,6 +12,28 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ### Added
 
+- `--gate-certificate PATH` (repeatable) with `--gate-trust PATH` on
+  `pat train-evidence-emit` and `pat energy-evidence-emit` (#120). Each
+  certificate is an ikigov-assess `gate-certificate@1` and is verified with
+  ikigov-assess's own `verify_certificate` before anything is emitted: schema,
+  issuer signature against the trust store, predicate identity, expiry, every
+  embedded evidence-ref and the recomputed decision. The decision must be
+  `OPEN`. A refusal exits 1 with the reason and emits nothing. The
+  certificate's identity, SHA-256 over the canonical document minus its
+  `signature` (the bytes the issuer signs; family evidence contract ADR-0006),
+  is appended to `parents` after the bare `--parent` values, once. Bare
+  `--parent` is unchanged, and so is the output when the option is not used.
+- `[gate]` extra: `presidio-hardened-ikigov-assess[crypto]>=0.28.0,<1`, which
+  provides the verifier. Without it the option exits 1 and names the extra;
+  nothing else imports it. The `dev` extra pulls it in for the tests, and the
+  security-audit job installs it so pip-audit covers it.
+- `gate_certificate` module: `certificate_identity()`,
+  `verify_gate_certificates()`, `merge_parents()`. The identity is computed
+  here because ikigov-assess 0.28.0 does not expose it; it is pinned to the
+  family contract vector and cross-checked against ikigov's `signing_bytes`.
+  Once an ikigov-assess release exports `certificate_content_hash`, the `[gate]`
+  floor can move to it and this helper can delegate.
+
 - LLM inference serving domain profile (ADR-0012, Inference Arc Phase 0).
   `pat infer-analyze` sweeps every `(tp, n)` layout of a GPU budget, from
   single-GPU replicas and tensor-parallel instances to replicas of TP groups.
