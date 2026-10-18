@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "presidio-hardened-arch-translucency"
-version = "0.24.2"
+version = "0.25.0"
 description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,6 +45,9 @@ dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
+    # Keep in step with the `gate` extra: the gate-certificate tests issue and
+    # verify real certificates.
+    "presidio-hardened-ikigov-assess[crypto]>=0.28.0,<1",
 ]
 audit = [
     "pip-audit>=2.6.0",
@@ -64,6 +67,13 @@ evidence = [
 ]
 spot = [
     "boto3>=1.26",
+]
+gate = [
+    # `--gate-certificate` on train-/energy-evidence-emit: ikigov-assess's
+    # verify_certificate (schema, issuer signature, expiry, decision recompute)
+    # plus its Ed25519 support. Floor = the release the family evidence-contract
+    # gate-certificate vector was cross-checked against; ceiling on the major.
+    "presidio-hardened-ikigov-assess[crypto]>=0.28.0,<1",
 ]
 fuzz = [
     # Atheris 3.x dropped Python 3.10 (last 3.10 wheel: 2.3.0); the marker keeps

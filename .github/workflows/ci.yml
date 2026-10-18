@@ -85,11 +85,11 @@ jobs:
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Install locked package and audit dependencies
-        run: uv sync --locked --extra audit --extra evidence
+        run: uv sync --locked --extra audit --extra evidence --extra gate
 
       - name: Run pip-audit
         # --skip-editable skips the local (not-yet-on-PyPI) package itself.
-        # The evidence extra is installed so the optional Ed25519 dependency is
+        # The evidence and gate extras are installed so their optional dependencies are
         # included in the release security gate.
         # Advisory on pull requests (transitive-dep CVEs are reported but do
         # not block contributor CI; direct deps are tracked by Dependabot) —

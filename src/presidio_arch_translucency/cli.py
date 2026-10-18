@@ -5216,6 +5216,73 @@ def train_what_if_cmd(
         console.print(_training_commitment_line([(strategy_str, commitment)]))
 
 
+_GATE_CERTIFICATE_HELP = (
+    "ikigov-assess gate certificate (gate-certificate@1) whose decision admitted "
+    "the work this record covers (repeatable). Verified against --gate-trust "
+    "before anything is emitted: schema, issuer signature, expiry, embedded "
+    "evidence-refs and the "
+    "recomputed decision, which must be OPEN. Its identity (sha256 of the "
+    "canonical document minus `signature`) is appended to the parents, once. "
+    "Needs the gate extra (pip install presidio-hardened-arch-translucency\\[gate])."
+)
+_GATE_TRUST_HELP = (
+    "Trust-store JSON for --gate-certificate, in ikigov-assess's format "
+    "({signer: key | {alg, key|public_key}}): the issuer and every signer of "
+    "an embedded evidence-ref. Required with --gate-certificate."
+)
+
+
+def _parents_with_gate_certificates(
+    parent: list[str],
+    gate_certificate: list[Path],
+    gate_trust: Optional[Path],  # noqa: UP045
+) -> list[str]:
+    """Verify each --gate-certificate, then append its identity to *parent*.
+
+    Without --gate-certificate the parents are returned exactly as given.
+    Any refusal prints the reason and exits 1 before anything is emitted.
+    """
+    from presidio_arch_translucency.gate_certificate import (  # noqa: PLC0415
+        GateCertificateError,
+        merge_parents,
+        verify_gate_certificates,
+    )
+
+    if not gate_certificate:
+        if gate_trust is not None:
+            err_console.print(
+                "[bold red]Gate certificate refused:[/] --gate-trust given without "
+                "--gate-certificate. Nothing emitted."
+            )
+            raise typer.Exit(code=1)
+        return list(parent)
+    if gate_trust is None:
+        err_console.print(
+            "[bold red]Gate certificate refused:[/] --gate-certificate requires "
+            "--gate-trust; a certificate is never used unverified. Nothing emitted."
+        )
+        raise typer.Exit(code=1)
+    try:
+        identities = verify_gate_certificates(gate_certificate, gate_trust)
+    except GateCertificateError as exc:
+        log_security_event(
+            "GATE_CERTIFICATE_REFUSED", {"certificates": len(gate_certificate)}
+        )
+        err_console.print(
+            f"[bold red]Gate certificate refused:[/] {escape(str(exc))}. "
+            "Nothing emitted."
+        )
+        raise typer.Exit(code=1) from exc
+    log_security_event(
+        "GATE_CERTIFICATE_VERIFIED",
+        {
+            "certificates": len(gate_certificate),
+            "identities_16": [identity[:16] for identity in identities],
+        },
+    )
+    return merge_parents(parent, identities)
+
+
 @app.command("train-evidence-emit")
 def train_evidence_emit_cmd(
     run_id: str = typer.Option(
@@ -5250,6 +5317,12 @@ def train_evidence_emit_cmd(
             "the eai-classification or gate-decision that authorized this run. "
             "Attested inside the signed content (provenance DAG convention)."
         ),
+    ),
+    gate_certificate: list[Path] = typer.Option(  # noqa: B008
+        [], "--gate-certificate", help=_GATE_CERTIFICATE_HELP
+    ),
+    gate_trust: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None, "--gate-trust", help=_GATE_TRUST_HELP
     ),
     model_hash: Optional[str] = typer.Option(  # noqa: UP045
         None, "--model-hash", help="Content hash of the trained model artifact."
@@ -5300,6 +5373,7 @@ def train_evidence_emit_cmd(
         VALID_STRATEGIES,
     )
 
+    parents = _parents_with_gate_certificates(parent, gate_certificate, gate_trust)
     try:
         strategy_str = sanitize_layer(strategy, VALID_STRATEGIES)
         sps = sanitize_bounded_number(
@@ -5312,7 +5386,7 @@ def train_evidence_emit_cmd(
             samples_per_second=round(sps),
             duration_s=duration_s,
             device_count=devices,
-            parents=tuple(parent),
+            parents=tuple(parents),
             model_hash=model_hash,
             dataset_hash=dataset_hash,
             energy_wh=energy_wh,
@@ -5330,7 +5404,7 @@ def train_evidence_emit_cmd(
         {
             "run_id_sha256_16": run_id_digest,
             "strategy": strategy_str,
-            "parents": len(parent),
+            "parents": len(parents),
         },
     )
     typer.echo(json.dumps(reading, separators=(",", ":")))
@@ -5359,6 +5433,12 @@ def energy_evidence_emit_cmd(
             "inside the reading (provenance DAG convention, ADR-0002)."
         ),
     ),
+    gate_certificate: list[Path] = typer.Option(  # noqa: B008
+        [], "--gate-certificate", help=_GATE_CERTIFICATE_HELP
+    ),
+    gate_trust: Optional[Path] = typer.Option(  # noqa: UP045, B008
+        None, "--gate-trust", help=_GATE_TRUST_HELP
+    ),
 ) -> None:
     """Emit a key-less Layer-0 measured-energy reading as JSON (Energy Arc finale).
 
@@ -5381,6 +5461,9 @@ def energy_evidence_emit_cmd(
     from presidio_arch_translucency.evidence_producer import (  # noqa: PLC0415
         EvidenceProducerError,
     )
+
+    # Gate certificates first: a refused certificate stops before the store is read.
+    parents = _parents_with_gate_certificates(parent, gate_certificate, gate_trust)
 
     # Single verified snapshot: the chain report, every row, and the anchoring
     # head all come from ONE read-only connection, so a row appended after this
@@ -5434,7 +5517,7 @@ def energy_evidence_emit_cmd(
         raise typer.Exit(code=2)
 
     try:
-        reading = _derive_energy_reading(closure, head, parents=tuple(parent))
+        reading = _derive_energy_reading(closure, head, parents=tuple(parents))
     except _EnergyEmitError as exc:
         err_console.print(f"[bold red]Refused:[/] {exc}")
         raise typer.Exit(code=exc.exit_code) from exc
@@ -5459,7 +5542,7 @@ def energy_evidence_emit_cmd(
             "window_minutes": window_minutes,
             "meter": reading["attested_content"]["meter"],
             "layer": reading["attested_content"].get("layer"),
-            "parents": len(parent),
+            "parents": len(parents),
             "energy_chain_head_16": head[:16],
         },
     )

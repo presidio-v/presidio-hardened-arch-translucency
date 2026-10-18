@@ -859,6 +859,12 @@ pat analyze Options:
   -l, --avg-latency-ms FLOAT        Current average latency in ms  [required]
   -c, --current-layer TEXT          Current layer (container|pod|deployment|node)  [required]
   --show-all                        Show all layers in a comparison table
+
+pat train-evidence-emit / energy-evidence-emit provenance options:
+  --parent HEX                      Upstream content hash, unchecked (repeatable)
+  --gate-certificate PATH           ikigov gate certificate; verified, must be OPEN,
+                                    identity appended to parents (repeatable; [gate] extra)
+  --gate-trust PATH                 Trust store for --gate-certificate (required with it)
 ```
 
 Run `pat <command> --help` for the full option list of any command.
@@ -993,6 +999,44 @@ pat train-evidence-emit --run-id run-2026-07-02-001 --strategy fsdp --degree 8 \
 All inputs are validated fail-closed (finite numbers only, printable bounded
 run ids, lowercase-hex parent hashes); the library enforces the same contract
 independently of the CLI so a sidecar can never sign malformed content.
+
+#### Gate certificates as parents (v0.25.0, `[gate]` extra)
+
+A bare `--parent` is a claim nobody checks: any lowercase hex passes,
+including the hash of a BLOCKED gate or an expired certificate. With
+`--gate-certificate`, pat checks the gate decision itself before the run names
+it:
+
+```bash
+pip install 'presidio-hardened-arch-translucency[gate]'
+
+pat train-evidence-emit --run-id run-2026-07-02-001 --strategy fsdp --degree 8 \
+  -s 712 --duration-s 3600 -n 8 \
+  --parent <classification content_hash> \
+  --gate-certificate cert.json --gate-trust trust.json \
+  | evidence-bridge-sign
+```
+
+Each certificate (an ikigov-assess `gate-certificate@1`, from `iga certify`)
+goes through ikigov-assess's own verifier against `--gate-trust`: schema,
+issuer signature, predicate identity, expiry (`not_after`), every embedded
+evidence-ref, and the decision recomputed from the certificate. The decision
+must be `OPEN`. Any failure exits 1 with the reason (`bad-signature`,
+`unknown-issuer`, `expired`, `decision-mismatch`, `... not OPEN`, …) and
+nothing is emitted. `--gate-trust` is required with `--gate-certificate`; it
+uses ikigov-assess's trust-store format (`{signer: key | {alg, key|public_key}}`)
+and must cover the issuer and every signer of an embedded evidence-ref.
+
+The parent added is the certificate's identity: SHA-256 over the canonical
+JSON of the certificate minus its `signature`, which are the bytes the issuer
+signs (family evidence contract, ADR-0006). It binds this issuance, survives
+re-signing, and is not `framework_content_hash` (that names the gate rule,
+shared by every certificate issued under it). Identities are appended after
+the bare `--parent` values, each once. `pat energy-evidence-emit` takes the
+same two options. Without them the output is byte-identical to v0.24.
+
+Verifying here is pat's policy at emission time. A consumer walking the
+parents later still verifies the certificate itself.
 
 ### Training energy (v0.23.0) — "Train the watt"
 

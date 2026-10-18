@@ -1781,6 +1781,54 @@ after calibration by 2026-11-30 drops the predictive claim).
 | I18 | H4 cost ranks €/h (€ per nominal token λ*·O); energy ranks measured J/token; layouts off λ*·O by > 5 % do not qualify | Measured tokens would let counter noise break exact price ties between equal-GPU layouts (advisor review) |
 | I19 | `cost_tied` is an H4 fail; `diverge` needs every other layout beyond max(5 %, both sweeps' drift) of the least-energy one, and no qualifying layout on fewer hosts | A cost optimiser with an energy tie-break loses nothing; drift-passing sweeps can still differ by ~10 %; joules omit host draw, which can only help layouts on fewer hosts |
 
+## v0.25.0 — Gate certificates as parents (issue #120, implemented 2026-10-18)
+
+### Direction
+
+`--parent` on `train-evidence-emit` records the gate decision that authorized
+a run, but only checks that the value is lowercase hex. A BLOCKED or expired
+gate becomes a signed parent just as easily. ikigov-assess already ships a
+self-contained verifier for its `gate-certificate@1`. This version runs it at
+emission time, so "the gate admitted this run" is checked before it is signed.
+
+### Scope (implemented)
+
+- `--gate-certificate PATH` (repeatable) and `--gate-trust PATH` on
+  `pat train-evidence-emit` and `pat energy-evidence-emit`.
+- Verification is mandatory when a certificate is given: ikigov-assess
+  `verify_certificate(doc, trust)` (schema, issuer signature, issuer = signer,
+  tier, predicate identity, `not_after` against the wall clock, every embedded
+  evidence-ref, decision recompute, grounding consistency). The verified
+  decision must also be `OPEN`. Any refusal exits 1 before the observation
+  store is read or anything is printed to stdout. `--gate-trust` without a
+  certificate, or a certificate without `--gate-trust`, is refused.
+- Parent value: the certificate identity per the family evidence contract
+  (ADR-0006 G1): SHA-256 over canonical JSON of the document minus
+  `signature`. Appended after the bare `--parent` values, deduplicated against
+  them and each other, order preserved; validated by the existing hex rule.
+- Bare `--parent` behaviour and every output without the new options are
+  unchanged (content hashes pinned in `tests/test_gate_certificate.py`).
+- Files read are bounded (1 MiB, regular files, UTF-8, strict JSON). The
+  security log records counts and 16-hex identity prefixes, never paths or
+  certificate content.
+
+### Design decisions
+
+- **ikigov-assess as an optional `[gate]` extra**, not a core dependency, and
+  imported only when the option is used. Re-implementing the verifier would
+  fork the decision rule; the extra keeps one authority. Floor 0.28.0 (the
+  release the family vector was cross-checked against), ceiling on the major.
+- **Identity computed locally.** ikigov-assess 0.28.0 signs these bytes but
+  does not name their hash. The helper is pinned to the family contract vector
+  (`dbb7c6a3…2a83ebd4a`) and cross-checked against ikigov's `signing_bytes`.
+  When ikigov-assess exports `certificate_content_hash`, the floor moves and
+  the helper delegates.
+- **OPEN only.** ADR-0006 G4 leaves verification policy to the producer. A
+  PARTIAL or BLOCKED gate did not admit the run, so it is refused even though
+  it verifies.
+- **No `--gate-at` clock override.** Expiry is checked at emission time; a
+  certificate that has expired cannot admit new work.
+
 ## SDLC
 
 These requirements are delivered under the family-wide Presidio SDLC:

@@ -1,0 +1,95 @@
+{
+  "provenance": "Copied from the family evidence contract vector for gate-certificate@1 identity (ADR-0006). Do not edit: the identity below is pinned by that vector. Issuer and evidence-ref signatures use the family test key (Ed25519 private seed 01*32).",
+  "identity": "dbb7c6a36f0aea55bbe5dead3daf8f4f3d59116966e79bd4b78ecfe2a83ebd4a",
+  "verify_at": "2026-07-03T00:00:00Z",
+  "trust_store": {
+    "presidio-hardened-ikigov-assess": {
+      "alg": "ed25519",
+      "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    "presidio-hardened-ai": {
+      "alg": "ed25519",
+      "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    }
+  },
+  "certificate": {
+    "schema": "presidio-hardened/gate-certificate@1",
+    "use_case": "golden-training-gate",
+    "framework_content_hash": "c359f71130ecdfc34e7b90e835ad02453360721ef330f3479868f5dd7b9773ef",
+    "gate": "G0",
+    "risk_class": "medium",
+    "decision": "OPEN",
+    "assurance_tier": "attested",
+    "grounding": "evidence-verified",
+    "affirmation_set": [
+      {
+        "id": "S1",
+        "status": "affirmed",
+        "evidence_ref": {
+          "content_hash": "479a9c979fe8793eca6ba2b2b14f65712adb943482bb388ac60041cf17d34c15",
+          "signer": "presidio-hardened-ai",
+          "signature": "2a5f24fad44ccf62b09d79c1ff70eaf3b134725832bcc3b21dc4e79c62455bc8b9614c72956c4f07bb07252cf698d48b32f1bfff54268e97745bd965f011d30d",
+          "claimed_at": "2026-07-02T00:00:00+00:00",
+          "item_id": "S1",
+          "source": "presidio-hardened-ai",
+          "source_version": "0.30.0",
+          "ledger_ref": "pai-ledger:seq/1",
+          "assurance_tier": "attested"
+        }
+      },
+      {
+        "id": "S2",
+        "status": "affirmed",
+        "evidence_ref": {
+          "content_hash": "f6aff0b05417edfa74f8bf9e538324346aeed0d474f62136a584490e0d0daf11",
+          "signer": "presidio-hardened-ai",
+          "signature": "a156f6db87e9f3bb42325402f5238bf5a51feb82d0503711232097825ef831777d0d98a53d12593c50140e31a15303bb2108334c60bdaebddac2a7d5e887c40e",
+          "claimed_at": "2026-07-02T00:00:00+00:00",
+          "item_id": "S2",
+          "source": "presidio-hardened-ai",
+          "source_version": "0.30.0",
+          "ledger_ref": "pai-ledger:seq/2",
+          "assurance_tier": "attested"
+        }
+      },
+      {
+        "id": "S3",
+        "status": "affirmed",
+        "evidence_ref": {
+          "content_hash": "634dbe739054d1c0e596c5b296919f2efd62e07102c16a2c12da59120fa5ab71",
+          "signer": "presidio-hardened-ai",
+          "signature": "797656c6dccb7c13a512c72f389979fb124b34c4098640110a2b56466a44494b429fa7b951a8d1416037c2a10a4b2cbb78138c7e65e91d6ff4359f69fd06f908",
+          "claimed_at": "2026-07-02T00:00:00+00:00",
+          "item_id": "S3",
+          "source": "presidio-hardened-ai",
+          "source_version": "0.30.0",
+          "ledger_ref": "pai-ledger:seq/3",
+          "assurance_tier": "attested"
+        }
+      }
+    ],
+    "predicate": {
+      "gate_items": [
+        "S1",
+        "S2",
+        "S3"
+      ],
+      "risk_class": "medium",
+      "strict": false,
+      "strict_effective": false,
+      "predicate_content_hash": "c359f71130ecdfc34e7b90e835ad02453360721ef330f3479868f5dd7b9773ef"
+    },
+    "assessed_at": "2026-07-02T00:00:00Z",
+    "issuer": "presidio-hardened-ikigov-assess",
+    "parents": [
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "not_after": "2027-07-02T00:00:00Z",
+    "require_evidence": true,
+    "signature": {
+      "alg": "ed25519",
+      "signer": "presidio-hardened-ikigov-assess",
+      "sig": "8e3302578e61e36ff5ba402e2204507d5042a2c2b2b1c59cc6ecd4bf989a92a748584742c746872b806d17b598d10fe6ee7e242a82ebdd6e5d7598cc2d4d790a"
+    }
+  }
+}

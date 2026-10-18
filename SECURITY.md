@@ -55,8 +55,8 @@ Dependencies are pinned in `uv.lock` and monitored via:
 
 - GitHub Dependabot (automated PRs for updates)
 - `pip-audit` on normal CLI command execution
-- CI `pip-audit` against both `[audit]` and `[evidence]`, so the optional
-  Ed25519 dependency is covered by the release gate
+- CI `pip-audit` against `[audit]`, `[evidence]` and `[gate]`, so the optional
+  Ed25519 dependency and the ikigov-assess verifier are covered by the release gate
 - CodeQL static analysis on every push and weekly schedule
 - `lock-drift` CI to ensure `pyproject.toml` and `uv.lock` stay aligned
 
@@ -83,6 +83,18 @@ cannot construct malformed signable content. `parents` entries are *claims*
 by the producer; resolving and verifying the referenced payloads is the
 consumer's responsibility (presidio-evidence ADR-0002 P4). The security log
 records a SHA-256 digest of `run_id`, never the raw value.
+
+**Gate certificates as parents (v0.25.0).** `--gate-certificate PATH` with
+`--gate-trust PATH` (on `train-evidence-emit` and `energy-evidence-emit`) turns
+one kind of parent from a claim into a checked input: each certificate must
+pass ikigov-assess's `verify_certificate` against the given trust store
+(issuer signature, expiry, embedded evidence-refs, recomputed decision) and
+record `OPEN`, or the command exits 1 and emits nothing. The check is only as
+good as the trust store the operator supplies; pat ships none. Certificate and
+trust files are read bounded (1 MiB, regular files, strict JSON). The security
+log records certificate counts and 16-hex identity prefixes, never paths or
+contents. A consumer that later walks the parents still verifies the
+certificate itself; pat's check happens at emission time only.
 
 **Measured energy (v0.21.0).** `pat observe --energy` records watts scraped
 from Prometheus into a second hash chain (`energy_observations`), under
