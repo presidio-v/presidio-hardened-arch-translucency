@@ -14,7 +14,9 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 - Secure logging of replication recommendations (no sensitive data, no secrets in log output)
 - On-run CVE/dependency check for Docker/K8s client libraries (pip-audit or safety check on startup)
 - Security event logging ("Presidio architectural-translucency recommendation applied")
-- Rate-limit / abuse guard on CLI invocations (configurable max calls per session)
+- ~~Rate-limit / abuse guard on CLI invocations (configurable max calls per session)~~ —
+  withdrawn 2026-10-18 (#124): never implemented in `src/`; not pursued for a local,
+  single-operator CLI
 - Strict output sanitization: recommendations never echo raw user input without escaping
 - Full GitHub security files: SECURITY.md, .github/dependabot.yml, .github/workflows/codeql.yml + pytest workflow
 
@@ -74,7 +76,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.23.0 | Energy arc · Train the watt — `pat train-calibrate` from step-time logs (discharges L-TR-1) with committed training fits, samples/s/W ranking, `training-run@1` optional energy fields (string-decimal wire) | Implemented; third-party findings remediated and release gate green (2026-07-17) |
 | v0.24.0 | Energy arc · Sign the watt — `pat energy-evidence-emit` (`energy-reading@1`, store-only figures, span-overlap closure) + `observe verify --emit-head` chain-head anchoring from a single verified snapshot (discharges the ADR-0010 deferral); arc retro | Released after third-party findings were remediated (2026-07-18) |
 | v0.24.1 | Family-vector conformance patch — pin the nominal Kepler energy vector and energy-bearing training vector to the authoritative family records while preserving PAT's Kepler emission refusal | Released (2026-07-18) |
-| v0.24.2 | Dependency security patch — ship the `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (still major-bounded; lock-pinned 50.0.0) so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, floor the audit extra's `pip` at `>=26.2` (PYSEC-2026-3721) and core `urllib3` at `>=2.8.0` (PYSEC-2026-4175/4176/4177) | Release gate in progress (2026-10-07) |
+| v0.24.2 | Dependency security patch — ship the `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (still major-bounded; lock-pinned 50.0.0) so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, floor the audit extra's `pip` at `>=26.2` (PYSEC-2026-3721) and core `urllib3` at `>=2.8.0` (PYSEC-2026-4175/4176/4177) | Released (2026-10-07) |
 
 ---
 

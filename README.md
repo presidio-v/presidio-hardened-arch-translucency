@@ -825,14 +825,34 @@ Options:
   --help                Show this message and exit.
 
 Commands:
-  analyze     Analyze workload and recommend the optimal replication layer.
-  what-if     Project the HPA scale-out trough for a load spike.
-  slo         Check p99 SLO compliance in steady state and during a trough.
-  cost        Rank layers by cost-per-request and performance-per-dollar.
-  calibrate   Fit the model to measured rps:latency:replicas points.
-  observe     Record one workload observation (or --list recent ones).
-  optimize    Proactive scaling recommendation from observed history.
-  demo        Run the live Docker demonstrator.
+  analyze               Analyze workload and recommend the optimal replication layer.
+  what-if               Project the HPA scale-out trough for a load spike.
+  slo                   Check p99 SLO compliance in steady state and during a trough.
+  cost                  Rank layers by cost-per-request and performance-per-dollar.
+  budget                Budget the watt: the SEANERGYS objective in both directions.
+  calibrate             Fit the model to measured rps:latency:replicas points.
+  observe               Record one workload observation (or --list recent ones).
+    verify              Verify both hash chains (serving + measured energy).
+    daemon              Install, uninstall or check the launchd/systemd collection unit.
+  optimize              Proactive scaling recommendation from observed history.
+  export                Serve or push architectural-translucency metrics.
+  rules                 Emit Prometheus recording + alerting rules.
+  annotate              Post the current recommendation to Grafana as an annotation.
+  scaler                Emit autoscaler config that scales a Deployment on a pat signal.
+  evidence-emit         Emit a key-less Layer-0 SLO degradation reading as JSON.
+  train-calibrate       Fit training-overhead parameters from step-time logs.
+  train-analyze         Recommend the parallelism strategy for a training workload.
+  train-what-if         Evaluate one (strategy, degree) training configuration.
+  train-evidence-emit   Emit a key-less Layer-0 training-run record as JSON.
+  energy-evidence-emit  Emit a key-less Layer-0 measured-energy reading as JSON.
+  infer-analyze         Recommend replicas, tensor parallelism or replicas of TP groups for an LLM.
+  infer-what-if         Evaluate one (tp, instances) inference configuration.
+  infer-calibrate       Fit inference engine parameters from measured vLLM points.
+  infer-validate        Report a profile's prediction error on held-out points or λ sweeps.
+  infer-observe         Read one steady-state vLLM window from Prometheus.
+  infer-benchmark       Drive load against a running vLLM engine and record each level.
+  infer-prices          List, commit or start a dated EUR GPU price catalog.
+  demo                  Run the live Docker demonstrator.
 
 pat analyze Options:
   -r, --requests-per-second FLOAT   Observed workload in req/s  [required]
@@ -1045,7 +1065,7 @@ measurement by this suite.
 
 ---
 
-## LLM inference serving (unreleased, Inference Arc Phase 0)
+## LLM inference serving (unreleased, Inference Arc Phases 0–1h)
 
 The translucency question for **LLM inference**: given N GPUs, should a model
 be served as N single-GPU replicas, one tensor-parallel (TP) instance, or

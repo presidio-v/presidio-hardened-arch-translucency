@@ -1078,7 +1078,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.2...HEAD
+[0.24.2]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.1...v0.24.2
 [0.24.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.22.0...v0.23.0
