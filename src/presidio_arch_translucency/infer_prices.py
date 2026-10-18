@@ -631,7 +631,7 @@ def select_family(
             e.provider == provider
             and e.tier == tier
             and (region is None or region in (e.country, e.datacenter))
-            and (gpu is None or e.gpu_model.casefold() == gpu.casefold())
+            and (gpu is None or gpu_model_key(e.gpu_model) == gpu_model_key(gpu))
         )
 
     families: dict[tuple, list[PriceEntry]] = {}
@@ -660,6 +660,32 @@ def select_family(
     )
 
 
+_VENDORS: Final[frozenset[str]] = frozenset({"nvidia", "amd", "intel"})
+
+
+def gpu_model_key(name: str) -> tuple[str, ...]:
+    """One rule for GPU names from profiles, catalogs and DCGM labels.
+
+    Casefolded whitespace tokens without a leading vendor: "NVIDIA L40S" and
+    "l40s" agree, "L40" and "L40S" do not (a substring test would match).
+    """
+    tokens = name.casefold().split()
+    while tokens and tokens[0] in _VENDORS:
+        tokens = tokens[1:]
+    return tuple(tokens)
+
+
+def gpu_family_key(name: str) -> str:
+    """The GPU family alone: "NVIDIA H100 80GB HBM3" and "H100" → "h100".
+
+    For DCGM's ``modelName``, which spells out variants ("NVIDIA
+    A100-SXM4-80GB") that profiles and catalogs do not; the variant is pinned
+    by the memory and bandwidth checks instead. "L40" and "L40S" still differ.
+    """
+    key = gpu_model_key(name)
+    return key[0].split("-")[0] if key else ""
+
+
 def require_gpu_match(
     family: PriceFamily,
     gpu_memory_gb: float,
@@ -681,7 +707,7 @@ def require_gpu_match(
                     f"the selected prices ({entry.sku}) are for {entry.gpu_model} "
                     f"with {name} = {priced:g}, not the analysed {given:g}"
                 )
-    if gpu_type is not None and gpu_type.casefold() != e.gpu_model.casefold():
+    if gpu_type is not None and gpu_model_key(gpu_type) != gpu_model_key(e.gpu_model):
         raise PriceCatalogError(
             f"the calibration is for GPU {gpu_type!r}; the selected prices are for "
             f"{e.gpu_model!r}"

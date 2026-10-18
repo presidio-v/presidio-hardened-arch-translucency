@@ -1731,7 +1731,7 @@ inference.
 | 1e | Replica layouts: `--endpoint` per replica with random client-side routing (or one data-parallel endpoint, marked `server`), per-engine observe gates plus a 25 % batch-balance gate, pooled per-instance point, any-engine saturation, `infer-validate --sweep` for n ≥ 2 | Implemented 2026-10-10 |
 | 1f | Dated EUR GPU price catalog: `pat infer-prices` (template, commit, list), `--price-catalog` on `infer-analyze` / `infer-what-if`, instance-packing layout prices, cheapest layout meeting the SLO | Implemented 2026-10-11 |
 | 1g | `--energy-gpu` on `infer-benchmark`: DCGM energy per level through the E1a gate (named GPUs, cadence and power cross-check, power-limit and landing checks), J per output token from vLLM's in-window token counters, idle baselines and a drift-control repeat | Implemented 2026-10-12 |
-| 1h | H4 analysis: J/token and €/token per layout at a pre-registered common λ, energy-optimal vs cost-optimal ranking | Planned |
+| 1h | `infer-validate --sweep … --energy-at λ*`: H4 verdict (diverge / coincide / cost_tied / inconclusive) from measured J per output token and catalog €/h at a pre-registered common λ, with qualification gates, drift-widened tie margin, host-scope guard and per-level verdicts | Implemented 2026-10-18 |
 | 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
 | 3 | Hosted continuous-report shell; only after two paid audits | Gated |
 
@@ -1776,6 +1776,8 @@ after calibration by 2026-11-30 drops the predictive claim).
 | I15 | Energy per level from the DCGM firmware counter on operator-named GPUs, refused unless it changes at least every 10 s and agrees with sampled power within 15 % | At dcgm-exporter's default 30 s cadence `increase()` extrapolates a whole cadence per window edge, up to 25 % at a 120 s window (advisor review) |
 | I16 | Energy verdict independent of the capacity verdict; J per output token from vLLM's in-window token counters, also on saturated levels (`steady` flag) | H3 must not lose levels to an exporter hiccup; joules cover in-flight work that completions × O miss, and the saturated level can be the energy optimum |
 | I17 | H4 compared at a pre-registered common λ on one level ladder; GPU board energy only, hosts recorded | At fixed λ cost-optimal is λ-independent while energy-optimal is not; prices cover whole instances, joules only GPUs |
+| I18 | H4 cost ranks €/h (€ per nominal token λ*·O); energy ranks measured J/token; layouts off λ*·O by > 5 % do not qualify | Measured tokens would let counter noise break exact price ties between equal-GPU layouts (advisor review) |
+| I19 | `cost_tied` is an H4 fail; `diverge` needs every other layout beyond max(5 %, both sweeps' drift) of the least-energy one, and no qualifying layout on fewer hosts | A cost optimiser with an energy tie-break loses nothing; drift-passing sweeps can still differ by ~10 %; joules omit host draw, which can only help layouts on fewer hosts |
 
 ## SDLC
 
