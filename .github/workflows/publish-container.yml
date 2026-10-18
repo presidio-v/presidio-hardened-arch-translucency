@@ -21,6 +21,10 @@ jobs:
   publish:
     name: Build, attest, and publish
     runs-on: ubuntu-latest
+    # Same founder gate as the PyPI job: the `ghcr` environment requires a
+    # reviewer and only admits v* tags (release) and main (workflow_dispatch),
+    # so publishing a release cannot push an image without approval.
+    environment: ghcr
     permissions:
       contents: read       # required for actions/checkout
       packages: write      # push the image to ghcr.io
