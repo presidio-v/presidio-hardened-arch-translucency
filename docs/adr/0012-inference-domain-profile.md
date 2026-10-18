@@ -421,3 +421,55 @@ implementation; DCGM energy per level moves to 1g.
   ignores, so the tier is always printed. The digest makes an audit
   reproducible, not correct.
 
+## Amendment — Phase 1g measured energy per level (2026-10-12)
+
+H4 compares the energy-optimal and the cost-optimal layout, so every sweep
+level can now carry measured GPU energy. Design reviewed with the advisor
+before implementation; its blocking finding (exporter cadence) shaped the
+gates.
+
+- **Named GPUs, pinned metric, E1a.** `--energy-gpu` takes one group of tp
+  GPU UUIDs per engine (MIG refused, UUIDs validated so PromQL needs no
+  escaping). Before any load each must have exactly one
+  `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` series with a `gpu` label, a
+  `Hostname`, no estimator tell, one GPU model, and a TP group on one host. No
+  query overrides. Readings go to the unsigned report only, never the chained
+  store (E1a).
+- **Cadence before arithmetic.** dcgm-exporter collects every 30 s by
+  default; `increase()` over that staircase extrapolates up to a cadence at
+  each window edge, about 25 % at the 120 s default window. A GPU's energy is
+  refused unless the counter changed at least once per 10 s over the window
+  (`changes()`), and unless it agrees with the mean of
+  `DCGM_FI_DEV_POWER_USAGE` × window within 15 % (stuck or wrapped counter).
+  The firmware counter stays the primary figure.
+- **Denominator from the server.** J per output token divides by
+  `increase(vllm:generation_tokens_total)` over the same window and engines,
+  not completions × mean O, which misses work in flight at the window edges.
+  The counters must come from exactly the layout's engine count with no
+  reset, because energy is kept on refused capacity windows: a second server
+  of the same model on the Prometheus would otherwise halve J/token
+  (implementation review). Prompt tokens and completions are recorded for 1h.
+- **Independent verdicts.** A level's energy has its own verdict; it never
+  feeds `saturated` or `point`, and it is recorded on refused capacity
+  windows too, marked `steady: false`, because the saturated level can be the
+  energy optimum. H3 does not lose levels to an exporter fault.
+- **Landing and exclusivity.** An idle window before the first level is
+  mandatory and must show utilisation below 2 % on every named GPU. Under load
+  each GPU needs utilisation of at least 5 % and power above idle by
+  max(20 W, 10 %), which catches wrong UUIDs; it falsifies, not proves, the
+  operator's statement of which GPUs serve the model.
+- **Confounds recorded, not controlled.** Levels ascend in λ, which
+  confounds load with temperature and boost clocks. Per GPU and level the
+  report keeps mean temperature, mean and minimum SM clock, peak power and the
+  power limit; energy is refused when GPUs have different limits or a limit
+  changes against idle or within the window. After the run the lowest level
+  with clean energy is repeated (watts drift over 5 % flagged) and idle is read again. pat never
+  locks clocks or caps power (E1).
+- **H4 quantity (1h).** At a fixed λ every layout produces the same tokens,
+  so J/token ∝ W(λ) while €/token ∝ €/h: cost-optimal does not depend on λ,
+  energy-optimal does. The claim is made at a common, pre-registered λ every
+  layout sustains within the SLO, on one level ladder, so no interpolation;
+  J/token at each layout's λ_max is secondary.
+- **Bounded.** GPU board energy only; no host CPU, memory, NIC or cooling,
+  while catalog prices cover whole instances (hosts per layout recorded).
+  Host RAPL is not read here.

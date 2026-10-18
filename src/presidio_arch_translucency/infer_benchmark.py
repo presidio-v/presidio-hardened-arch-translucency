@@ -74,6 +74,12 @@ from presidio_arch_translucency.infer_calibrate import (
     InferenceCalibrationError,
     InferencePoint,
 )
+from presidio_arch_translucency.infer_energy import (
+    EnergyMeter,
+    InferenceEnergyError,
+    drift_control,
+    parse_energy_gpus,
+)
 from presidio_arch_translucency.infer_observe import (
     DEFAULT_WINDOW_S,
     MAX_REPLICAS,
@@ -531,6 +537,9 @@ class LevelReport:
     imbalance: float | None = None
     # Observe's refusal class (e.g. "little", "preemption", "imbalance").
     refusal_code: str | None = None
+    # Measured DCGM energy over the same window (--energy-gpu); its verdict is
+    # independent of the capacity verdict above.
+    energy: dict | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -633,6 +642,8 @@ class BenchmarkConfig:
     # all engines (vLLM data parallelism) and the server routes.
     instances: int = 1
     extra_endpoints: tuple[str, ...] = ()
+    # Measured energy: one comma-separated group of tp GPU UUIDs per engine.
+    energy_gpus: tuple[str, ...] = ()
 
     @property
     def endpoints(self) -> tuple[str, ...]:
@@ -728,6 +739,13 @@ class BenchmarkConfig:
                 "--engine selects one engine; replica layouts read every engine "
                 "of the model"
             )
+        if not isinstance(self.energy_gpus, tuple):
+            raise InferenceBenchmarkError("energy_gpus must be a tuple")
+        if self.energy_gpus:
+            try:
+                parse_energy_gpus(self.energy_gpus, self.tp, self.instances)
+            except InferenceEnergyError as exc:
+                raise InferenceBenchmarkError(str(exc)) from exc
 
     def longest_request_tokens(self) -> int:
         return self.prompt_tokens + math.ceil(self.output_tokens * (1 + OUTPUT_JITTER))
@@ -760,6 +778,7 @@ def run_level(
     ttft_cdf: Callable[..., dict[str, float] | None] | None = None,
     refine: bool = False,
     observe_replicas: Callable[..., object] | None = None,
+    energy: EnergyMeter | None = None,
 ) -> LevelReport:
     """Warm up, hold, read the window, verify lengths; never raise on refusal."""
     # Resolved at call time so tests can substitute module attributes.
@@ -913,6 +932,17 @@ def run_level(
         routed = [0] * len(config.endpoints)
         for record in ok:
             routed[record.route] += 1
+    energy_record = (
+        None
+        if energy is None
+        else energy.level(
+            config.window_s,
+            eval_time,
+            selector.promql(),
+            steady=not reasons,
+            engines=config.instances,
+        )
+    )
     return LevelReport(
         mode=config.mode,
         level=level,
@@ -943,6 +973,7 @@ def run_level(
             if endpoint_fault
             else (None if refusal is None else refusal.code)
         ),
+        energy=energy_record,
     )
 
 
@@ -953,6 +984,8 @@ class BenchmarkReport:
     levels: list[LevelReport] = field(default_factory=list)
     stopped_early: bool = False
     error: str | None = None
+    # Measured energy: gated GPUs, idle baselines and the drift control.
+    energy: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -962,7 +995,21 @@ class BenchmarkReport:
             "stopped_early": self.stopped_early,
             "error": self.error,
             "levels": [level.as_dict() for level in self.levels],
+            "energy": self.energy,
         }
+
+
+def _idle_window(
+    config: BenchmarkConfig, meter: EnergyMeter, level_kwargs: dict
+) -> dict[str, dict]:
+    """Settle, hold a window with no load, read every named GPU at idle."""
+    sleep = level_kwargs.get("sleep") or _sleep
+    wall_clock = level_kwargs.get("wall_clock") or time.time
+    sleep(config.scrape_lag_s)  # in-flight work drains before the window
+    sleep(config.window_s)
+    eval_time = wall_clock()
+    sleep(config.scrape_lag_s)
+    return meter.measure_idle(config.window_s, eval_time)
 
 
 def run_benchmark(
@@ -970,6 +1017,7 @@ def run_benchmark(
     client: VllmClient | Sequence[VllmClient] | None = None,
     on_level: Callable[[LevelReport, BenchmarkReport], None] | None = None,
     report: BenchmarkReport | None = None,
+    energy_meter: EnergyMeter | None = None,
     **level_kwargs: object,
 ) -> BenchmarkReport:
     """Check the context, probe prompt sizing, then run every level in order.
@@ -978,6 +1026,11 @@ def run_benchmark(
     completed levels if a later one raises. In open mode a saturated level
     ends the sweep (higher λ only saturates harder) unless
     ``stop_on_saturation`` is False; ``refine`` then bisects the brackets.
+
+    With ``energy_gpus`` the named GPUs pass the E1a gate before any load and
+    an idle window before the first level; after a clean run the first level
+    is repeated as a drift control and idle is read again. ``energy_meter``
+    substitutes the meter (tests).
     """
     clients = (
         _clients(client)
@@ -999,6 +1052,17 @@ def run_benchmark(
     report.config["routing"] = config.routing
     for each in clients:
         check_context_fits(config, each)
+    meter: EnergyMeter | None = None
+    if config.energy_gpus:
+        meter = energy_meter or EnergyMeter(
+            config.prometheus,
+            parse_energy_gpus(config.energy_gpus, config.tp, config.instances),
+        )
+        try:
+            meter.gate()  # E1a, before any load
+        except InferenceEnergyError as exc:
+            raise InferenceBenchmarkError(str(exc)) from exc
+        report.energy = meter.describe()
     # The same probe prompts on every replica: they must size them the same,
     # or the endpoints do not serve one model with one tokenizer.
     probes = [
@@ -1019,6 +1083,13 @@ def run_benchmark(
                 f"({probes[0]} vs {other}); they do not serve one model"
             )
     report.prompts = probes[0]
+    if meter is not None:
+        try:
+            meter.idle = _idle_window(config, meter, level_kwargs)
+        except InferenceEnergyError as exc:
+            raise InferenceBenchmarkError(str(exc)) from exc
+        report.energy = meter.describe()
+        level_kwargs = {**level_kwargs, "energy": meter}
     for level in config.levels:
         result = run_level(config, client, level, report.prompts, **level_kwargs)
         report.levels.append(result)
@@ -1029,7 +1100,44 @@ def run_benchmark(
             break
     if config.refine:
         _refine(config, client, report, on_level, level_kwargs)
+    if meter is not None and report.energy is not None:
+        _energy_controls(config, client, report, meter, level_kwargs)
     return report
+
+
+def _energy_controls(
+    config: BenchmarkConfig,
+    client: VllmClient | Sequence[VllmClient],
+    report: BenchmarkReport,
+    meter: EnergyMeter,
+    level_kwargs: dict,
+) -> None:
+    """Repeat the first clean level (thermal and clock drift), then idle again.
+
+    Levels run in ascending λ, so load is confounded with GPU temperature;
+    the repeat shows how much of a watts difference the run's history alone
+    explains. Neither reading joins ``levels``: they are controls, not sweep
+    data, and the repeat's point is never printed.
+    """
+    energy = report.energy
+    if energy is None or not report.levels:
+        return
+    # The lowest level whose energy recorded: a landing refusal at the first
+    # level must not cost the run its drift pair.
+    first = next(
+        (lv for lv in report.levels if (lv.energy or {}).get("verdict") == "recorded"),
+        report.levels[0],
+    )
+    repeat = run_level(config, client, first.level, report.prompts, **level_kwargs)
+    energy["drift_control"] = {
+        "level": first.level,
+        **drift_control(first.energy, repeat.energy),
+        "repeat": repeat.as_dict(),
+    }
+    try:
+        energy["idle_after"] = _idle_window(config, meter, level_kwargs)
+    except InferenceEnergyError as exc:
+        energy["idle_after"] = {"refused": str(exc)}
 
 
 def _refine(

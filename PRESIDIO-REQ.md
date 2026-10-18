@@ -1730,7 +1730,8 @@ inference.
 | 1d | `pat infer-validate --sweep`: measured λ_max brackets vs the recommender's predicted λ_max, interval error and H3 verdict, binding-constraint check, capacity mechanism check, ranking logic at equal GPU budget; `--refine K` bisection, per-level `ttft_cdf` and raw readings in `infer-benchmark` | Implemented 2026-10-10 |
 | 1e | Replica layouts: `--endpoint` per replica with random client-side routing (or one data-parallel endpoint, marked `server`), per-engine observe gates plus a 25 % batch-balance gate, pooled per-instance point, any-engine saturation, `infer-validate --sweep` for n ≥ 2 | Implemented 2026-10-10 |
 | 1f | Dated EUR GPU price catalog: `pat infer-prices` (template, commit, list), `--price-catalog` on `infer-analyze` / `infer-what-if`, instance-packing layout prices, cheapest layout meeting the SLO | Implemented 2026-10-11 |
-| 1g | DCGM energy per level through the E1a gate | Planned |
+| 1g | `--energy-gpu` on `infer-benchmark`: DCGM energy per level through the E1a gate (named GPUs, cadence and power cross-check, power-limit and landing checks), J per output token from vLLM's in-window token counters, idle baselines and a drift-control repeat | Implemented 2026-10-12 |
+| 1h | H4 analysis: J/token and €/token per layout at a pre-registered common λ, energy-optimal vs cost-optimal ranking | Planned |
 | 2 | `pat report` audit/benchmark bundle; `inference-run@1` evidence schema; paper pilot | Planned |
 | 3 | Hosted continuous-report shell; only after two paid audits | Gated |
 
@@ -1772,6 +1773,9 @@ after calibration by 2026-11-30 drops the predictive claim).
 | I12 | Replica levels are validation data only; calibration stays single-engine | Keeps n ≥ 2 an out-of-sample extrapolation (the router and host cost α_replica = 0 is tested, not fitted) |
 | I13 | No price data in the package; catalogs are operator files, committed by digest, refused past 90 days | List prices move monthly; a stale price in a published audit is a liability, and freshness sits on the closed side of the open-core line |
 | I14 | Layout prices by single-SKU instance packing (TP group never spans an instance; committed minimums billed) | Uniform per-GPU pricing makes cost ∝ GPUs, leaving H4 no cost structure to diverge from |
+| I15 | Energy per level from the DCGM firmware counter on operator-named GPUs, refused unless it changes at least every 10 s and agrees with sampled power within 15 % | At dcgm-exporter's default 30 s cadence `increase()` extrapolates a whole cadence per window edge, up to 25 % at a 120 s window (advisor review) |
+| I16 | Energy verdict independent of the capacity verdict; J per output token from vLLM's in-window token counters, also on saturated levels (`steady` flag) | H3 must not lose levels to an exporter hiccup; joules cover in-flight work that completions × O miss, and the saturated level can be the energy optimum |
+| I17 | H4 compared at a pre-registered common λ on one level ladder; GPU board energy only, hosts recorded | At fixed λ cost-optimal is λ-independent while energy-optimal is not; prices cover whole instances, joules only GPUs |
 
 ## SDLC
 

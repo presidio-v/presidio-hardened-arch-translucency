@@ -1508,6 +1508,39 @@ def _parse_levels(raw: str, mode: str) -> tuple[float, ...]:
     return levels
 
 
+def _energy_line(energy: dict) -> str:
+    if energy.get("verdict") != "recorded":
+        return f"  [yellow]energy refused: {escape(str(energy.get('reason')))}[/]"
+    per_token = energy.get("j_per_output_token")
+    return (
+        f"  energy {energy['watts']:.0f} W over {energy['window_s']}s"
+        + (f", {per_token:.3f} J/output token" if per_token is not None else "")
+        + ("" if energy.get("steady") else " (capacity window refused)")
+    )
+
+
+def _energy_summary(energy: dict) -> None:
+    idle = energy.get("idle_before") or {}
+    if idle:
+        total = sum(gpu["watts"] for gpu in idle.values())
+        info_console.print(
+            f"Idle before: {total:.0f} W on {len(idle)} GPU(s), "
+            f"{energy.get('hosts')} host(s); GPU board energy only"
+        )
+    drift = energy.get("drift_control") or {}
+    if drift.get("drift") is not None:
+        style = "yellow" if drift.get("drifted") else "green"
+        info_console.print(
+            f"[{style}]Drift control: first level repeated at "
+            f"{drift['drift']:+.1%} watts[/]"
+        )
+    elif drift:
+        info_console.print("[yellow]Drift control: no clean energy pair[/]")
+    after = energy.get("idle_after") or {}
+    if "refused" in after:
+        info_console.print(f"[yellow]Idle after: {escape(str(after['refused']))}[/]")
+
+
 def infer_benchmark_command(
     endpoint: list[str] = typer.Option(  # noqa: B008
         ...,
@@ -1574,6 +1607,14 @@ def infer_benchmark_command(
         "--tpot-slo-ms",
         help="Open loop: also refine the bracket where mean TPOT crosses this SLO.",
     ),
+    energy_gpu: Optional[list[str]] = typer.Option(  # noqa: UP045, B008
+        None,
+        "--energy-gpu",
+        help="Measure DCGM energy per level on these GPUs: tp comma-separated "
+        "UUIDs (nvidia-smi -L), repeated once per engine in --endpoint order. "
+        "Adds an idle window before and after the run and a repeat of the "
+        "first clean level.",
+    ),
 ) -> None:
     """Drive load against a running vLLM engine and record each level.
 
@@ -1582,7 +1623,9 @@ def infer_benchmark_command(
     (--concurrency) produces calibration points; open loop (--rate) produces
     the per-layer SLO-capacity sweep. Recorded points go to stdout as JSON
     lines (`>> points.jsonl`); every level, refused or not, goes to --report.
-    API key from PAT_VLLM_API_KEY only (https required).
+    API key from PAT_VLLM_API_KEY only (https required). With --energy-gpu,
+    dcgm-exporter must be scraped by the same Prometheus with its counter
+    changing at least every 10 s (--collect-interval 1000, scrape ≤ 5 s).
     """
     from presidio_arch_translucency.infer_benchmark import (  # noqa: PLC0415
         BenchmarkConfig,
@@ -1621,7 +1664,11 @@ def infer_benchmark_command(
         if result.verdict == "recorded":
             info_console.print(f"[green]✓ {label}[/]")
         else:
-            info_console.print(f"[yellow]✗ {label} — refused: {result.reason}[/]")
+            info_console.print(
+                f"[yellow]✗ {label} — refused: {escape(str(result.reason))}[/]"
+            )
+        if result.energy is not None:
+            info_console.print(_energy_line(result.energy))
         write_report(current)
 
     try:
@@ -1651,6 +1698,7 @@ def infer_benchmark_command(
             stop_on_saturation=not keep_going,
             refine=refine,
             tpot_slo_ms=tpot_slo_ms,
+            energy_gpus=tuple(energy_gpu or ()),
         )
         if report is not None:
             # Fail before spending GPU time if the report cannot be written.
@@ -1694,6 +1742,8 @@ def infer_benchmark_command(
         f"{recorded}/{len(result.levels)} level(s) recorded"
         + (" · stopped early" if result.stopped_early else "")
     )
+    if result.energy is not None:
+        _energy_summary(result.energy)
     if exit_code:
         raise typer.Exit(code=exit_code)
 

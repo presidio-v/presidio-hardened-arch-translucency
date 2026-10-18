@@ -89,6 +89,15 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
   priced by packing TP groups onto the cheapest instance type that holds one,
   so equal GPU counts can cost different amounts; JSON cites the catalog and
   every price used and names the cheapest layout meeting the SLO.
+- `--energy-gpu` on `pat infer-benchmark` records measured GPU energy per level
+  from the DCGM exporter (Inference Arc Phase 1g), over the same window as the
+  vLLM readings. The named GPUs must pass the E1a gate before any load and an
+  idle window before the first level; a level's energy is refused when the
+  counter updates less than every 10 s, disagrees with sampled power by more
+  than 15 %, the power limit moves, or the load did not land on those GPUs.
+  Each level reports watts and joules per output token from vLLM's token
+  counters, independent of its capacity verdict; the first level is repeated
+  at the end as a drift control.
 
 ### Changed
 

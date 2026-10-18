@@ -1150,6 +1150,33 @@ data-parallel engine set instead, but the server's balancer is not the
 modelled random split, so `infer-validate` marks those rows server-routed and
 outside H3.
 
+To measure energy (H4), name the layout's GPUs, one `--energy-gpu` per engine
+with its tp UUIDs comma-separated (`nvidia-smi -L`), in the same order as the
+`--endpoint`s. dcgm-exporter must be scraped by the same Prometheus, with its
+counter updating at least every 10 s: run it with `--collect-interval 1000`
+and scrape every 5 s or faster (the 15–30 s defaults are refused). MIG must
+be off. Under Kubernetes without host networking, the recorded host is the
+exporter pod's name, still one per node.
+
+```bash
+pat infer-benchmark --endpoint http://gpu-node:8000 ... --tp 2 \
+  --rate 2,2.5,3.1,3.9 --energy-gpu GPU-1f2e…,GPU-7a3b… --report sweep-tp2.json
+```
+
+Before any load, every named GPU must have exactly one DCGM series with a
+`gpu` and `Hostname` label (a TP group on one host, one GPU model); then an
+idle window must show them unused. Each level records watts, joules per output
+token (from vLLM's own token counters over the same window) and per-GPU
+temperature, SM clock and power limit. A level's energy is refused, without
+touching its capacity verdict, when vLLM's token counters do not come from
+exactly the layout's engines, the counter updated too rarely, disagrees
+with the sampled power by more than 15 %, the power limit changed, or the
+load did not raise the GPUs above idle. After the sweep the lowest level with
+clean energy is repeated (watts drift above 5 % is flagged) and idle is read again. Joules
+cover the GPU boards only, not host CPU, memory or network, while prices cover
+whole instances; the report counts hosts per layout. Compare layouts at a
+common, pre-registered rate on one level ladder.
+
 Each level warms up (`--warmup-s`, default 60), holds for `--window-s`
 (default 120), and keeps the load on for `--scrape-lag-s` (default 15) while
 the window is read. Refused levels are kept in the report with the reason and
