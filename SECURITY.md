@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| main / 0.24.x | :white_check_mark: |
+| main / 0.25.x | :white_check_mark: |
+| 0.24.x  | :white_check_mark: |
 | 0.23.x  | :white_check_mark: |
 | 0.22.x  | :white_check_mark: |
 | 0.21.x  | :white_check_mark: |
@@ -203,6 +204,13 @@ sidecar authors must not treat shape validation as measured-ness.
 
 Manual security audit history:
 
+- v0.25.0 release gate (2026-10-18) -- adds one trust-boundary input:
+  `--gate-certificate` documents are verified with ikigov-assess's own
+  `verify_certificate` against `--gate-trust` before emission and refused
+  (exit 1, nothing emitted) unless the decision is `OPEN`; the `[gate]` extra
+  is installed in the pip-audit job. Inference Arc commands talk only to
+  operator-supplied vLLM / Prometheus / DCGM endpoints and sign nothing. Locked
+  `pip-audit` clean.
 - v0.24.2 patch release gate (2026-10-07) -- ships the `[evidence]` extra at
   `cryptography>=50.0.0,<51.0.0` (lock-pinned 50.0.0) so downstream installs get
   the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix; the v0.17.0 major-bound policy

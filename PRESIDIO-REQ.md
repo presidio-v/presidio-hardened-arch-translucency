@@ -36,7 +36,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.24.2** (dependency security patch)
+- Current version: **0.25.0** (gate certificates as parents; Inference Arc Phases 0–1h)
 
 ---
 
@@ -77,6 +77,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.24.0 | Energy arc · Sign the watt — `pat energy-evidence-emit` (`energy-reading@1`, store-only figures, span-overlap closure) + `observe verify --emit-head` chain-head anchoring from a single verified snapshot (discharges the ADR-0010 deferral); arc retro | Released after third-party findings were remediated (2026-07-18) |
 | v0.24.1 | Family-vector conformance patch — pin the nominal Kepler energy vector and energy-bearing training vector to the authoritative family records while preserving PAT's Kepler emission refusal | Released (2026-07-18) |
 | v0.24.2 | Dependency security patch — ship the `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (still major-bounded; lock-pinned 50.0.0) so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, floor the audit extra's `pip` at `>=26.2` (PYSEC-2026-3721) and core `urllib3` at `>=2.8.0` (PYSEC-2026-4175/4176/4177) | Released (2026-10-07) |
+| v0.25.0 | Gate certificates as parents (#120) — `--gate-certificate`/`--gate-trust` on `train-evidence-emit` and `energy-evidence-emit` verify an ikigov-assess `gate-certificate@1` (decision `OPEN`) before its ADR-0006 identity becomes a parent; `[gate]` extra. Inference Arc Phases 0–1h (ADR-0012): `infer-analyze`/`infer-what-if`, `infer-calibrate`/`infer-validate`, `infer-observe`, `infer-benchmark`, replica layouts, EUR price catalog, measured GPU energy and the H4 verdict | Release gate in progress (2026-10-18) |
 
 ---
 
