@@ -161,8 +161,11 @@ def _config(url, **kw):
 
 
 # Open-loop settings the fake engine sustains even on a slow runner: 100 rps
-# over a 400 ms scaled hold after a 100 ms warmup.
-_UNSATURATED = {"levels": (100.0,), "level": 100.0, "window_s": 800, "warmup_s": 200}
+# over a 1.2 s scaled hold after a 100 ms warmup. The hold must collect enough
+# arrivals that the few in flight at its edges stay well inside the 10 %
+# throughput margin: a 400 ms hold (~32 arrivals) read 28/32 on a starved CI
+# runner and tripped the saturation rule.
+_UNSATURATED = {"levels": (100.0,), "level": 100.0, "window_s": 2400, "warmup_s": 200}
 
 EXACT = PromptCalibration(tokens_per_word=4 / 3, overhead_tokens=11.0)
 
