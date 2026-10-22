@@ -10,6 +10,13 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Security
+
+- Container image: `certifi` 2026.5.20 → 2026.10.19 in `uv.lock`. The new bundle
+  drops emSign ECC Root CA - G3, the root behind the eight eMudhra intermediates
+  whose private keys were trivially recoverable (Mozilla bug 2083449). Python
+  HTTPS clients trust certifi and do not check revocation.
+
 ## [0.25.0] - 2026-10-18
 
 ### Added
