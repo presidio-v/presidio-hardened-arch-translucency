@@ -35,6 +35,11 @@ dependencies = [
     # floor the resolver keeps the vulnerable pin and the blocking pip-audit gate
     # on push (main + release tags) fails.
     "urllib3>=2.8.0",
+    # CVE guard for matplotlib's transitive dependency: pillow 12.3.0 carries 35
+    # advisories (CVE-2026-96636..96778, CVE-2026-112390..112901,
+    # GHSA-78g4-xqwv-q3g8), first fixed in 13.0.0. Pillow 13 requires Python
+    # 3.11+, so the floor is marker-scoped; 3.10 has no fixed pillow release.
+    "pillow>=13.0.0; python_version >= '3.11'",
     "matplotlib>=3.7.0",
     "scipy>=1.10",
     "statsmodels>=0.14",

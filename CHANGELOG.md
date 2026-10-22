@@ -10,6 +10,13 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Security
+
+- Floor `pillow>=13.0.0` on Python 3.11+. Pillow 12.3.0, pulled in by
+  matplotlib, carries 35 advisories first fixed in 13.0.0, and the blocking
+  `pip-audit` gate on `main` failed on it. Pillow 13 requires Python 3.11, so
+  Python 3.10 installs keep 12.3.0 (see SECURITY.md, Known Limitations).
+
 ## [0.25.1] - 2026-10-22
 
 ### Security
