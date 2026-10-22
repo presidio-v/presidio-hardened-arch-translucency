@@ -193,6 +193,12 @@ sidecar authors must not treat shape validation as measured-ness.
   validated to hex and hyphens before they enter PromQL. Which GPUs serve the
   model is the operator's statement; the landing check can falsify it, not
   prove it.
+- On Python 3.10, matplotlib's transitive `pillow` stays at 12.3.0, which
+  carries 35 advisories (CVE-2026-96636..96778, CVE-2026-112390..112901,
+  GHSA-78g4-xqwv-q3g8). The fix, pillow 13.0.0, requires Python 3.11, so the
+  `pillow>=13.0.0` floor applies on 3.11+ only. pat uses pillow only to write
+  PNG charts (`savefig`) and never decodes untrusted images, but 3.10 users
+  should upgrade Python. The `pip-audit` gate runs on 3.12.
 - `pip-audit` requires a network connection; it gracefully skips when offline.
 - GCP pricing is sourced from an unofficial third-party pricelist endpoint and
   should be treated as a best-effort estimate.
