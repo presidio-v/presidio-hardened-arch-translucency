@@ -204,6 +204,11 @@ sidecar authors must not treat shape validation as measured-ness.
 
 Manual security audit history:
 
+- v0.25.1 patch release gate (2026-10-22) -- no code change; the lock and the
+  GHCR image move to `certifi` 2026.10.19, which removes emSign ECC Root CA - G3
+  (eMudhra intermediates with trivially recoverable keys). Python HTTPS clients
+  do not check revocation, so the browser-side blocks did not cover the image.
+  Locked `pip-audit` clean.
 - v0.25.0 release gate (2026-10-18) -- adds one trust-boundary input:
   `--gate-certificate` documents are verified with ikigov-assess's own
   `verify_certificate` against `--gate-trust` before emission and refused
