@@ -10,6 +10,8 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-10-22
+
 ### Security
 
 - Floor `pillow>=13.0.0` on Python 3.11+. Pillow 12.3.0, pulled in by
@@ -1118,7 +1120,8 @@ decisions (D1–D5 in `PRESIDIO-REQ.md`).
   notation below `$1e-4` and keeps up to 8 significant figures above it, applied
   across `pat cost`, `pat analyze --show-all`, and `pat demo`.
 
-[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.25.2...HEAD
+[0.25.2]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.2...v0.25.0
 [0.24.2]: https://github.com/presidio-v/presidio-hardened-arch-translucency/compare/v0.24.1...v0.24.2
