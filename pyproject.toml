@@ -101,13 +101,7 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
-ignore = [
-    "S101",  # allow assert in tests
-    # StrEnum would change str()/format() of members from "Cls.MEMBER" to the
-    # value. Output paths use .value, so migrating is expected to be neutral,
-    # but it is a behaviour change kept out of the Python 3.10 drop.
-    "UP042",
-]
+ignore = ["S101"]  # allow assert in tests
 
 [tool.coverage.run]
 source = ["src"]

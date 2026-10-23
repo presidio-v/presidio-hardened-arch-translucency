@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
@@ -35,7 +35,7 @@ from presidio_arch_translucency.model_config import (
 VALID_LAYERS: Final[tuple[str, ...]] = ("container", "pod", "deployment", "node")
 
 
-class ReplicationLayer(str, Enum):
+class ReplicationLayer(StrEnum):
     """Docker/Kubernetes replication layers ordered by overhead."""
 
     CONTAINER = "container"

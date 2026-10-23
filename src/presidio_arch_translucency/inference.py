@@ -53,7 +53,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Final
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class InferenceDomainError(ValueError):
     """Raised on out-of-domain inference parameters (fail-closed, no math on junk)."""
 
 
-class ServingStrategy(str, Enum):
+class ServingStrategy(StrEnum):
     """Inference replication strategies (labels derived from ``(tp, n)``)."""
 
     REPLICA = "replica"
