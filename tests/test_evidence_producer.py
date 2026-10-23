@@ -9,7 +9,7 @@ verify our degradation readings.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -191,7 +191,7 @@ def test_is_degraded():
 def test_observation_to_layer0_rounds_and_is_unsigned():
     reading = observation_to_layer0(
         Observation(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             rps=480.0,
             avg_latency_ms=80.0,
             p99_latency_ms=420.6,
@@ -208,7 +208,7 @@ def test_observation_to_layer0_rounds_and_is_unsigned():
 def test_observation_to_evidence_rounds_p99_to_int():
     env = observation_to_evidence(
         Observation(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             rps=480.0,
             avg_latency_ms=80.0,
             p99_latency_ms=420.6,

@@ -8,7 +8,7 @@ only when the energy store has readings. Exposition must stay valid.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -79,7 +79,7 @@ def test_measured_gauge_present_with_readings(tmp_path):
     db = tmp_path / "obs.db"
     _record_energy_observation_unchecked(
         EnergyObservation(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             120.0,
             7200.0,
             60.0,
@@ -103,7 +103,7 @@ def test_measured_gauge_refuses_tampered_store(tmp_path):
     db = tmp_path / "obs.db"
     _record_energy_observation_unchecked(
         EnergyObservation(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             120.0,
             7200.0,
             60.0,
@@ -128,7 +128,7 @@ def test_measured_gauge_latest_per_layer_meter(tmp_path):
     for w in (100.0, 130.0):  # second is more recent
         _record_energy_observation_unchecked(
             EnergyObservation(
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
                 w,
                 w * 60,
                 60.0,
@@ -149,7 +149,7 @@ def test_exposition_contains_energy_gauges(tmp_path):
     db = tmp_path / "obs.db"
     _record_energy_observation_unchecked(
         EnergyObservation(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             120.0,
             7200.0,
             60.0,

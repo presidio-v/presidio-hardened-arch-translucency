@@ -7,7 +7,7 @@ actually produce, so the dashboard cannot silently drift from the metrics.
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from presidio_arch_translucency.export import (
@@ -32,7 +32,7 @@ def _exporter_metric_universe() -> set[str]:
             500.0, 80.0, ReplicationLayer.CONTAINER, cost_per_replica_hour=0.02
         )
     }
-    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
     arima_result = OptimizeResult(
         layer="container",
         samples=40,
@@ -64,7 +64,7 @@ def _exporter_metric_universe() -> set[str]:
 def _measured_energy_metric_names() -> set[str]:
     """Names the measured-energy exporter path can emit (v0.21.0)."""
     import tempfile
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     from presidio_arch_translucency.export import measured_energy_metrics
@@ -76,7 +76,7 @@ def _measured_energy_metric_names() -> set[str]:
     db = Path(tempfile.mkdtemp()) / "energy.db"
     _record_energy_observation_unchecked(
         EnergyObservation(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             120.0,
             7200.0,
             60.0,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from typer.testing import CliRunner
@@ -23,7 +23,7 @@ from presidio_arch_translucency.optimize import (
 
 runner = CliRunner()
 
-_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _series(rps_values, layer="container", latency=80.0, replicas=2, step_min=1):

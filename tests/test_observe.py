@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from typer.testing import CliRunner
@@ -41,7 +41,7 @@ def _obs(ts: datetime, layer: str = "container", rps: float = 500.0) -> Observat
     )
 
 
-_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

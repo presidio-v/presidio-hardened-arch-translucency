@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from typer.testing import CliRunner
@@ -13,7 +13,7 @@ from presidio_arch_translucency.observe import Observation, record_observation
 
 runner = CliRunner()
 
-_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

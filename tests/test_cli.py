@@ -3,7 +3,7 @@
 import json
 import re
 import stat
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from typer.testing import CliRunner
 
@@ -342,7 +342,7 @@ class TestEvidenceEmit:
         monkeypatch.setenv("HOME", str(tmp_path))
         record_observation(
             Observation(
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 rps=480.0,
                 avg_latency_ms=80.0,
                 p99_latency_ms=420.6,

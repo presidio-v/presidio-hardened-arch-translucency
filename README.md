@@ -77,7 +77,7 @@ to the `pat` CLI you already installed.
 
 ## Installation
 
-Requires **Python ≥ 3.10**.
+Requires **Python ≥ 3.11**.
 
 ```bash
 pip install presidio-hardened-arch-translucency

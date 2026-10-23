@@ -21,7 +21,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
 - Full GitHub security files: SECURITY.md, .github/dependabot.yml, .github/workflows/codeql.yml + pytest workflow
 
 ## Technical Requirements
-- Python 3.10+ (`requires-python = ">=3.10"`); `pyproject.toml` (hatchling) + `uv`
+- Python 3.11+ (`requires-python = ">=3.11"`); `pyproject.toml` (hatchling) + `uv`
 - `src/presidio_arch_translucency/` layout; Typer CLI `pat` (entry point
   `presidio_arch_translucency.cli:app`)
 - Replication model from the architectural-translucency equations — throughput `ω(δ)`,
@@ -414,6 +414,18 @@ on 3.9). Resolving them required dropping Python 3.9. `requires-python` is now
 3.10–3.12; `uv.lock` was regenerated with all 19 alerts cleared. (A stale
 "Test (Python 3.9)" required status check in branch protection was also removed
 so PRs could merge.)
+
+#### Python 3.10 deprecation (out-of-band, after v0.25.2)
+
+Same pattern as the 3.9 drop. After v0.25.2, Dependabot still reported **39
+alerts** (5 critical) against `uv.lock`, all for `pillow` 12.3.0 (pulled in by
+`matplotlib`). The fix, pillow 13.0.0, requires Python 3.11, so the lock kept a
+3.10 resolution fork on the vulnerable release. CPython 3.10 reaches end of
+life in October 2026. `requires-python` is now `>=3.11`; the CI matrix, trove
+classifiers, and `ruff target-version` are 3.11–3.12; the `pillow` and
+`atheris` markers are gone, as is the unused `tomli` build requirement.
+`uv.lock` was regenerated with no 3.10 fork. The "Test (Python 3.10)" required
+status check was removed from branch protection.
 
 #### Carried to v0.9.0 planning
 

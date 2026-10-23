@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from typer.testing import CliRunner
@@ -29,7 +29,7 @@ from presidio_arch_translucency.observe import (
 )
 
 runner = CliRunner()
-_T0 = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
 
 
 _DEFAULT_POINTS = ((1, 60.0), (2, 110.0), (4, 210.0), (8, 410.0))

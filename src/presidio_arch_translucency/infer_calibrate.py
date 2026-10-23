@@ -46,7 +46,7 @@ import math
 import os
 import stat
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
@@ -733,7 +733,7 @@ def build_profile_record(name: str, result: InferenceCalibrationResult) -> dict:
     record: dict = {
         "schema": RECORD_SCHEMA,
         "profile": name,
-        "calibrated_at": datetime.now(timezone.utc).isoformat(),
+        "calibrated_at": datetime.now(UTC).isoformat(),
         "hardware": result.hardware.as_dict(),
         "params": {name: float(getattr(result.params, name)) for name in _PARAM_FIELDS},
         "fitted": list(result.fitted),

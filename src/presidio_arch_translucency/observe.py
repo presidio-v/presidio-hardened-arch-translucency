@@ -31,7 +31,7 @@ import urllib.parse
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -323,8 +323,8 @@ def _seal_collected_energy_observation(
 def _to_utc(dt: datetime) -> datetime:
     """Normalise *dt* to a timezone-aware UTC datetime (naive -> assumed UTC)."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _iso(dt: datetime) -> str:
@@ -337,7 +337,7 @@ def _parse_iso(value: str) -> datetime:
 
 def utcnow() -> datetime:
     """Current time as a timezone-aware UTC datetime (default record timestamp)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------

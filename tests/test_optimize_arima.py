@@ -5,7 +5,7 @@ Uses deterministic synthetic series so fits are reproducible. No live data.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +22,7 @@ from presidio_arch_translucency.optimize import (
 
 runner = CliRunner()
 
-_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _ramp(n, start=200.0, slope=5.0, layer="container", replicas=4, step_min=1):

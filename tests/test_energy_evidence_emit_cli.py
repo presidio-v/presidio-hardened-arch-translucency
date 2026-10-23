@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -41,7 +41,7 @@ def _verify(db, *extra):
 
 
 def _recent(seconds_ago: float) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return datetime.now(UTC) - timedelta(seconds=seconds_ago)
 
 
 def _eobs(
