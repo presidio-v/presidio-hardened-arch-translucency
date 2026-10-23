@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Final
 
 from presidio_arch_translucency.model import load_calibrated_model
@@ -97,7 +97,7 @@ def _require_degree(degree: int, name: str, maximum: int) -> int:
     return degree
 
 
-class ParallelismStrategy(str, Enum):
+class ParallelismStrategy(StrEnum):
     """Training parallelism strategies ordered by coordination overhead."""
 
     DATA = "data"

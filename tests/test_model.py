@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from presidio_arch_translucency.inference import ServingStrategy
 from presidio_arch_translucency.model import (
     ALL_REPLICATION_LAYERS,
     DEFAULT_CONCURRENCY,
@@ -20,6 +21,7 @@ from presidio_arch_translucency.model import (
     response_time_ms,
     throughput,
 )
+from presidio_arch_translucency.training import ParallelismStrategy
 
 # ---------------------------------------------------------------------------
 # intensity_after_replication
@@ -295,3 +297,23 @@ class TestCalibratedModelLoading:
         )
         calibrated = analyze(500.0, 80.0, ReplicationLayer.CONTAINER)
         assert calibrated.recommended_replicas > baseline.recommended_replicas
+
+
+# ---------------------------------------------------------------------------
+# StrEnum formatting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        *ReplicationLayer,
+        *ParallelismStrategy,
+        *ServingStrategy,
+    ],
+)
+def test_strategy_enums_format_as_their_value(member):
+    """str()/f-strings yield the bare value, never ``Cls.MEMBER``."""
+    assert str(member) == member.value
+    assert f"{member}" == member.value
+    assert member == member.value

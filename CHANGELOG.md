@@ -10,6 +10,13 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Changed
+
+- `ReplicationLayer`, `ParallelismStrategy` and `ServingStrategy` are now
+  `StrEnum`s, so `str()` and f-strings give the bare value (`"container"`)
+  instead of `"ReplicationLayer.CONTAINER"`. Equality, hashing and JSON output
+  are unchanged.
+
 ### Removed
 
 - Python 3.10 support. `requires-python` is now `>=3.11`. CPython 3.10 reaches
