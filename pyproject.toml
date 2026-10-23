@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "tomli; python_version < '3.11'"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.25.2"
 description = "MVP implementation of architectural translucency for Docker/Kubernetes replication layer analysis"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Vladimir Stantchev" },
 ]
@@ -20,7 +20,6 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: System :: Distributed Computing",
@@ -38,8 +37,8 @@ dependencies = [
     # CVE guard for matplotlib's transitive dependency: pillow 12.3.0 carries 35
     # advisories (CVE-2026-96636..96778, CVE-2026-112390..112901,
     # GHSA-78g4-xqwv-q3g8), first fixed in 13.0.0. Pillow 13 requires Python
-    # 3.11+, so the floor is marker-scoped; 3.10 has no fixed pillow release.
-    "pillow>=13.0.0; python_version >= '3.11'",
+    # 3.11+, which is why Python 3.10 support was dropped.
+    "pillow>=13.0.0",
     "matplotlib>=3.7.0",
     "scipy>=1.10",
     "statsmodels>=0.14",
@@ -81,9 +80,8 @@ gate = [
     "presidio-hardened-ikigov-assess[crypto]>=0.28.0,<1",
 ]
 fuzz = [
-    # Atheris 3.x dropped Python 3.10 (last 3.10 wheel: 2.3.0); the marker keeps
-    # the extra resolvable across the >=3.10 support matrix while fuzz CI pins 3.12.
-    'atheris>=3.0; python_version >= "3.11"',
+    # Atheris ships Linux-only wheels; fuzz CI pins Python 3.12.
+    "atheris>=3.0",
 ]
 
 [project.scripts]
@@ -98,12 +96,18 @@ addopts = "--cov=presidio_arch_translucency --cov-report=term-missing --cov-fail
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
-ignore = ["S101"]  # allow assert in tests
+ignore = [
+    "S101",  # allow assert in tests
+    # StrEnum would change str()/format() of members from "Cls.MEMBER" to the
+    # value. Output paths use .value, so migrating is expected to be neutral,
+    # but it is a behaviour change kept out of the Python 3.10 drop.
+    "UP042",
+]
 
 [tool.coverage.run]
 source = ["src"]

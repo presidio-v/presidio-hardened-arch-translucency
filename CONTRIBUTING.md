@@ -73,7 +73,7 @@ rejects anything that does not conform.
 
 This project uses **ruff** for both linting and formatting; its configuration
 lives in `pyproject.toml` under `[tool.ruff]`: line length 88, target version
-`py310`, and the lint rule sets `E`, `F`, `I`, `UP`, `B`, and **`S`** (the bandit
+`py311`, and the lint rule sets `E`, `F`, `I`, `UP`, `B`, and **`S`** (the bandit
 security rules), with `S101` ignored only for test asserts. CI runs
 `ruff format --check .` and `ruff check .` and rejects anything that does not
 conform.
@@ -136,8 +136,8 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 These are the project's actual commands (the `[dev]` extra pins `ruff`,
 `pytest`, and `pytest-cov`). The coverage floor and multi-version matrix come
-from CI, which runs the suite on Python 3.10, 3.11, and 3.12; a change must pass
-on all three.
+from CI, which runs the suite on Python 3.11 and 3.12; a change must pass
+on both.
 
 CI runs the test suite across every supported runtime version. A change must pass on all of
 them.

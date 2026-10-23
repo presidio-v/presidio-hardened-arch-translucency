@@ -21,7 +21,7 @@ import copy
 import hashlib
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -75,7 +75,7 @@ TRAIN_BASE = [
 
 
 def _utc(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _issue(
@@ -86,7 +86,7 @@ def _issue(
     seed: str = SEED,
     use_case: str = "training-gate",
 ) -> dict:
-    issued = assessed_at or datetime.now(timezone.utc) - timedelta(days=1)
+    issued = assessed_at or datetime.now(UTC) - timedelta(days=1)
     doc = ikigov_cert.build_certificate(
         use_case=use_case,
         gate="G0",
@@ -166,12 +166,10 @@ def test_identity_rejects_floats() -> None:
 def test_vector_verifies_at_its_instant(tmp_path: Path) -> None:
     cert = _write(tmp_path, "cert.json", VECTOR["certificate"])
     trust = _write(tmp_path, "trust.json", VECTOR["trust_store"])
-    at = datetime(2026, 7, 3, tzinfo=timezone.utc)
+    at = datetime(2026, 7, 3, tzinfo=UTC)
     assert verify_gate_certificates([cert], trust, now=at) == [VECTOR_IDENTITY]
     with pytest.raises(GateCertificateError, match="expired"):
-        verify_gate_certificates(
-            [cert], trust, now=datetime(2028, 1, 1, tzinfo=timezone.utc)
-        )
+        verify_gate_certificates([cert], trust, now=datetime(2028, 1, 1, tzinfo=UTC))
 
 
 # ── merge ────────────────────────────────────────────────────────────────────
@@ -281,9 +279,7 @@ def test_train_refuses_tampered_decision(tmp_path: Path, trust: Path) -> None:
 
 
 def test_train_refuses_expired(tmp_path: Path, trust: Path) -> None:
-    doc = _issue(
-        assessed_at=datetime.now(timezone.utc) - timedelta(days=40), valid_days=30
-    )
+    doc = _issue(assessed_at=datetime.now(UTC) - timedelta(days=40), valid_days=30)
     cert = _write(tmp_path, "cert.json", doc)
     _assert_refused(
         _train("--gate-certificate", str(cert), "--gate-trust", str(trust)), "expired"
@@ -387,7 +383,7 @@ def _seed_energy(db: Path) -> None:
         _record_energy_observation_unchecked,
     )
 
-    first = datetime.now(timezone.utc) - timedelta(seconds=120)
+    first = datetime.now(UTC) - timedelta(seconds=120)
     for i in range(2):
         _record_energy_observation_unchecked(
             EnergyObservation(
@@ -442,9 +438,7 @@ def test_energy_without_option_has_no_parents(tmp_path: Path) -> None:
 def test_energy_refuses_bad_certificate(tmp_path: Path, trust: Path) -> None:
     db = tmp_path / "obs.db"
     _seed_energy(db)
-    doc = _issue(
-        assessed_at=datetime.now(timezone.utc) - timedelta(days=40), valid_days=30
-    )
+    doc = _issue(assessed_at=datetime.now(UTC) - timedelta(days=40), valid_days=30)
     cert = _write(tmp_path, "cert.json", doc)
     _assert_refused(
         _energy(db, "--gate-certificate", str(cert), "--gate-trust", str(trust)),

@@ -59,7 +59,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final
@@ -258,9 +258,7 @@ def _timestamp(value: object, name: str, index: int) -> datetime:
     ):
         raise _fail(f"{name} must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ", index)
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError as exc:
         raise _fail(f"{name} is not a valid timestamp", index) from exc
 
@@ -448,13 +446,13 @@ def _validate(
     entries = tuple(_entry(item, i) for i, item in enumerate(raw))
     # One campaign: retrieved on as_of or up to MAX_RETRIEVAL_SPREAD_DAYS
     # calendar days before it, and never after now.
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     start = datetime.combine(
         as_of - timedelta(days=MAX_RETRIEVAL_SPREAD_DAYS),
         datetime.min.time(),
-        timezone.utc,
+        UTC,
     )
-    end = datetime.combine(as_of + timedelta(days=1), datetime.min.time(), timezone.utc)
+    end = datetime.combine(as_of + timedelta(days=1), datetime.min.time(), UTC)
     for i, entry in enumerate(entries):
         if not start <= entry.retrieved_at < end:
             raise _fail(
@@ -487,7 +485,7 @@ def load_price_catalog(
 
     Freshness is checked separately (:func:`catalog_age`), at use.
     """
-    today = today or datetime.now(timezone.utc).date()
+    today = today or datetime.now(UTC).date()
     data = _read(path)
     commitment = data.get(COMMITMENT_KEY)
     digest = commitment.get("digest") if isinstance(commitment, dict) else None
@@ -524,7 +522,7 @@ def commit_price_catalog(
     The target must not exist; a file that already carries a commitment is
     refused, so an edit is never silently re-blessed.
     """
-    today = today or datetime.now(timezone.utc).date()
+    today = today or datetime.now(UTC).date()
     data = _read(source)
     if COMMITMENT_KEY in data:
         raise PriceCatalogError(
@@ -547,7 +545,7 @@ def commit_price_catalog(
 
 def catalog_age(catalog: PriceCatalog, today: date | None = None) -> tuple[int, bool]:
     """``(age in days, stale)``; refuses a catalog past :data:`REFUSE_DAYS`."""
-    today = today or datetime.now(timezone.utc).date()
+    today = today or datetime.now(UTC).date()
     age = (today - catalog.as_of).days
     if age > REFUSE_DAYS:
         raise PriceCatalogError(

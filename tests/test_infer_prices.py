@@ -7,7 +7,7 @@ Every price here is a fixture: provider ``example``, sources on
 import copy
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -30,7 +30,7 @@ from presidio_arch_translucency.infer_prices import (
 )
 
 runner = CliRunner()
-TODAY = datetime.now(timezone.utc).date()
+TODAY = datetime.now(UTC).date()
 
 
 def _entry(sku, gpus, price, **kw):
@@ -271,7 +271,7 @@ def test_retrieval_window_is_thirty_days_and_never_future(tmp_path):
     commit(f"{TODAY - timedelta(days=30)}T00:00:00Z", name="edge.json")
     with pytest.raises(PriceCatalogError, match="between"):
         commit(f"{TODAY - timedelta(days=31)}T23:59:59Z", name="early.json")
-    morning = datetime.combine(TODAY, datetime.min.time(), timezone.utc)
+    morning = datetime.combine(TODAY, datetime.min.time(), UTC)
     with pytest.raises(PriceCatalogError, match="in the future"):
         commit(f"{TODAY}T09:00:00Z", now=morning + timedelta(hours=8), name="f.json")
 

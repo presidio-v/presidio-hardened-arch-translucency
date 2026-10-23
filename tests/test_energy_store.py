@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -36,7 +36,7 @@ from presidio_arch_translucency.observe import (
     verify_energy_chain,
 )
 
-_T0 = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 7, 15, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture

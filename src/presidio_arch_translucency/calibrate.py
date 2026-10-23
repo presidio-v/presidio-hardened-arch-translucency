@@ -32,7 +32,7 @@ import tempfile
 import warnings
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from presidio_arch_translucency.model_config import (
@@ -895,7 +895,7 @@ def _fit_record(
         "overhead_beta": result.overhead_beta,
         "r_squared": result.r_squared,
         "rmse": result.rmse,
-        "calibrated_at": datetime.now(timezone.utc).isoformat(),
+        "calibrated_at": datetime.now(UTC).isoformat(),
         "observations": [
             [o.rps, o.latency_ms, o.replicas] for o in result.observations
         ],

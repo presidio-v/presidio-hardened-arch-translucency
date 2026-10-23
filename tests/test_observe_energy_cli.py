@@ -8,7 +8,7 @@ two-section `pat observe verify` output with its exit-code matrix (ADR-0011 §2)
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -27,7 +27,7 @@ from presidio_arch_translucency.prometheus import PrometheusError
 
 runner = CliRunner()
 _URL = "https://prometheus.monitoring.svc:9090"
-_T0 = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
 
 
 def _invoke(*args):
@@ -37,7 +37,7 @@ def _invoke(*args):
 def _fake(watts=120.0, layer="node", meter="rapl"):
     return _seal_collected_energy_observation(
         EnergyObservation(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             watts,
             watts * 60.0,
             60.0,
@@ -83,7 +83,7 @@ class TestObserveEnergyRecord:
         db = tmp_path / "obs.db"
         override_obs = _seal_collected_energy_observation(
             EnergyObservation(
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
                 120.0,
                 120.0 * 60.0,
                 60.0,

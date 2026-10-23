@@ -55,7 +55,7 @@ import math
 import os
 import stat
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from presidio_arch_translucency.calibrate import (
@@ -610,7 +610,7 @@ def _training_fit_record(result: TrainingCalibrationResult) -> dict:
         [r.degree, r.samples_per_second, r.duration_s, r.mean_power_w]
         for r in result.runs
     ]
-    calibrated_at = datetime.now(timezone.utc).isoformat()
+    calibrated_at = datetime.now(UTC).isoformat()
     record: dict = {
         "strategy": result.strategy,
         "overhead_alpha": result.overhead_alpha,

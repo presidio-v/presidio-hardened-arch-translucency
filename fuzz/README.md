@@ -25,9 +25,8 @@ exception propagates and Atheris records the crash with a reproducer.
 
 - **No macOS wheel:** Atheris ships Linux-only wheels, so this runs in the
   `fuzz` CI job on `ubuntu-latest`, never on a developer Mac.
-- **No cp310 wheel:** Atheris 3.x dropped Python 3.10, so the job pins Python
-  3.12 (the extra's `python_version >= "3.11"` marker keeps `>=3.10` resolves
-  clean). The test matrix is untouched.
+- **Pinned interpreter:** the job pins Python 3.12 and stays independent of
+  the 3.11/3.12 test matrix.
 - **Editable installs can shadow the package:** an `-e` checkout can win over
   the installed distribution on `sys.path`; verify the `calibrate` import
   resolves to the real target so coverage exercises the code under test.

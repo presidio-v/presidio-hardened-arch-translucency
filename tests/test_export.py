@@ -3,6 +3,7 @@
 import threading
 import urllib.error
 import urllib.request
+from datetime import UTC
 
 import pytest
 from typer.testing import CliRunner
@@ -257,11 +258,11 @@ def test_export_invalid_layer_exits_2(tmp_path, monkeypatch) -> None:
 
 def _result(**overrides):
     """Build an optimize.OptimizeResult with sensible defaults for tests."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from presidio_arch_translucency.optimize import OptimizeResult
 
-    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
     base = {
         "layer": "container",
         "samples": 12,
@@ -318,12 +319,12 @@ def test_prediction_metrics_arima_result_has_ci() -> None:
 
 
 def _obs(ts_minute: int, rps: float):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from presidio_arch_translucency.observe import Observation
 
     return Observation(
-        timestamp=datetime(2026, 6, 17, 12, ts_minute, tzinfo=timezone.utc),
+        timestamp=datetime(2026, 6, 17, 12, ts_minute, tzinfo=UTC),
         rps=rps,
         avg_latency_ms=80.0,
         p99_latency_ms=160.0,

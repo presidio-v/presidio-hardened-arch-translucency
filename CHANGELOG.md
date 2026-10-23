@@ -10,6 +10,18 @@ For the change history of releases prior to 0.7.0, see the Version Registry in
 
 ## [Unreleased]
 
+### Removed
+
+- Python 3.10 support. `requires-python` is now `>=3.11`. CPython 3.10 reaches
+  end of life in October 2026, and its lock fork kept `pillow` 12.3.0 (39
+  Dependabot alerts, 5 critical) because pillow 13.0.0 requires Python 3.11.
+  Python 3.10 users stay on 0.25.2.
+
+### Security
+
+- `pillow>=13.0.0` now applies on every supported Python, so the lock carries
+  no vulnerable pillow.
+
 ## [0.25.2] - 2026-10-22
 
 ### Security

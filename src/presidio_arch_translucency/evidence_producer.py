@@ -26,7 +26,7 @@ import math
 import re
 import string
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
@@ -137,7 +137,7 @@ def sign_evidence(
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _package_version() -> str:
@@ -594,7 +594,8 @@ def _validate_utc_instant(value: object, name: str) -> tuple[str, datetime]:
             f"{name} must be strict RFC3339 UTC using 'T' and either 'Z' or "
             f"'+00:00', got {value!r}"
         )
-    # Python 3.10's fromisoformat does not accept a trailing 'Z'; normalise it.
+    # Normalise a trailing 'Z' to '+00:00' before parsing (defensive; 3.11+
+    # fromisoformat accepts both).
     candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
     try:
         parsed = datetime.fromisoformat(candidate)
