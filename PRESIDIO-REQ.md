@@ -36,7 +36,7 @@ Users run `pat analyze --requests-per-second 500 --avg-latency-ms 80 --current-l
   bandit `S`); `pip-audit` on run
 - MIT license; Keep a Changelog + SemVer; full GitHub security files (SECURITY.md,
   dependabot, CodeQL)
-- Current version: **0.25.2** (dependency security patch on 0.25.0: gate certificates as parents; Inference Arc Phases 0–1h)
+- Current version: **0.26.0** (Python 3.10 dropped, 3.11 floor; features as 0.25.0: gate certificates as parents; Inference Arc Phases 0–1h)
 
 ---
 
@@ -78,6 +78,7 @@ Every deliberation about future versions and roadmap is persisted here.
 | v0.24.1 | Family-vector conformance patch — pin the nominal Kepler energy vector and energy-bearing training vector to the authoritative family records while preserving PAT's Kepler emission refusal | Released (2026-07-18) |
 | v0.24.2 | Dependency security patch — ship the `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (still major-bounded; lock-pinned 50.0.0) so downstream installs get the CVE-2026-69247 / GHSA-g6cj-pr64-35w5 fix, floor the audit extra's `pip` at `>=26.2` (PYSEC-2026-3721) and core `urllib3` at `>=2.8.0` (PYSEC-2026-4175/4176/4177) | Released (2026-10-07) |
 | v0.25.0 | Gate certificates as parents (#120) — `--gate-certificate`/`--gate-trust` on `train-evidence-emit` and `energy-evidence-emit` verify an ikigov-assess `gate-certificate@1` (decision `OPEN`) before its ADR-0006 identity becomes a parent; `[gate]` extra. Inference Arc Phases 0–1h (ADR-0012): `infer-analyze`/`infer-what-if`, `infer-calibrate`/`infer-validate`, `infer-observe`, `infer-benchmark`, replica layouts, EUR price catalog, measured GPU energy and the H4 verdict | Release gate in progress (2026-10-18) |
+| v0.26.0 | Python 3.10 support dropped (`requires-python >=3.11`) so the lock carries no `pillow` 12.3.0 fork (39 Dependabot alerts, 5 critical); strategy enums move to `StrEnum`; no functional changes | Released (2026-10-23) |
 | v0.25.2 | Dependency security patch — `pillow` 13.0.0 (35 advisories in 12.3.0, via matplotlib) on Python 3.11+ and in the GHCR image; Python 3.10 keeps 12.3.0 (no fixed release); no functional changes | Released (2026-10-22) |
 | v0.25.1 | Trust-store security patch — the lock and GHCR image carry `certifi` 2026.10.19, which drops emSign ECC Root CA - G3 (eMudhra intermediates with trivially recoverable keys, Mozilla bug 2083449); no functional changes | Released (2026-10-22) |
 
