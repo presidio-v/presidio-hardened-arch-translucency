@@ -209,7 +209,8 @@ Manual security audit history:
   Python and in the GHCR image (39 Dependabot alerts on the 12.3.0 fork).
   Strategy enums move to `StrEnum` (emitted data unchanged). Locked
   `pip-audit` clean.
-- v0.25.2 patch release gate (2026-10-22) -- no code change; `pillow>=13.0.0` on
+- v0.25.2 patch release gate (2026-10-22; merged, never published, ships in
+  v0.26.0) -- no code change; `pillow>=13.0.0` on
   Python 3.11+ clears 35 advisories in 12.3.0 (via matplotlib) from the lock and
   the GHCR image. Python 3.10 kept 12.3.0 until 3.10 support was dropped. Locked
   `pip-audit` clean.
