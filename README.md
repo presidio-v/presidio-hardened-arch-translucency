@@ -8,7 +8,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13750/badge)](https://www.bestpractices.dev/projects/13750)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> v0.25.1 — Trust-store security patch for the Architectural Translucency Analyzer. The lock and the GHCR image move to `certifi` 2026.10.19, which drops emSign ECC Root CA - G3 after the eMudhra intermediate key compromise; Python HTTPS clients do not check revocation, so only removing the root protects them. Features are unchanged since v0.25.0 (gate certificates as parents, Inference Arc).
+> v0.25.2 — Dependency security patch for the Architectural Translucency Analyzer. The lock and the GHCR image move to `pillow` 13.0.0, clearing 35 advisories in 12.3.0 (pulled in by matplotlib); Python 3.10 keeps 12.3.0 because pillow 13 needs Python 3.11. pat only writes PNG charts and never decodes untrusted images. v0.25.1 moved `certifi` to 2026.10.19 (eMudhra root removed). Features are unchanged since v0.25.0 (gate certificates as parents, Inference Arc).
 
 **Architectural translucency** (Stantchev, ~2005) is the ability to monitor and
 control non-functional properties — especially performance — **architecture-wide
@@ -1721,6 +1721,7 @@ This completes the Energy Arc: **model** the watt (v0.20) → **measure** it
 | **v0.24.1** | **Family-vector conformance patch — pin the nominal Kepler energy payload and energy-bearing training payload to the merged `presidio-evidence` vectors without weakening PAT's audited Kepler emission refusal** |
 | **v0.24.2** | **Dependency security patch — `[evidence]` extra at `cryptography>=50.0.0,<51.0.0` (major-bounded, lock-pinned 50.0.0) for CVE-2026-69247 / GHSA-g6cj-pr64-35w5; `[audit]` extra floors `pip>=26.2` (PYSEC-2026-3721); `urllib3>=2.8.0` (PYSEC-2026-4175/4176/4177); Ed25519 signing unchanged** |
 | **v0.25.0** | **Gate certificates as parents (`--gate-certificate`/`--gate-trust`, `[gate]` extra; ikigov-assess `verify_certificate`, ADR-0006 identity) + Inference Arc Phases 0–1h (`pat infer-analyze`/`infer-what-if`/`infer-calibrate`/`infer-validate`/`infer-observe`/`infer-benchmark`/`infer-prices`; replica layouts, measured GPU energy, H4 verdict)** |
+| **v0.25.2** | **Dependency security patch — `pillow` 13.0.0 in the lock and GHCR image (35 advisories in 12.3.0; Python 3.11+)** |
 | **v0.25.1** | **Trust-store security patch — `certifi` 2026.10.19 in the lock and GHCR image (drops emSign ECC Root CA - G3; eMudhra key compromise, Mozilla bug 2083449)** |
 
 Full deliberation and feature details: [PRESIDIO-REQ.md](PRESIDIO-REQ.md)

@@ -210,6 +210,10 @@ sidecar authors must not treat shape validation as measured-ness.
 
 Manual security audit history:
 
+- v0.25.2 patch release gate (2026-10-22) -- no code change; `pillow>=13.0.0` on
+  Python 3.11+ clears 35 advisories in 12.3.0 (via matplotlib) from the lock and
+  the GHCR image. Python 3.10 keeps 12.3.0 (see Known Limitations). Locked
+  `pip-audit` clean.
 - v0.25.1 patch release gate (2026-10-22) -- no code change; the lock and the
   GHCR image move to `certifi` 2026.10.19, which removes emSign ECC Root CA - G3
   (eMudhra intermediates with trivially recoverable keys). Python HTTPS clients
