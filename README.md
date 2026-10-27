@@ -1109,7 +1109,7 @@ measurement by this suite.
 
 ---
 
-## LLM inference serving (unreleased, Inference Arc Phases 0–1h)
+## LLM inference serving (v0.25.0, Inference Arc Phases 0–1h)
 
 The translucency question for **LLM inference**: given N GPUs, should a model
 be served as N single-GPU replicas, one tensor-parallel (TP) instance, or
