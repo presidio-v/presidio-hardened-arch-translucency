@@ -6,8 +6,8 @@ it: a spoofed or misconfigured reading carries no valid signature and is
 rejected.
 
 Vendored contract: this implements the family canonical-JSON + detached-signature
-wire format directly. ``presidio-evidence`` is a private repo, so this public
-repo vendors the schema/vectors and signs from its own copy — exactly as
+wire format directly. It was written while ``presidio-evidence`` was private, so
+this repo vendors the schema/vectors and signs from its own copy — exactly as
 ``presidio-hardened-x402``'s ``mica.py`` does. Conformance is pinned to the family
 golden vector in the tests. Realizes evidence backlog L-EV-3 (arch-translucency as
 the runtime-posture evidence producer).
