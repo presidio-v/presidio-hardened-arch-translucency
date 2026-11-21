@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "presidio-hardened-arch-translucency: architectural translucency for replication analysis in Docker and Kubernetes"
+abstract: >-
+  Implementation of architectural translucency, the ability to monitor and
+  compare replication at different layers of a system architecture, applied
+  to the Docker and Kubernetes replication layers.
+type: software
+license: MIT
+repository-code: "https://github.com/presidio-v/presidio-hardened-arch-translucency"
+keywords:
+  - architectural translucency
+  - replication
+  - kubernetes
+  - docker
+  - performance
+authors:
+  - family-names: Stantchev
+    given-names: Vladimir
+    orcid: "https://orcid.org/0000-0002-1551-419X"
+    affiliation: "SRH University Heidelberg"
+references:
+  - type: article
+    title: "Architectural translucency in service-oriented architectures"
+    authors:
+      - family-names: Stantchev
+        given-names: Vladimir
+      - family-names: Malek
+        given-names: Miroslaw
+    journal: "IEE Proceedings - Software"
+    year: 2006
+    doi: "10.1049/ip-sen:20050017"

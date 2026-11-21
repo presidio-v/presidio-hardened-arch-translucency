@@ -1,0 +1,29 @@
+{
+  "title": "presidio-hardened-arch-translucency: architectural translucency for replication analysis in Docker and Kubernetes",
+  "upload_type": "software",
+  "description": "Implementation of architectural translucency, the ability to monitor and compare replication at different layers of a system architecture, introduced by Stantchev and Malek (IEE Proceedings - Software, 2006), applied to the Docker and Kubernetes replication layers. Released on PyPI as presidio-hardened-arch-translucency.",
+  "creators": [
+    {
+      "name": "Stantchev, Vladimir",
+      "orcid": "0000-0002-1551-419X",
+      "affiliation": "SRH University Heidelberg"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "architectural translucency",
+    "replication",
+    "kubernetes",
+    "docker",
+    "performance",
+    "service-oriented architecture"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.1049/ip-sen:20050017",
+      "relation": "references",
+      "resource_type": "publication-article",
+      "scheme": "doi"
+    }
+  ]
+}
